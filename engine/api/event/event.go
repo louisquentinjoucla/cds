@@ -10,10 +10,10 @@ import (
 
 	"github.com/go-gorp/gorp"
 	gocache "github.com/patrickmn/go-cache"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/integration"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/namesgenerator"
 )
 
@@ -104,7 +104,7 @@ func DeleteEventIntegration(eventIntegrationID int64) {
 func ResetEventIntegration(ctx context.Context, db gorp.SqlExecutor, eventIntegrationID int64) error {
 	brokerConnectionKey := strconv.FormatInt(eventIntegrationID, 10)
 	brokersConnectionCache.Delete(brokerConnectionKey)
-	projInt, err := integration.LoadProjectIntegrationByIDWithClearPassword(db, eventIntegrationID)
+	projInt, err := integration.LoadProjectIntegrationByIDWithClearPassword(ctx, db, eventIntegrationID)
 	if err != nil {
 		return fmt.Errorf("cannot load project integration id %d and type event: %v", eventIntegrationID, err)
 	}
@@ -166,14 +166,14 @@ func DequeueEvent(ctx context.Context, db *gorp.DbMap) {
 		// Send into public brokers
 		for _, b := range publicBrokersConnectionCache {
 			if err := b.sendEvent(&e); err != nil {
-				log.Warning(ctx, "Error while sending message [%s: %s/%s/%s/%s/%s]: %s", e.EventType, e.ProjectKey, e.WorkflowName, e.ApplicationName, e.PipelineName, e.EnvironmentName, err)
+				log.Warn(ctx, "Error while sending message [%s: %s/%s/%s/%s/%s]: %s", e.EventType, e.ProjectKey, e.WorkflowName, e.ApplicationName, e.PipelineName, e.EnvironmentName, err)
 			}
 		}
 		for _, eventIntegrationID := range e.EventIntegrationsID {
 			brokerConnectionKey := strconv.FormatInt(eventIntegrationID, 10)
 			brokerConnection, ok := brokersConnectionCache.Get(brokerConnectionKey)
 			if !ok {
-				projInt, err := integration.LoadProjectIntegrationByIDWithClearPassword(db, eventIntegrationID)
+				projInt, err := integration.LoadProjectIntegrationByIDWithClearPassword(ctx, db, eventIntegrationID)
 				if err != nil {
 					log.Error(ctx, "Event.DequeueEvent> Cannot load project integration for project %s and id %d and type event: %v", e.ProjectKey, eventIntegrationID, err)
 					continue
@@ -204,7 +204,7 @@ func DequeueEvent(ctx context.Context, db *gorp.DbMap) {
 
 			// Send into external brokers
 			if err := broker.sendEvent(&e); err != nil {
-				log.Warning(ctx, "Error while sending message [%s: %s/%s/%s/%s/%s]: %s", e.EventType, e.ProjectKey, e.WorkflowName, e.ApplicationName, e.PipelineName, e.EnvironmentName, err)
+				log.Warn(ctx, "Error while sending message [%s: %s/%s/%s/%s/%s]: %s", e.EventType, e.ProjectKey, e.WorkflowName, e.ApplicationName, e.PipelineName, e.EnvironmentName, err)
 			}
 		}
 	}

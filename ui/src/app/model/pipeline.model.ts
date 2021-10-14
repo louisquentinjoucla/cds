@@ -1,11 +1,10 @@
 import { AsCodeEvents } from './ascode.model';
-import { Environment } from './environment.model';
 import { Parameter } from './parameter.model';
 import { Stage } from './stage.model';
 import { Usage } from './usage.model';
 import { Workflow } from './workflow.model';
 
-export const pipelineNamePattern: RegExp = new RegExp('^[a-zA-Z0-9._-]+$');
+export const pipelineNamePattern = new RegExp('^[a-zA-Z0-9._-]+$');
 
 export class PipelineStatus {
     static BUILDING = 'Building';
@@ -18,6 +17,12 @@ export class PipelineStatus {
     static STOPPED = 'Stopped';
     static PENDING = 'Pending';
 
+    static priority = [
+        PipelineStatus.NEVER_BUILT, PipelineStatus.PENDING, PipelineStatus.WAITING,
+        PipelineStatus.BUILDING, PipelineStatus.STOPPED,
+        PipelineStatus.FAIL, PipelineStatus.SUCCESS, PipelineStatus.DISABLED, PipelineStatus.SKIPPED
+    ];
+
     static neverRun(status: string) {
         return status === this.SKIPPED || status === this.NEVER_BUILT || status === this.SKIPPED || status === this.DISABLED;
     }
@@ -29,6 +34,17 @@ export class PipelineStatus {
     static isDone(status: string) {
         return status === this.SUCCESS || status === this.STOPPED || status === this.FAIL ||
             status === this.SKIPPED || status === this.DISABLED;
+    }
+
+    static sum(status: Array<string>): string {
+        const sum = status.map(s => PipelineStatus.priority.indexOf(s)).reduce((sum, num) => {
+            if (num > -1 && num < sum) { return num; }
+            return sum;
+        });
+        if (sum === -1) {
+            return null;
+        }
+        return PipelineStatus.priority[sum];
     }
 }
 
@@ -87,9 +103,7 @@ export class Pipeline {
 
     public static hasParameterWithoutValue(pipeline: Pipeline) {
         if (pipeline.parameters) {
-            let emptyParams = pipeline.parameters.filter(p => {
-                return !p.value || p.value === '';
-            });
+            let emptyParams = pipeline.parameters.filter(p => !p.value || p.value === '');
             return emptyParams.length > 0;
         }
         return false;
@@ -109,7 +123,7 @@ export class Pipeline {
         }, {});
         ref.forEach(a => {
             if (!mapParam[a.name]) {
-                current.push(a)
+                current.push(a);
             }
         });
 
@@ -117,6 +131,7 @@ export class Pipeline {
     }
     /**
      * Merge parameters
+     *
      * @param ref
      * @param current
      */
@@ -150,29 +165,13 @@ export class Pipeline {
                         let loopAgain = true;
                         do {
                             nextJobRef = Math.random();
-                            loopAgain = editPipeline.stages.findIndex(st => {
-                                return st.jobs.findIndex(jb => jb.ref === nextRef) !== -1
-                            }) !== -1;
+                            loopAgain = editPipeline.stages.findIndex(st => st.jobs.findIndex(jb => jb.ref === nextRef) !== -1) !== -1;
                         } while (loopAgain);
                         j.ref = nextJobRef;
-                    })
+                    });
                 }
             });
         }
-    }
-}
-
-export class PipelineRunRequest {
-    parameters: Array<Parameter>;
-    env: Environment;
-    parent_build_number: number; // instead of version
-    parent_pipeline_id: number;
-    parent_environment_id: number;
-    parent_application_id: number;
-    parent_version: number; // instead of build_number
-
-    constructor() {
-        this.parameters = new Array<Parameter>();
     }
 }
 
@@ -189,14 +188,26 @@ export class SpawnInfoMessage {
     id: string;
 }
 
-export class BuildResult {
-    status: string;
-    step_logs: Log;
-}
-
 export class CDNLogLink {
     item_type: string;
     api_ref: string;
+}
+
+export class CDNLogsLines {
+    api_ref: string
+    lines_count: number
+}
+
+export class CDNLogLinks {
+    item_type: string;
+    datas: Array<CDNLogLinkData>;
+}
+
+
+export class CDNLogLinkData {
+    api_ref: string
+    step_order: number
+    requirement_id: number
 }
 
 export class CDNLinesResponse {
@@ -207,41 +218,16 @@ export class CDNLinesResponse {
 export class CDNLine {
     number: number;
     value: string;
+    api_ref_hash: string;
+    since: number; // the count of milliseconds since job start
 
     // properties used by ui only
     extra: Array<string>;
 }
 
-export class CDNStreamFilter  {
+export class CDNStreamFilter {
     item_type: string;
-    api_ref: string;
-    offset: number;
-}
-
-export interface Log {
-    id: number;
-    workflow_node_run_id: number;
-    workflow_node_run_job_id: number;
-    stepOrder: number;
-    val: string;
-    start: LogDate;
-    lastModified: LogDate;
-    done: LogDate;
-}
-
-export interface ServiceLog {
-    id: number;
-    workflow_node_run_id: number;
-    workflow_node_run_job_id: number;
-    requirement_id: number;
-    requirement_service_name: number;
-    val: string;
-    start: LogDate;
-    last_modified: LogDate;
-}
-
-export class LogDate {
-    seconds: number;
+    job_run_id: number;
 }
 
 export class Tests {

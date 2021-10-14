@@ -4,13 +4,14 @@
 package integrationplugin
 
 import (
+	context "context"
 	fmt "fmt"
-	math "math"
-
 	proto "github.com/golang/protobuf/proto"
-	empty "github.com/golang/protobuf/ptypes/empty"
-	context "golang.org/x/net/context"
 	grpc "google.golang.org/grpc"
+	codes "google.golang.org/grpc/codes"
+	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
+	math "math"
 )
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -22,7 +23,7 @@ var _ = math.Inf
 // is compatible with the proto package it is being compiled against.
 // A compilation error at this line likely means your copy of the
 // proto package needs to be updated.
-const _ = proto.ProtoPackageIsVersion2 // please upgrade the proto package
+const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
 
 type IntegrationPluginManifest struct {
 	Name                 string   `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -87,198 +88,212 @@ func (m *IntegrationPluginManifest) GetAuthor() string {
 	return ""
 }
 
-type DeployQuery struct {
+type RunQuery struct {
 	Options              map[string]string `protobuf:"bytes,1,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 	XXX_NoUnkeyedLiteral struct{}          `json:"-"`
 	XXX_unrecognized     []byte            `json:"-"`
 	XXX_sizecache        int32             `json:"-"`
 }
 
-func (m *DeployQuery) Reset()         { *m = DeployQuery{} }
-func (m *DeployQuery) String() string { return proto.CompactTextString(m) }
-func (*DeployQuery) ProtoMessage()    {}
-func (*DeployQuery) Descriptor() ([]byte, []int) {
+func (m *RunQuery) Reset()         { *m = RunQuery{} }
+func (m *RunQuery) String() string { return proto.CompactTextString(m) }
+func (*RunQuery) ProtoMessage()    {}
+func (*RunQuery) Descriptor() ([]byte, []int) {
 	return fileDescriptor_ad20155c873eed76, []int{1}
 }
 
-func (m *DeployQuery) XXX_Unmarshal(b []byte) error {
-	return xxx_messageInfo_DeployQuery.Unmarshal(m, b)
+func (m *RunQuery) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_RunQuery.Unmarshal(m, b)
 }
-func (m *DeployQuery) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	return xxx_messageInfo_DeployQuery.Marshal(b, m, deterministic)
+func (m *RunQuery) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_RunQuery.Marshal(b, m, deterministic)
 }
-func (m *DeployQuery) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_DeployQuery.Merge(m, src)
+func (m *RunQuery) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_RunQuery.Merge(m, src)
 }
-func (m *DeployQuery) XXX_Size() int {
-	return xxx_messageInfo_DeployQuery.Size(m)
+func (m *RunQuery) XXX_Size() int {
+	return xxx_messageInfo_RunQuery.Size(m)
 }
-func (m *DeployQuery) XXX_DiscardUnknown() {
-	xxx_messageInfo_DeployQuery.DiscardUnknown(m)
+func (m *RunQuery) XXX_DiscardUnknown() {
+	xxx_messageInfo_RunQuery.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_DeployQuery proto.InternalMessageInfo
+var xxx_messageInfo_RunQuery proto.InternalMessageInfo
 
-func (m *DeployQuery) GetOptions() map[string]string {
+func (m *RunQuery) GetOptions() map[string]string {
 	if m != nil {
 		return m.Options
 	}
 	return nil
 }
 
-type DeployResult struct {
-	Status               string   `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	Details              string   `protobuf:"bytes,2,opt,name=details,proto3" json:"details,omitempty"`
-	XXX_NoUnkeyedLiteral struct{} `json:"-"`
-	XXX_unrecognized     []byte   `json:"-"`
-	XXX_sizecache        int32    `json:"-"`
+type RunResult struct {
+	Status               string            `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Details              string            `protobuf:"bytes,2,opt,name=details,proto3" json:"details,omitempty"`
+	Outputs              map[string]string `protobuf:"bytes,3,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	XXX_NoUnkeyedLiteral struct{}          `json:"-"`
+	XXX_unrecognized     []byte            `json:"-"`
+	XXX_sizecache        int32             `json:"-"`
 }
 
-func (m *DeployResult) Reset()         { *m = DeployResult{} }
-func (m *DeployResult) String() string { return proto.CompactTextString(m) }
-func (*DeployResult) ProtoMessage()    {}
-func (*DeployResult) Descriptor() ([]byte, []int) {
+func (m *RunResult) Reset()         { *m = RunResult{} }
+func (m *RunResult) String() string { return proto.CompactTextString(m) }
+func (*RunResult) ProtoMessage()    {}
+func (*RunResult) Descriptor() ([]byte, []int) {
 	return fileDescriptor_ad20155c873eed76, []int{2}
 }
 
-func (m *DeployResult) XXX_Unmarshal(b []byte) error {
-	return xxx_messageInfo_DeployResult.Unmarshal(m, b)
+func (m *RunResult) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_RunResult.Unmarshal(m, b)
 }
-func (m *DeployResult) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	return xxx_messageInfo_DeployResult.Marshal(b, m, deterministic)
+func (m *RunResult) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_RunResult.Marshal(b, m, deterministic)
 }
-func (m *DeployResult) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_DeployResult.Merge(m, src)
+func (m *RunResult) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_RunResult.Merge(m, src)
 }
-func (m *DeployResult) XXX_Size() int {
-	return xxx_messageInfo_DeployResult.Size(m)
+func (m *RunResult) XXX_Size() int {
+	return xxx_messageInfo_RunResult.Size(m)
 }
-func (m *DeployResult) XXX_DiscardUnknown() {
-	xxx_messageInfo_DeployResult.DiscardUnknown(m)
+func (m *RunResult) XXX_DiscardUnknown() {
+	xxx_messageInfo_RunResult.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_DeployResult proto.InternalMessageInfo
+var xxx_messageInfo_RunResult proto.InternalMessageInfo
 
-func (m *DeployResult) GetStatus() string {
+func (m *RunResult) GetStatus() string {
 	if m != nil {
 		return m.Status
 	}
 	return ""
 }
 
-func (m *DeployResult) GetDetails() string {
+func (m *RunResult) GetDetails() string {
 	if m != nil {
 		return m.Details
 	}
 	return ""
 }
 
-type DeployStatusQuery struct {
-	ID                   string   `protobuf:"bytes,1,opt,name=ID,proto3" json:"ID,omitempty"`
+func (m *RunResult) GetOutputs() map[string]string {
+	if m != nil {
+		return m.Outputs
+	}
+	return nil
+}
+
+type WorkerHTTPPortQuery struct {
+	Port                 int32    `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
 	XXX_sizecache        int32    `json:"-"`
 }
 
-func (m *DeployStatusQuery) Reset()         { *m = DeployStatusQuery{} }
-func (m *DeployStatusQuery) String() string { return proto.CompactTextString(m) }
-func (*DeployStatusQuery) ProtoMessage()    {}
-func (*DeployStatusQuery) Descriptor() ([]byte, []int) {
+func (m *WorkerHTTPPortQuery) Reset()         { *m = WorkerHTTPPortQuery{} }
+func (m *WorkerHTTPPortQuery) String() string { return proto.CompactTextString(m) }
+func (*WorkerHTTPPortQuery) ProtoMessage()    {}
+func (*WorkerHTTPPortQuery) Descriptor() ([]byte, []int) {
 	return fileDescriptor_ad20155c873eed76, []int{3}
 }
 
-func (m *DeployStatusQuery) XXX_Unmarshal(b []byte) error {
-	return xxx_messageInfo_DeployStatusQuery.Unmarshal(m, b)
+func (m *WorkerHTTPPortQuery) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_WorkerHTTPPortQuery.Unmarshal(m, b)
 }
-func (m *DeployStatusQuery) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	return xxx_messageInfo_DeployStatusQuery.Marshal(b, m, deterministic)
+func (m *WorkerHTTPPortQuery) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_WorkerHTTPPortQuery.Marshal(b, m, deterministic)
 }
-func (m *DeployStatusQuery) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_DeployStatusQuery.Merge(m, src)
+func (m *WorkerHTTPPortQuery) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_WorkerHTTPPortQuery.Merge(m, src)
 }
-func (m *DeployStatusQuery) XXX_Size() int {
-	return xxx_messageInfo_DeployStatusQuery.Size(m)
+func (m *WorkerHTTPPortQuery) XXX_Size() int {
+	return xxx_messageInfo_WorkerHTTPPortQuery.Size(m)
 }
-func (m *DeployStatusQuery) XXX_DiscardUnknown() {
-	xxx_messageInfo_DeployStatusQuery.DiscardUnknown(m)
+func (m *WorkerHTTPPortQuery) XXX_DiscardUnknown() {
+	xxx_messageInfo_WorkerHTTPPortQuery.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_DeployStatusQuery proto.InternalMessageInfo
+var xxx_messageInfo_WorkerHTTPPortQuery proto.InternalMessageInfo
 
-func (m *DeployStatusQuery) GetID() string {
+func (m *WorkerHTTPPortQuery) GetPort() int32 {
 	if m != nil {
-		return m.ID
+		return m.Port
 	}
-	return ""
+	return 0
 }
 
 func init() {
 	proto.RegisterType((*IntegrationPluginManifest)(nil), "integrationplugin.IntegrationPluginManifest")
-	proto.RegisterType((*DeployQuery)(nil), "integrationplugin.DeployQuery")
-	proto.RegisterMapType((map[string]string)(nil), "integrationplugin.DeployQuery.OptionsEntry")
-	proto.RegisterType((*DeployResult)(nil), "integrationplugin.DeployResult")
-	proto.RegisterType((*DeployStatusQuery)(nil), "integrationplugin.DeployStatusQuery")
+	proto.RegisterType((*RunQuery)(nil), "integrationplugin.RunQuery")
+	proto.RegisterMapType((map[string]string)(nil), "integrationplugin.RunQuery.OptionsEntry")
+	proto.RegisterType((*RunResult)(nil), "integrationplugin.RunResult")
+	proto.RegisterMapType((map[string]string)(nil), "integrationplugin.RunResult.OutputsEntry")
+	proto.RegisterType((*WorkerHTTPPortQuery)(nil), "integrationplugin.WorkerHTTPPortQuery")
 }
 
-func init() { proto.RegisterFile("integrationplugin.proto", fileDescriptor_ad20155c873eed76) }
+func init() {
+	proto.RegisterFile("integrationplugin.proto", fileDescriptor_ad20155c873eed76)
+}
 
 var fileDescriptor_ad20155c873eed76 = []byte{
-	// 415 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x8c, 0x53, 0x4f, 0x8b, 0xda, 0x40,
-	0x1c, 0x35, 0xd1, 0x6a, 0xfb, 0x53, 0x4a, 0x1d, 0x8a, 0x4d, 0x53, 0x68, 0x25, 0xed, 0x41, 0xa8,
-	0x8c, 0x60, 0x2f, 0xe2, 0xa9, 0x88, 0x1e, 0xa4, 0x94, 0xda, 0x78, 0x28, 0xb4, 0xa7, 0x98, 0x8c,
-	0x31, 0x18, 0x33, 0x61, 0x66, 0x22, 0xe4, 0xdc, 0x2f, 0xb0, 0xdf, 0x6a, 0xbf, 0xd6, 0x92, 0x99,
-	0xc9, 0x6e, 0x20, 0x9b, 0x65, 0x6f, 0xf9, 0xfd, 0x79, 0xef, 0x37, 0xef, 0x3d, 0x02, 0xef, 0xa2,
-	0x44, 0x90, 0x90, 0x79, 0x22, 0xa2, 0x49, 0x1a, 0x67, 0x61, 0x94, 0xe0, 0x94, 0x51, 0x41, 0xd1,
-	0xb0, 0x36, 0xb0, 0x3f, 0x84, 0x94, 0x86, 0x31, 0x99, 0xc9, 0x85, 0x43, 0x76, 0x9c, 0x91, 0x4b,
-	0x2a, 0x72, 0xb5, 0xef, 0xfc, 0x37, 0xe0, 0xfd, 0xf6, 0x01, 0xb2, 0x93, 0x90, 0x9f, 0x5e, 0x12,
-	0x1d, 0x09, 0x17, 0x08, 0x41, 0x27, 0xf1, 0x2e, 0xc4, 0x32, 0xc6, 0xc6, 0xe4, 0x95, 0x2b, 0xbf,
-	0x91, 0x05, 0xbd, 0x2b, 0x61, 0x3c, 0xa2, 0x89, 0x65, 0xca, 0x76, 0x59, 0xa2, 0x31, 0xf4, 0x03,
-	0xc2, 0x7d, 0x16, 0xa5, 0x05, 0x95, 0xd5, 0x96, 0xd3, 0x6a, 0x0b, 0x8d, 0xa0, 0xeb, 0x65, 0xe2,
-	0x44, 0x99, 0xd5, 0x91, 0x43, 0x5d, 0x39, 0x37, 0x06, 0xf4, 0xd7, 0x24, 0x8d, 0x69, 0xfe, 0x3b,
-	0x23, 0x2c, 0x47, 0x1b, 0xe8, 0x51, 0x89, 0xe0, 0x96, 0x31, 0x6e, 0x4f, 0xfa, 0xf3, 0xaf, 0xb8,
-	0x2e, 0xb8, 0x02, 0xc0, 0xbf, 0xd4, 0xf6, 0x26, 0x11, 0x2c, 0x77, 0x4b, 0xac, 0xbd, 0x84, 0x41,
-	0x75, 0x80, 0xde, 0x40, 0xfb, 0x4c, 0x72, 0xad, 0xa6, 0xf8, 0x44, 0x6f, 0xe1, 0xc5, 0xd5, 0x8b,
-	0x33, 0xa2, 0xa5, 0xa8, 0x62, 0x69, 0x2e, 0x0c, 0xe7, 0x3b, 0x0c, 0xd4, 0x01, 0x97, 0xf0, 0x2c,
-	0x16, 0xc5, 0xd3, 0xb9, 0xf0, 0x44, 0xc6, 0x35, 0x5c, 0x57, 0x85, 0x1d, 0x01, 0x11, 0x5e, 0x14,
-	0xf3, 0xd2, 0x0e, 0x5d, 0x3a, 0x9f, 0x61, 0xa8, 0x18, 0xf6, 0x72, 0x53, 0x29, 0x7b, 0x0d, 0xe6,
-	0x76, 0xad, 0x29, 0xcc, 0xed, 0x7a, 0x7e, 0x6b, 0xc2, 0xb0, 0xe6, 0x3f, 0x72, 0xe1, 0xe5, 0x7d,
-	0x06, 0x23, 0xac, 0xf2, 0xc3, 0x65, 0x7e, 0x78, 0x53, 0xe4, 0x67, 0x4f, 0x1f, 0xb1, 0xa4, 0x31,
-	0x49, 0xa7, 0x85, 0x7e, 0x40, 0x57, 0x3d, 0x07, 0x7d, 0x7c, 0xda, 0x4c, 0xfb, 0x53, 0xe3, 0x5c,
-	0x79, 0xe1, 0xb4, 0xd0, 0x9f, 0xd2, 0x1d, 0xa5, 0x0d, 0x7d, 0x69, 0x84, 0x54, 0xc4, 0x3f, 0x87,
-	0x78, 0x01, 0x9d, 0xbd, 0xa0, 0x69, 0xa3, 0xea, 0x86, 0xbe, 0xd3, 0x5a, 0xfd, 0x83, 0xa9, 0x4f,
-	0x2f, 0x98, 0x5e, 0x4f, 0xd8, 0x0f, 0x38, 0xe6, 0xc1, 0x19, 0x87, 0x2c, 0xf5, 0xf5, 0x99, 0xda,
-	0xe1, 0xd5, 0xa8, 0x66, 0xd6, 0xae, 0xa0, 0xdc, 0x19, 0x7f, 0xeb, 0xff, 0xd0, 0xa1, 0x2b, 0xcf,
-	0x7d, 0xbb, 0x0b, 0x00, 0x00, 0xff, 0xff, 0x04, 0xbd, 0x83, 0x33, 0x78, 0x03, 0x00, 0x00,
+	// 453 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x94, 0x53, 0xc1, 0x6e, 0xd3, 0x40,
+	0x10, 0x8d, 0xe3, 0xb4, 0x69, 0xa7, 0x08, 0xd1, 0x01, 0x05, 0xe3, 0x72, 0x88, 0x7c, 0x40, 0xa9,
+	0x54, 0x6d, 0xa5, 0x72, 0xa9, 0x7a, 0x0c, 0xaa, 0x04, 0x07, 0x54, 0xb3, 0x54, 0x42, 0x82, 0x93,
+	0x9b, 0x6c, 0x5d, 0x2b, 0xce, 0xae, 0xb5, 0x3b, 0x1b, 0x29, 0x67, 0x6e, 0xfc, 0x11, 0x17, 0xbe,
+	0x0d, 0x79, 0xd7, 0x86, 0x20, 0x27, 0x95, 0xb8, 0xcd, 0xdb, 0x79, 0x6f, 0x76, 0xde, 0xec, 0x2c,
+	0xbc, 0x2c, 0x24, 0x89, 0x5c, 0x67, 0x54, 0x28, 0x59, 0x95, 0x36, 0x2f, 0x24, 0xab, 0xb4, 0x22,
+	0x85, 0xc7, 0x9d, 0x44, 0x7c, 0x92, 0x2b, 0x95, 0x97, 0xe2, 0xdc, 0x11, 0xee, 0xec, 0xfd, 0xb9,
+	0x58, 0x56, 0xb4, 0xf6, 0xfc, 0xe4, 0x7b, 0x00, 0xaf, 0x3e, 0xfc, 0x95, 0xa4, 0x4e, 0xf2, 0x31,
+	0x93, 0xc5, 0xbd, 0x30, 0x84, 0x08, 0x03, 0x99, 0x2d, 0x45, 0x14, 0x8c, 0x83, 0xc9, 0x21, 0x77,
+	0x31, 0x46, 0x30, 0x5c, 0x09, 0x6d, 0x0a, 0x25, 0xa3, 0xbe, 0x3b, 0x6e, 0x21, 0x8e, 0xe1, 0x68,
+	0x2e, 0xcc, 0x4c, 0x17, 0x55, 0x5d, 0x2a, 0x0a, 0x5d, 0x76, 0xf3, 0x08, 0x47, 0xb0, 0x9f, 0x59,
+	0x7a, 0x50, 0x3a, 0x1a, 0xb8, 0x64, 0x83, 0x92, 0x1f, 0x01, 0x1c, 0x70, 0x2b, 0x3f, 0x59, 0xa1,
+	0xd7, 0x38, 0x85, 0xa1, 0x72, 0x74, 0x13, 0x05, 0xe3, 0x70, 0x72, 0x74, 0x31, 0x61, 0x5d, 0xb7,
+	0x2d, 0x9b, 0xdd, 0x78, 0xea, 0xb5, 0x24, 0xbd, 0xe6, 0xad, 0x30, 0xbe, 0x82, 0x27, 0x9b, 0x09,
+	0x7c, 0x06, 0xe1, 0x42, 0xac, 0x1b, 0x1f, 0x75, 0x88, 0x2f, 0x60, 0x6f, 0x95, 0x95, 0x56, 0x34,
+	0x26, 0x3c, 0xb8, 0xea, 0x5f, 0x06, 0xc9, 0xaf, 0x00, 0x0e, 0xb9, 0x95, 0x5c, 0x18, 0x5b, 0x52,
+	0xdd, 0xb2, 0xa1, 0x8c, 0xac, 0x69, 0xc4, 0x0d, 0xaa, 0xc7, 0x30, 0x17, 0x94, 0x15, 0xa5, 0x69,
+	0xc7, 0xd0, 0x40, 0x7c, 0x07, 0x43, 0x65, 0xa9, 0xb2, 0x64, 0xa2, 0xd0, 0xf5, 0x7f, 0xba, 0xbd,
+	0x7f, 0x7f, 0x01, 0xbb, 0xf1, 0xdc, 0xd6, 0x80, 0x47, 0xce, 0xc0, 0x46, 0xe2, 0xbf, 0x0c, 0x9c,
+	0xc2, 0xf3, 0x2f, 0x4a, 0x2f, 0x84, 0x7e, 0x7f, 0x7b, 0x9b, 0xa6, 0x4a, 0x93, 0x9f, 0x2b, 0xc2,
+	0xa0, 0x52, 0x9a, 0x5c, 0x8d, 0x3d, 0xee, 0xe2, 0x8b, 0x9f, 0x7d, 0x38, 0xee, 0x3c, 0x3f, 0x72,
+	0x38, 0xf8, 0xb3, 0x02, 0x23, 0xe6, 0xd7, 0x87, 0xb5, 0xeb, 0xc3, 0xae, 0xeb, 0xf5, 0x89, 0xcf,
+	0xb6, 0x98, 0xda, 0xb9, 0x48, 0x49, 0x0f, 0xa7, 0x10, 0x72, 0x2b, 0xf1, 0xe4, 0x91, 0xb7, 0x8c,
+	0x5f, 0x3f, 0x36, 0xa8, 0xa4, 0x87, 0x1c, 0x9e, 0xfe, 0x6b, 0x0c, 0xdf, 0x6c, 0x51, 0x6c, 0xf1,
+	0x1e, 0xef, 0x70, 0x91, 0xf4, 0xf0, 0x12, 0x06, 0x9f, 0x49, 0x55, 0x3b, 0x7d, 0xee, 0x54, 0x4e,
+	0xbf, 0xc1, 0xd9, 0x4c, 0x2d, 0x99, 0x5a, 0x3d, 0xb0, 0xd9, 0xdc, 0x30, 0x33, 0x5f, 0xb0, 0x5c,
+	0x57, 0xb3, 0xa6, 0x8b, 0x4e, 0x5f, 0xd3, 0x51, 0x67, 0x3c, 0x69, 0x5d, 0x32, 0x0d, 0xbe, 0x76,
+	0x3f, 0xed, 0xdd, 0xbe, 0xbb, 0xee, 0xed, 0xef, 0x00, 0x00, 0x00, 0xff, 0xff, 0xd1, 0x39, 0xb2,
+	0x77, 0xe9, 0x03, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
 var _ context.Context
-var _ grpc.ClientConn
+var _ grpc.ClientConnInterface
 
 // This is a compile-time assertion to ensure that this generated file
 // is compatible with the grpc package it is being compiled against.
-const _ = grpc.SupportPackageIsVersion4
+const _ = grpc.SupportPackageIsVersion6
 
 // IntegrationPluginClient is the client API for IntegrationPlugin service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type IntegrationPluginClient interface {
-	Manifest(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*IntegrationPluginManifest, error)
-	Deploy(ctx context.Context, in *DeployQuery, opts ...grpc.CallOption) (*DeployResult, error)
-	DeployStatus(ctx context.Context, in *DeployStatusQuery, opts ...grpc.CallOption) (*DeployResult, error)
-	Stop(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*empty.Empty, error)
+	Manifest(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*IntegrationPluginManifest, error)
+	Run(ctx context.Context, in *RunQuery, opts ...grpc.CallOption) (*RunResult, error)
+	WorkerHTTPPort(ctx context.Context, in *WorkerHTTPPortQuery, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	Stop(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type integrationPluginClient struct {
-	cc *grpc.ClientConn
+	cc grpc.ClientConnInterface
 }
 
-func NewIntegrationPluginClient(cc *grpc.ClientConn) IntegrationPluginClient {
+func NewIntegrationPluginClient(cc grpc.ClientConnInterface) IntegrationPluginClient {
 	return &integrationPluginClient{cc}
 }
 
-func (c *integrationPluginClient) Manifest(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*IntegrationPluginManifest, error) {
+func (c *integrationPluginClient) Manifest(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*IntegrationPluginManifest, error) {
 	out := new(IntegrationPluginManifest)
 	err := c.cc.Invoke(ctx, "/integrationplugin.IntegrationPlugin/Manifest", in, out, opts...)
 	if err != nil {
@@ -287,26 +302,26 @@ func (c *integrationPluginClient) Manifest(ctx context.Context, in *empty.Empty,
 	return out, nil
 }
 
-func (c *integrationPluginClient) Deploy(ctx context.Context, in *DeployQuery, opts ...grpc.CallOption) (*DeployResult, error) {
-	out := new(DeployResult)
-	err := c.cc.Invoke(ctx, "/integrationplugin.IntegrationPlugin/Deploy", in, out, opts...)
+func (c *integrationPluginClient) Run(ctx context.Context, in *RunQuery, opts ...grpc.CallOption) (*RunResult, error) {
+	out := new(RunResult)
+	err := c.cc.Invoke(ctx, "/integrationplugin.IntegrationPlugin/Run", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *integrationPluginClient) DeployStatus(ctx context.Context, in *DeployStatusQuery, opts ...grpc.CallOption) (*DeployResult, error) {
-	out := new(DeployResult)
-	err := c.cc.Invoke(ctx, "/integrationplugin.IntegrationPlugin/DeployStatus", in, out, opts...)
+func (c *integrationPluginClient) WorkerHTTPPort(ctx context.Context, in *WorkerHTTPPortQuery, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, "/integrationplugin.IntegrationPlugin/WorkerHTTPPort", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *integrationPluginClient) Stop(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*empty.Empty, error) {
-	out := new(empty.Empty)
+func (c *integrationPluginClient) Stop(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, "/integrationplugin.IntegrationPlugin/Stop", in, out, opts...)
 	if err != nil {
 		return nil, err
@@ -316,10 +331,27 @@ func (c *integrationPluginClient) Stop(ctx context.Context, in *empty.Empty, opt
 
 // IntegrationPluginServer is the server API for IntegrationPlugin service.
 type IntegrationPluginServer interface {
-	Manifest(context.Context, *empty.Empty) (*IntegrationPluginManifest, error)
-	Deploy(context.Context, *DeployQuery) (*DeployResult, error)
-	DeployStatus(context.Context, *DeployStatusQuery) (*DeployResult, error)
-	Stop(context.Context, *empty.Empty) (*empty.Empty, error)
+	Manifest(context.Context, *emptypb.Empty) (*IntegrationPluginManifest, error)
+	Run(context.Context, *RunQuery) (*RunResult, error)
+	WorkerHTTPPort(context.Context, *WorkerHTTPPortQuery) (*emptypb.Empty, error)
+	Stop(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+}
+
+// UnimplementedIntegrationPluginServer can be embedded to have forward compatible implementations.
+type UnimplementedIntegrationPluginServer struct {
+}
+
+func (*UnimplementedIntegrationPluginServer) Manifest(ctx context.Context, req *emptypb.Empty) (*IntegrationPluginManifest, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Manifest not implemented")
+}
+func (*UnimplementedIntegrationPluginServer) Run(ctx context.Context, req *RunQuery) (*RunResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Run not implemented")
+}
+func (*UnimplementedIntegrationPluginServer) WorkerHTTPPort(ctx context.Context, req *WorkerHTTPPortQuery) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method WorkerHTTPPort not implemented")
+}
+func (*UnimplementedIntegrationPluginServer) Stop(ctx context.Context, req *emptypb.Empty) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Stop not implemented")
 }
 
 func RegisterIntegrationPluginServer(s *grpc.Server, srv IntegrationPluginServer) {
@@ -327,7 +359,7 @@ func RegisterIntegrationPluginServer(s *grpc.Server, srv IntegrationPluginServer
 }
 
 func _IntegrationPlugin_Manifest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(empty.Empty)
+	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -339,49 +371,49 @@ func _IntegrationPlugin_Manifest_Handler(srv interface{}, ctx context.Context, d
 		FullMethod: "/integrationplugin.IntegrationPlugin/Manifest",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(IntegrationPluginServer).Manifest(ctx, req.(*empty.Empty))
+		return srv.(IntegrationPluginServer).Manifest(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _IntegrationPlugin_Deploy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeployQuery)
+func _IntegrationPlugin_Run_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RunQuery)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(IntegrationPluginServer).Deploy(ctx, in)
+		return srv.(IntegrationPluginServer).Run(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/integrationplugin.IntegrationPlugin/Deploy",
+		FullMethod: "/integrationplugin.IntegrationPlugin/Run",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(IntegrationPluginServer).Deploy(ctx, req.(*DeployQuery))
+		return srv.(IntegrationPluginServer).Run(ctx, req.(*RunQuery))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _IntegrationPlugin_DeployStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeployStatusQuery)
+func _IntegrationPlugin_WorkerHTTPPort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerHTTPPortQuery)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(IntegrationPluginServer).DeployStatus(ctx, in)
+		return srv.(IntegrationPluginServer).WorkerHTTPPort(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/integrationplugin.IntegrationPlugin/DeployStatus",
+		FullMethod: "/integrationplugin.IntegrationPlugin/WorkerHTTPPort",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(IntegrationPluginServer).DeployStatus(ctx, req.(*DeployStatusQuery))
+		return srv.(IntegrationPluginServer).WorkerHTTPPort(ctx, req.(*WorkerHTTPPortQuery))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
 func _IntegrationPlugin_Stop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(empty.Empty)
+	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -393,7 +425,7 @@ func _IntegrationPlugin_Stop_Handler(srv interface{}, ctx context.Context, dec f
 		FullMethod: "/integrationplugin.IntegrationPlugin/Stop",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(IntegrationPluginServer).Stop(ctx, req.(*empty.Empty))
+		return srv.(IntegrationPluginServer).Stop(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -407,12 +439,12 @@ var _IntegrationPlugin_serviceDesc = grpc.ServiceDesc{
 			Handler:    _IntegrationPlugin_Manifest_Handler,
 		},
 		{
-			MethodName: "Deploy",
-			Handler:    _IntegrationPlugin_Deploy_Handler,
+			MethodName: "Run",
+			Handler:    _IntegrationPlugin_Run_Handler,
 		},
 		{
-			MethodName: "DeployStatus",
-			Handler:    _IntegrationPlugin_DeployStatus_Handler,
+			MethodName: "WorkerHTTPPort",
+			Handler:    _IntegrationPlugin_WorkerHTTPPort_Handler,
 		},
 		{
 			MethodName: "Stop",

@@ -56,12 +56,12 @@ func Test_authMiddleware_WithAuthConsumerDisabled(t *testing.T) {
 	localConsumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), db, sdk.ConsumerLocal, u.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
 	require.NoError(t, err)
 
-	builtinConsumer, _, err := builtin.NewConsumer(context.TODO(), db, "builtin", "", localConsumer, []int64{g.ID},
+	builtinConsumer, _, err := builtin.NewConsumer(context.TODO(), db, "builtin", "", 0, localConsumer, []int64{g.ID},
 		sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopes...))
 	require.NoError(t, err)
-	builtinSession, err := authentication.NewSession(context.TODO(), db, builtinConsumer, time.Second*5, false)
+	builtinSession, err := authentication.NewSession(context.TODO(), db, builtinConsumer, time.Second*5)
 	require.NoError(t, err)
-	jwt, err := authentication.NewSessionJWT(builtinSession)
+	jwt, err := authentication.NewSessionJWT(builtinSession, "")
 	require.NoError(t, err)
 
 	config := &service.HandlerConfig{}
@@ -148,6 +148,48 @@ func Test_authAdminMiddleware(t *testing.T) {
 	assert.Equal(t, admin.ID, getAPIConsumer(ctx).AuthentifiedUserID)
 }
 
+func Test_authMaintainerMiddleware(t *testing.T) {
+	api, db, _ := newTestAPI(t)
+
+	_, jwtLambda := assets.InsertLambdaUser(t, db)
+	maintainer, jwtMaintainer := assets.InsertMaintainerUser(t, db)
+	admin, jwtAdmin := assets.InsertAdminUser(t, db)
+
+	config := &service.HandlerConfig{}
+
+	req := assets.NewRequest(t, http.MethodGet, "", nil)
+	w := httptest.NewRecorder()
+	ctx, err := api.jwtMiddleware(context.TODO(), w, req, config)
+	require.NoError(t, err)
+	ctx, err = api.authMaintainerMiddleware(ctx, w, req, config)
+	assert.Error(t, err, "an error should be returned because no jwt was given and maintainer auth is required")
+
+	req = assets.NewJWTAuthentifiedRequest(t, jwtLambda, http.MethodGet, "", nil)
+	w = httptest.NewRecorder()
+	ctx, err = api.jwtMiddleware(context.TODO(), w, req, config)
+	require.NoError(t, err)
+	ctx, err = api.authMaintainerMiddleware(ctx, w, req, config)
+	assert.Error(t, err, "an error should be returned because a jwt was given for a lambda user")
+
+	req = assets.NewJWTAuthentifiedRequest(t, jwtMaintainer, http.MethodGet, "", nil)
+	w = httptest.NewRecorder()
+	ctx, err = api.jwtMiddleware(context.TODO(), w, req, config)
+	require.NoError(t, err)
+	ctx, err = api.authMaintainerMiddleware(ctx, w, req, config)
+	assert.NoError(t, err, "no error should be returned because a jwt was given for an maintainer user")
+	require.NotNil(t, getAPIConsumer(ctx))
+	assert.Equal(t, maintainer.ID, getAPIConsumer(ctx).AuthentifiedUserID)
+
+	req = assets.NewJWTAuthentifiedRequest(t, jwtAdmin, http.MethodGet, "", nil)
+	w = httptest.NewRecorder()
+	ctx, err = api.jwtMiddleware(context.TODO(), w, req, config)
+	require.NoError(t, err)
+	ctx, err = api.authMaintainerMiddleware(ctx, w, req, config)
+	assert.NoError(t, err, "no error should be returned because a jwt was given for an admin user")
+	require.NotNil(t, getAPIConsumer(ctx))
+	assert.Equal(t, admin.ID, getAPIConsumer(ctx).AuthentifiedUserID)
+}
+
 func Test_authMiddleware_WithAuthConsumerScoped(t *testing.T) {
 	api, db, _ := newTestAPI(t)
 
@@ -156,7 +198,7 @@ func Test_authMiddleware_WithAuthConsumerScoped(t *testing.T) {
 	localConsumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), db, sdk.ConsumerLocal, u.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
 	require.NoError(t, err)
 
-	builtinConsumer, _, err := builtin.NewConsumer(context.TODO(), db, "builtin", "", localConsumer, []int64{g.ID}, []sdk.AuthConsumerScopeDetail{
+	builtinConsumer, _, err := builtin.NewConsumer(context.TODO(), db, "builtin", "", 0, localConsumer, []int64{g.ID}, []sdk.AuthConsumerScopeDetail{
 		{
 			Scope: sdk.AuthConsumerScopeAction,
 			Endpoints: sdk.AuthConsumerScopeEndpoints{
@@ -174,9 +216,9 @@ func Test_authMiddleware_WithAuthConsumerScoped(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	builtinSession, err := authentication.NewSession(context.TODO(), db, builtinConsumer, time.Second*5, false)
+	builtinSession, err := authentication.NewSession(context.TODO(), db, builtinConsumer, time.Second*5)
 	require.NoError(t, err)
-	jwt, err := authentication.NewSessionJWT(builtinSession)
+	jwt, err := authentication.NewSessionJWT(builtinSession, "")
 	require.NoError(t, err)
 
 	// GET /my-handler1 is forbidden (scope AccessToken required)

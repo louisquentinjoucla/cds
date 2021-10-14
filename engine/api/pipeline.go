@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/ascode"
@@ -15,11 +16,11 @@ import (
 	"github.com/ovh/cds/engine/api/operation"
 	"github.com/ovh/cds/engine/api/pipeline"
 	"github.com/ovh/cds/engine/api/project"
+	"github.com/ovh/cds/engine/api/repositoriesmanager"
 	"github.com/ovh/cds/engine/api/workflow"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (api *API) updateAsCodePipelineHandler() service.Handler {
@@ -43,7 +44,7 @@ func (api *API) updateAsCodePipelineHandler() service.Handler {
 		// check pipeline name pattern
 		regexp := sdk.NamePatternRegex
 		if !regexp.MatchString(p.Name) {
-			return sdk.WrapError(sdk.ErrInvalidPipelinePattern, "updateAsCodePipelineHandler: Pipeline name %s do not respect pattern", p.Name)
+			return sdk.WrapError(sdk.ErrInvalidPipelinePattern, "updateAsCodePipelineHandler: pipeline name %s do not respect pattern", p.Name)
 		}
 
 		tx, err := api.mustDB().Begin()
@@ -92,6 +93,25 @@ func (api *API) updateAsCodePipelineHandler() service.Handler {
 			return sdk.NewErrorFrom(sdk.ErrWrongRequest, "cannot find the root application of the workflow %s that hold the pipeline", wkHolder.Name)
 		}
 
+		vcsServer, err := repositoriesmanager.LoadProjectVCSServerLinkByProjectKeyAndVCSServerName(ctx, tx, key, rootApp.VCSServer)
+		if err != nil {
+			return sdk.WrapError(sdk.ErrNoReposManagerClientAuth, "updateAsCodePipelineHandler> cannot get client got %s %s : %v", key, rootApp.VCSServer, err)
+		}
+
+		client, err := repositoriesmanager.AuthorizedClient(ctx, tx, api.Cache, key, vcsServer)
+		if err != nil {
+			return sdk.WrapError(sdk.ErrNoReposManagerClientAuth, "updateAsCodePipelineHandler> cannot get client got %s %s : %v", key, rootApp.VCSServer, err)
+		}
+
+		b, err := client.Branch(ctx, rootApp.RepositoryFullname, sdk.VCSBranchFilters{BranchName: branch})
+		if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
+			return err
+		}
+
+		if b != nil && b.Default {
+			return sdk.NewErrorFrom(sdk.ErrForbidden, "cannot push the the default branch on your git repository")
+		}
+
 		u := getAPIConsumer(ctx)
 
 		wpi := exportentities.NewPipelineV1(p)
@@ -117,7 +137,7 @@ func (api *API) updateAsCodePipelineHandler() service.Handler {
 				OperationUUID: ope.UUID,
 			}
 			ascode.UpdateAsCodeResult(ctx, api.mustDB(), api.Cache, api.GoRoutines, *proj, *wkHolder, *rootApp, ed, u)
-		}, api.PanicDump())
+		})
 
 		return service.WriteJSON(w, sdk.Operation{
 			UUID:   ope.UUID,
@@ -231,7 +251,7 @@ func (api *API) postPipelineRollbackHandler() service.Handler {
 			}
 		}(&msgList)
 
-		if err := pipeline.ImportUpdate(ctx, tx, *proj, audit.Pipeline, msgChan); err != nil {
+		if err := pipeline.ImportUpdate(ctx, tx, *proj, audit.Pipeline, msgChan, pipeline.ImportOptions{}); err != nil {
 			return sdk.WrapError(err, "cannot import pipeline")
 		}
 
@@ -328,11 +348,7 @@ func (api *API) getPipelineHandler() service.Handler {
 		}
 
 		if p.FromRepository != "" {
-			proj, err := project.Load(ctx, api.mustDB(), projectKey,
-				project.LoadOptions.WithApplicationWithDeploymentStrategies,
-				project.LoadOptions.WithPipelines,
-				project.LoadOptions.WithEnvironments,
-				project.LoadOptions.WithIntegrations)
+			proj, err := project.Load(ctx, api.mustDB(), projectKey, project.LoadOptions.WithIntegrations)
 			if err != nil {
 				return err
 			}
@@ -381,7 +397,7 @@ func (api *API) getPipelinesHandler() service.Handler {
 		project, err := project.Load(ctx, api.mustDB(), key, project.LoadOptions.Default)
 		if err != nil {
 			if !sdk.ErrorIs(err, sdk.ErrNoProject) {
-				log.Warning(ctx, "getPipelinesHandler: Cannot load %s: %s\n", key, err)
+				log.Warn(ctx, "getPipelinesHandler: Cannot load %s: %s\n", key, err)
 			}
 			return err
 		}
@@ -389,7 +405,7 @@ func (api *API) getPipelinesHandler() service.Handler {
 		pip, err := pipeline.LoadPipelines(api.mustDB(), project.ID, true)
 		if err != nil {
 			if !sdk.ErrorIs(err, sdk.ErrPipelineNotFound) {
-				log.Warning(ctx, "getPipelinesHandler>Cannot load pipelines: %s\n", err)
+				log.Warn(ctx, "getPipelinesHandler>Cannot load pipelines: %s\n", err)
 			}
 			return err
 		}

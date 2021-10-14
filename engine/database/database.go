@@ -9,15 +9,14 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/lib/pq"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // DBConnectionFactory is a database connection factory on postgres with gorp
 type DBConnectionFactory struct {
-	DBDriver         string
 	DBRole           string
 	DBUser           string
 	DBPassword       string
@@ -41,10 +40,9 @@ func (f *DBConnectionFactory) DB() *sql.DB {
 		}
 		newF, err := Init(context.TODO(), f.DBUser, f.DBRole, f.DBPassword, f.DBName, f.DBSchema, f.DBHost, f.DBPort, f.DBSSLMode, f.DBConnectTimeout, f.DBTimeout, f.DBMaxConn)
 		if err != nil {
-			err = sdk.WrapError(err, "cannot init db connection")
-			log.ErrorWithFields(context.TODO(), log.Fields{
-				"stack_trace": fmt.Sprintf("%+v", err),
-			}, "%s", err)
+			err = sdk.WithStack(err)
+			ctx := sdk.ContextWithStacktrace(context.TODO(), err)
+			log.Error(ctx, "unable to init db connection: %v", err)
 			return nil
 		}
 		*f = *newF
@@ -76,7 +74,6 @@ func Init(ctx context.Context, user, role, password, name, schema, host string, 
 	}
 
 	f := &DBConnectionFactory{
-		DBDriver:         "postgres",
 		DBRole:           role,
 		DBUser:           user,
 		DBPassword:       password,
@@ -122,7 +119,13 @@ func Init(ctx context.Context, user, role, password, name, schema, host string, 
 	// connect_timeout in seconds
 	// statement_timeout in milliseconds
 	dsn := f.dsn()
-	f.Database, err = sql.Open(f.DBDriver, dsn)
+	connector, err := pq.NewConnector(dsn)
+	if err != nil {
+		log.Error(ctx, "cannot open database: %s", err)
+		return nil, sdk.WithStack(err)
+	}
+	f.Database = sql.OpenDB(connector)
+
 	if err != nil {
 		f.Database = nil
 		log.Error(ctx, "cannot open database: %s", err)
@@ -144,7 +147,7 @@ func Init(ctx context.Context, user, role, password, name, schema, host string, 
 
 	// Set role if specified
 	if role != "" {
-		log.Debug("database> setting role %s on database", role)
+		log.Debug(ctx, "database> setting role %s on database", role)
 		if _, err := f.Database.Exec("SET ROLE '" + role + "'"); err != nil {
 			log.Error(ctx, "unable to set role %s on database: %v", role, err)
 			return nil, sdk.WrapError(err, "unable to set role %s", role)
@@ -155,7 +158,7 @@ func Init(ctx context.Context, user, role, password, name, schema, host string, 
 }
 
 func (f *DBConnectionFactory) dsn() string {
-	dsn := fmt.Sprintf("user=%s password=%s dbname=%s host=%s port=%d sslmode=%s connect_timeout=%d", f.DBUser, f.DBPassword, f.DBName, f.DBHost, f.DBPort, f.DBSSLMode, f.DBConnectTimeout)
+	dsn := fmt.Sprintf("user=%s password='%s' dbname=%s host=%s port=%d sslmode=%s connect_timeout=%d", f.DBUser, f.DBPassword, f.DBName, f.DBHost, f.DBPort, f.DBSSLMode, f.DBConnectTimeout)
 	if f.DBSchema != "public" {
 		dsn += fmt.Sprintf(" search_path=%s", f.DBSchema)
 	}

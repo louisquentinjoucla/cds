@@ -3,6 +3,11 @@ package sdk
 // These are type of plugins
 const (
 	GRPCPluginDeploymentIntegration = "integration-deploy_application"
+	GRPCPluginUploadArtifact        = "integration-upload_artifact"
+	GRPCPluginDownloadArtifact      = "integration-download_artifact"
+	GRPCPluginBuildInfo             = "integration-build_info"
+	GRPCPluginRelease               = "integration-release"
+	GRPCPluginPromote               = "integration-promote"
 	GRPCPluginAction                = "action"
 )
 

@@ -5,13 +5,16 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 	"go.opencensus.io/stats"
 
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/api/integration"
+	"github.com/ovh/cds/engine/api/integration/artifact_manager"
 	"github.com/ovh/cds/engine/api/objectstore"
 	"github.com/ovh/cds/engine/api/project"
 	"github.com/ovh/cds/engine/api/services"
@@ -19,14 +22,20 @@ import (
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/featureflipping"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
-const (
-	FeaturePurgeName = "workflow-retention-policy"
-	FeatureMaxRuns   = "workflow-retention-maxruns"
-)
+var defaultRunRetentionPolicy string
+var disableDeletion bool
+
+func SetPurgeConfiguration(rule string, disableDeletionConf bool) error {
+	if rule == "" {
+		return sdk.WithStack(fmt.Errorf("invalid empty rule for default workflow run retention policy"))
+	}
+	defaultRunRetentionPolicy = rule
+	disableDeletion = disableDeletionConf
+	return nil
+}
 
 // MarkRunsAsDelete mark workflow run as delete
 func MarkRunsAsDelete(ctx context.Context, store cache.Store, DBFunc func() *gorp.DbMap, workflowRunsMarkToDelete *stats.Int64Measure) {
@@ -42,8 +51,10 @@ func MarkRunsAsDelete(ctx context.Context, store cache.Store, DBFunc func() *gor
 			}
 		case <-tickMark.C:
 			// Mark workflow run to delete
+			log.Info(ctx, "purge> Start marking workflow run as delete")
 			if err := markWorkflowRunsToDelete(ctx, store, DBFunc(), workflowRunsMarkToDelete); err != nil {
-				log.ErrorWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+				ctx = sdk.ContextWithStacktrace(ctx, err)
+				log.Error(ctx, "%v", err)
 			}
 		}
 	}
@@ -64,12 +75,14 @@ func WorkflowRuns(ctx context.Context, DBFunc func() *gorp.DbMap, sharedStorage 
 		case <-tickPurge.C:
 			// Check all workflows to mark runs that should be deleted
 			if err := MarkWorkflowRuns(ctx, DBFunc(), workflowRunsMarkToDelete); err != nil {
-				log.Warning(ctx, "purge> Error: %v", err)
+				log.Warn(ctx, "purge> Error: %v", err)
 			}
 
-			log.Debug("purge> Deleting all workflow run marked to delete...")
-			if err := deleteWorkflowRunsHistory(ctx, DBFunc(), sharedStorage, workflowRunsDeleted); err != nil {
-				log.Warning(ctx, "purge> Error on deleteWorkflowRunsHistory : %v", err)
+			if !disableDeletion {
+				log.Info(ctx, "purge> Start deleting all workflow run marked to delete...")
+				if err := deleteWorkflowRunsHistory(ctx, DBFunc(), sharedStorage, workflowRunsDeleted); err != nil {
+					log.Warn(ctx, "purge> Error on deleteWorkflowRunsHistory : %v", err)
+				}
 			}
 		}
 	}
@@ -88,15 +101,15 @@ func Workflow(ctx context.Context, store cache.Store, DBFunc func() *gorp.DbMap,
 				return
 			}
 		case <-tickPurge.C:
-			log.Debug("purge> Deleting all workflow marked to delete....")
+			log.Debug(ctx, "purge> Deleting all workflow marked to delete....")
 			if err := workflows(ctx, DBFunc(), store, workflowRunsMarkToDelete); err != nil {
-				log.Warning(ctx, "purge> Error on workflows : %v", err)
+				log.Warn(ctx, "purge> Error on workflows : %v", err)
 			}
 		}
 	}
 }
 
-// Deprecated: old method to mark runs to delete
+// MarkWorkflowRuns Deprecated: old method to mark runs to delete
 func MarkWorkflowRuns(ctx context.Context, db *gorp.DbMap, workflowRunsMarkToDelete *stats.Int64Measure) error {
 	dao := new(workflow.WorkflowDAO)
 	dao.Filters.DisableFilterDeletedWorkflow = false
@@ -105,7 +118,7 @@ func MarkWorkflowRuns(ctx context.Context, db *gorp.DbMap, workflowRunsMarkToDel
 		return err
 	}
 	for _, wf := range wfs {
-		enabled := featureflipping.IsEnabled(ctx, gorpmapping.Mapper, db, FeaturePurgeName, map[string]string{"project_key": wf.ProjectKey})
+		_, enabled := featureflipping.IsEnabled(ctx, gorpmapping.Mapper, db, sdk.FeaturePurgeName, map[string]string{"project_key": wf.ProjectKey})
 		if enabled {
 			continue
 		}
@@ -182,7 +195,7 @@ func workflows(ctx context.Context, db *gorp.DbMap, store cache.Store, workflowR
 
 		w, err := workflow.LoadByID(ctx, db, store, proj, r.ID, workflow.LoadOptions{})
 		if err != nil {
-			log.Warning(ctx, "unable to load workflow %d due to error %v, we try to delete it", r.ID, err)
+			log.Warn(ctx, "unable to load workflow %d due to error %v, we try to delete it", r.ID, err)
 			if _, err := db.Exec("delete from w_node_trigger where child_node_id IN (SELECT id from w_node where workflow_id = $1)", r.ID); err != nil {
 				log.Error(ctx, "Unable to delete from w_node_trigger for workflow %d: %v", r.ID, err)
 			}
@@ -192,7 +205,7 @@ func workflows(ctx context.Context, db *gorp.DbMap, store cache.Store, workflowR
 			if _, err := db.Exec("delete from workflow where id = $1", r.ID); err != nil {
 				log.Error(ctx, "Unable to delete from workflow with id %d: %v", r.ID, err)
 			} else {
-				log.Warning(ctx, "workflow with id %d is deleted", r.ID)
+				log.Warn(ctx, "workflow with id %d is deleted", r.ID)
 			}
 			continue
 		}
@@ -266,7 +279,8 @@ func deleteRunHistory(ctx context.Context, db *gorp.DbMap, workflowRunID int64, 
 	}
 	defer tx.Rollback() // nolint
 
-	if _, err := workflow.LoadAndLockRunByID(tx, workflowRunID, workflow.LoadRunOptions{DisableDetailledNodeRun: true, WithDeleted: true}); err != nil {
+	wr, err := workflow.LoadAndLockRunByID(ctx, tx, workflowRunID, workflow.LoadRunOptions{DisableDetailledNodeRun: true, WithDeleted: true})
+	if err != nil {
 		if sdk.ErrorIs(err, sdk.ErrNotFound) {
 			return nil
 		}
@@ -274,6 +288,10 @@ func deleteRunHistory(ctx context.Context, db *gorp.DbMap, workflowRunID int64, 
 	}
 
 	if err := DeleteArtifacts(ctx, tx, sharedStorage, workflowRunID); err != nil {
+		return sdk.WithStack(err)
+	}
+
+	if err := DeleteArtifactsFromRepositoryManager(ctx, tx, wr); err != nil {
 		return sdk.WithStack(err)
 	}
 
@@ -298,9 +316,100 @@ func deleteRunHistory(ctx context.Context, db *gorp.DbMap, workflowRunID int64, 
 	return nil
 }
 
+func DeleteArtifactsFromRepositoryManager(ctx context.Context, db gorp.SqlExecutor, wr *sdk.WorkflowRun) error {
+
+	// Check if the run is linked to an artifact manager integration
+	var artifactManagerInteg *sdk.WorkflowProjectIntegration
+	for _, integ := range wr.Workflow.Integrations {
+		log.Debug(ctx, "%+v", integ)
+
+		if integ.ProjectIntegration.Model.ArtifactManager {
+			artifactManagerInteg = &integ
+			break
+		}
+	}
+	if artifactManagerInteg == nil {
+		log.Debug(ctx, "no artifactManagerInteg found")
+		return nil
+	}
+	var (
+		rtName = artifactManagerInteg.ProjectIntegration.Config[sdk.ArtifactoryConfigPlatform].Value
+		rtURL  = artifactManagerInteg.ProjectIntegration.Config[sdk.ArtifactoryConfigURL].Value
+	)
+
+	// Load the token from secrets
+	secrets, err := workflow.LoadDecryptSecrets(ctx, db, wr, nil)
+	if err != nil {
+		return err
+	}
+
+	var rtToken string
+	for _, s := range secrets {
+		if s.Name == fmt.Sprintf("cds.integration.artifact_manager.%s", sdk.ArtifactoryConfigToken) {
+			rtToken = s.Value
+			break
+		}
+	}
+	if rtToken == "" {
+		return sdk.NewErrorFrom(sdk.ErrNotFound, "unable to find artifact manager token")
+	}
+
+	// Instanciate artifactory client
+	artifactClient, err := artifact_manager.NewClient(rtName, rtURL, rtToken)
+	if err != nil {
+		return err
+	}
+
+	// Reload load result to mark them to delete in artifactory
+	runResults, err := workflow.LoadRunResultsByRunID(ctx, db, wr.ID)
+	if err != nil {
+		return err
+	}
+
+	lowMaturity := artifactManagerInteg.ProjectIntegration.Config[sdk.ArtifactoryConfigPromotionLowMaturity].Value
+	highMaturity := artifactManagerInteg.ProjectIntegration.Config[sdk.ArtifactoryConfigPromotionHighMaturity].Value
+
+	toDeleteProperties := []sdk.KeyValues{
+		{
+			Key:    "ovh.to_delete",
+			Values: []string{"true"},
+		},
+		{
+			Key:    "ovh.to_delete_timestamp",
+			Values: []string{strconv.FormatInt(time.Now().Unix(), 10)},
+		},
+	}
+
+	for i := range runResults {
+		res := &runResults[i]
+		if res.Type == sdk.WorkflowRunResultTypeArtifactManager {
+			art, err := res.GetArtifactManager()
+			if err != nil {
+				ctx := sdk.ContextWithStacktrace(ctx, err)
+				log.Error(ctx, "unable to get artifact from run result %d: %v", res.ID, err)
+				continue
+			}
+			if err := artifactClient.SetProperties(art.RepoName+"-"+lowMaturity, art.Path, toDeleteProperties...); err != nil {
+				log.Info(ctx, "unable to mark artifact %q %q (run result %d) to delete: %v", art.RepoName+"-"+lowMaturity, art.Path, res.ID, err)
+			} else {
+				continue // if snaphot is a success, don't try to delete on release
+			}
+			if err := artifactClient.SetProperties(art.RepoName+"-"+highMaturity, art.Path, toDeleteProperties...); err != nil {
+				log.Error(ctx, "unable to mark artifact %q %q (run result %d) to delete: %v", art.RepoName+"-"+highMaturity, art.Path, res.ID, err)
+				continue
+			}
+		}
+	}
+
+	return nil
+}
+
 // DeleteArtifacts removes artifacts from storage
 func DeleteArtifacts(ctx context.Context, db gorp.SqlExecutor, sharedStorage objectstore.Driver, workflowRunID int64) error {
-	wr, err := workflow.LoadRunByID(db, workflowRunID, workflow.LoadRunOptions{WithArtifacts: true, DisableDetailledNodeRun: false, WithDeleted: true})
+	ctx, end := telemetry.Span(ctx, "purge.DeleteArtifacts")
+	defer end()
+
+	wr, err := workflow.LoadRunByID(ctx, db, workflowRunID, workflow.LoadRunOptions{WithArtifacts: true, DisableDetailledNodeRun: false, WithDeleted: true})
 	if err != nil {
 		return sdk.WrapError(err, "error on load LoadRunByID:%d", workflowRunID)
 	}
@@ -322,7 +431,7 @@ func DeleteArtifacts(ctx context.Context, db gorp.SqlExecutor, sharedStorage obj
 			for _, art := range wnr.Artifacts {
 				var integrationName string
 				if art.ProjectIntegrationID != nil && *art.ProjectIntegrationID > 0 {
-					projectIntegration, err := integration.LoadProjectIntegrationByID(db, *art.ProjectIntegrationID)
+					projectIntegration, err := integration.LoadProjectIntegrationByID(ctx, db, *art.ProjectIntegrationID)
 					if err != nil {
 						log.Error(ctx, "Cannot load LoadProjectIntegrationByID %s/%d", proj.Key, *art.ProjectIntegrationID)
 						continue
@@ -355,7 +464,7 @@ func DeleteArtifacts(ctx context.Context, db gorp.SqlExecutor, sharedStorage obj
 					continue
 				}
 
-				log.Debug("DeleteArtifacts> deleting %+v", art)
+				log.Debug(ctx, "DeleteArtifacts> deleting %+v", art)
 				if err := storageDriver.Delete(ctx, &art); err != nil {
 					log.Error(ctx, "error while deleting container prj:%v wnr:%v name:%v err:%v", proj.Key, wnr.ID, art.GetPath(), err)
 					continue

@@ -7,11 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/api/repositoriesmanager"
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -36,7 +37,7 @@ func processNodeTriggers(ctx context.Context, db gorpmapper.SqlExecutorWithTx, s
 			r1, _, errPwnr := processNodeRun(ctx, db, store, proj, wr, mapNodes, &t.ChildNode, int(parentSubNumber), parentNodeRun, nil, nil)
 			if errPwnr != nil {
 				log.Error(ctx, "processWorkflowRun> Unable to process node ID=%d: %s", t.ChildNode.ID, errPwnr)
-				AddWorkflowRunInfo(wr, sdk.SpawnMsgNew(*sdk.MsgWorkflowError, sdk.ExtractHTTPError(errPwnr, "")))
+				AddWorkflowRunInfo(wr, sdk.SpawnMsgNew(*sdk.MsgWorkflowError, sdk.ExtractHTTPError(errPwnr)))
 			}
 			report.Merge(ctx, r1)
 			continue
@@ -133,7 +134,10 @@ func processNode(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cac
 
 	// BUILD RUN CONTEXT
 	// Process parameters for the jobs
-	runContext := nodeRunContext{}
+	runContext := nodeRunContext{
+		WorkflowProjectIntegrations: wr.Workflow.Integrations,
+		ProjectIntegrations:         make([]sdk.ProjectIntegration, 0),
+	}
 	if n.Context.PipelineID != 0 {
 		runContext.Pipeline = wr.Workflow.Pipelines[n.Context.PipelineID]
 	}
@@ -144,8 +148,9 @@ func processNode(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cac
 		runContext.Environment = wr.Workflow.Environments[n.Context.EnvironmentID]
 	}
 	if n.Context.ProjectIntegrationID != 0 {
-		runContext.ProjectIntegration = wr.Workflow.ProjectIntegrations[n.Context.ProjectIntegrationID]
+		runContext.ProjectIntegrations = append(runContext.ProjectIntegrations, wr.Workflow.ProjectIntegrations[n.Context.ProjectIntegrationID])
 	}
+	runContext.WorkflowProjectIntegrations = append(runContext.WorkflowProjectIntegrations, wr.Workflow.Integrations...)
 
 	// NODE CONTEXT BUILD PARAMETER
 	computeNodeContextBuildParameters(ctx, proj, wr, nr, n, runContext)
@@ -242,21 +247,33 @@ func processNode(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cac
 
 		vcsInf, errVcs = getVCSInfos(ctx, db, store, proj.Key, vcsServer, currentJobGitValues, app.Name, app.VCSServer, app.RepositoryFullname)
 		if errVcs != nil {
-			AddWorkflowRunInfo(wr, sdk.SpawnMsgNew(*sdk.MsgWorkflowError, sdk.ExtractHTTPError(errVcs, "")))
+			AddWorkflowRunInfo(wr, sdk.SpawnMsgNew(*sdk.MsgWorkflowError, sdk.ExtractHTTPError(errVcs)))
 			return nil, false, sdk.WrapError(errVcs, "unable to get git informations")
 		}
 	}
 
+	// Replace ("{{ }}" in vcsInfo that should be badly interpreted by interpolation engine)
+	var repl = func(s *string) {
+		*s = strings.ReplaceAll(*s, "{{", "((")
+		*s = strings.ReplaceAll(*s, "}}", "))")
+	}
+
 	// Update git params / git columns
 	if isRoot && vcsInf != nil {
+		repl(&vcsInf.Author)
+		repl(&vcsInf.Branch)
+		repl(&vcsInf.Hash)
+		repl(&vcsInf.Message)
+		repl(&vcsInf.Tag)
+
 		setValuesGitInBuildParameters(nr, *vcsInf)
 	}
 
 	// CONDITION
 	if !checkCondition(ctx, wr, n.Context.Conditions, nr.BuildParameters) {
-		log.Debug("Conditions failed on processNode %d/%d", wr.ID, n.ID)
-		log.Debug("Conditions was: %+v", n.Context.Conditions)
-		log.Debug("BuildParameters was: %+v", nr.BuildParameters)
+		log.Debug(ctx, "Conditions failed on processNode %d/%d", wr.ID, n.ID)
+		log.Debug(ctx, "Conditions was: %+v", n.Context.Conditions)
+		log.Debug(ctx, "BuildParameters was: %+v", nr.BuildParameters)
 		return nil, false, nil
 	}
 
@@ -276,6 +293,12 @@ func processNode(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cac
 
 	// Update datas if repo change
 	if !isRoot && vcsInf != nil {
+		repl(&vcsInf.Author)
+		repl(&vcsInf.Branch)
+		repl(&vcsInf.Hash)
+		repl(&vcsInf.Message)
+		repl(&vcsInf.Tag)
+
 		setValuesGitInBuildParameters(nr, *vcsInf)
 	}
 
@@ -367,7 +390,7 @@ func processNode(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cac
 			return nil, false, sdk.WrapError(err, "unable to check mutexes")
 		}
 		if nbMutex > 0 {
-			log.Debug("Noderun %s processed but not executed because of mutex", n.Name)
+			log.Debug(ctx, "Noderun %s processed but not executed because of mutex", n.Name)
 			AddWorkflowRunInfo(wr, sdk.SpawnMsgNew(*sdk.MsgWorkflowNodeMutex, n.Name))
 			if err := UpdateWorkflowRun(ctx, db, wr); err != nil {
 				return nil, false, sdk.WrapError(err, "unable to update workflow run")
@@ -479,7 +502,7 @@ func computePayload(n *sdk.Node, hookEvent *sdk.WorkflowNodeRunHookEvent, manual
 func computeNodeContextBuildParameters(ctx context.Context, proj sdk.Project, wr *sdk.WorkflowRun, run *sdk.WorkflowNodeRun, n *sdk.Node, runContext nodeRunContext) {
 	nodeRunParams, errParam := getNodeRunBuildParameters(ctx, proj, wr, run, runContext)
 	if errParam != nil {
-		AddWorkflowRunInfo(wr, sdk.SpawnMsgNew(*sdk.MsgWorkflowError, sdk.ExtractHTTPError(errParam, "")))
+		AddWorkflowRunInfo(wr, sdk.SpawnMsgNew(*sdk.MsgWorkflowError, sdk.ExtractHTTPError(errParam)))
 		// if there an error -> display it in workflowRunInfo and not stop the launch
 		log.Error(ctx, "processNode> getNodeRunBuildParameters failed. Project:%s [#%d.%d]%s.%d with payload %v err:%v", proj.Name, wr.Number, run.SubNumber, wr.Workflow.Name, n.ID, run.Payload, errParam)
 	}

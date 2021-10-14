@@ -7,9 +7,10 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 var (
@@ -50,30 +51,32 @@ func (s *iuSource) SyncBandwidth() float64 {
 }
 
 func (r RunningStorageUnits) GetSource(ctx context.Context, i *sdk.CDNItem) (Source, error) {
-	ok, err := r.Buffer.ItemExists(ctx, r.m, r.db, *i)
+	bufferUnit := r.GetBuffer(i.Type)
+	ok, err := bufferUnit.ItemExists(ctx, r.m, r.db, *i)
 	if err != nil {
 		return nil, err
 	}
 
 	if ok {
-		iu, err := LoadItemUnitByUnit(ctx, r.m, r.db, r.Buffer.ID(), i.ID, gorpmapper.GetOptions.WithDecryption)
+		iu, err := LoadItemUnitByUnit(ctx, r.m, r.db, bufferUnit.ID(), i.ID, gorpmapper.GetOptions.WithDecryption)
 		if err != nil {
 			return nil, err
 		}
-		return &iuSource{iu: *iu, source: r.Buffer}, nil
+		return &iuSource{iu: *iu, source: bufferUnit}, nil
 	}
 
 	// Find a storage unit where the item is complete
-	mapItemUnits, err := LoadAllItemUnitsByItemIDs(ctx, r.m, r.db, []string{i.ID})
+	itemUnits, err := LoadAllItemUnitsByItemIDs(ctx, r.m, r.db, i.ID, gorpmapper.GetOptions.WithDecryption)
 	if err != nil {
 		return nil, err
 	}
 
-	var itemUnits = mapItemUnits[i.ID]
 	if len(itemUnits) == 0 {
-		log.Warning(ctx, "item %s can't be found. No unit knows it...", i.ID)
+		log.Warn(ctx, "item %s can't be found. No unit knows it...", i.ID)
 		return nil, sdk.WithStack(sdk.ErrNotFound)
 	}
+
+	itemUnits = r.FilterItemUnitReaderByType(itemUnits)
 
 	// Random pick a unit
 	idx := 0
@@ -87,16 +90,41 @@ func (r RunningStorageUnits) GetSource(ctx context.Context, i *sdk.CDNItem) (Sou
 		return nil, err
 	}
 
-	unit := r.Storage(refUnit.Name)
+	var unit source = r.Storage(refUnit.Name)
 	if unit == nil {
-		return nil, sdk.WithStack(fmt.Errorf("unable to find unit %s", refUnit.Name))
+		if bufferUnit.Name() == refUnit.Name {
+			unit = bufferUnit
+		} else {
+			return nil, sdk.WithStack(fmt.Errorf("unable to find unit %s", refUnit.Name))
+		}
 	}
 
 	return &iuSource{iu: refItemUnit, source: unit}, nil
 }
 
-func (r RunningStorageUnits) GetItemUnitByLocatorByUnit(ctx context.Context, locator string, unitID string, opts ...gorpmapper.GetOptionFunc) ([]sdk.CDNItemUnit, error) {
+func (r RunningStorageUnits) NewSource(ctx context.Context, refItemUnit sdk.CDNItemUnit) (Source, error) {
+	refUnit, err := LoadUnitByID(ctx, r.m, r.db, refItemUnit.UnitID)
+	if err != nil {
+		return nil, err
+	}
+	var unit source = r.Storage(refUnit.Name)
+	if unit == nil {
+		for _, bu := range r.Buffers {
+			if bu.Name() == refUnit.Name {
+				unit = bu
+				break
+			}
+		}
+		if unit == nil {
+			return nil, sdk.WithStack(fmt.Errorf("unable to find unit %s", refUnit.Name))
+		}
+	}
+
+	return &iuSource{iu: refItemUnit, source: unit}, nil
+}
+
+func (r RunningStorageUnits) GetItemUnitByLocatorByUnit(locator string, unitID string, itemType sdk.CDNItemType) (bool, error) {
 	// Load all the itemUnit for the unit and the same hashLocator
 	hashLocator := r.HashLocator(locator)
-	return LoadItemUnitsByUnitAndHashLocator(ctx, r.m, r.db, unitID, hashLocator, nil, opts...)
+	return HasItemUnitsByUnitAndHashLocator(r.db, unitID, hashLocator, itemType)
 }

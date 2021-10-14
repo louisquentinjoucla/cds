@@ -2,7 +2,7 @@ package sdk
 
 import (
 	"database/sql/driver"
-	json "encoding/json"
+	"encoding/json"
 	"fmt"
 )
 
@@ -21,10 +21,13 @@ const (
 	CoverageAction            = "Coverage"
 	GitCloneAction            = "GitClone"
 	GitTagAction              = "GitTag"
-	ReleaseAction             = "Release"
+	ReleaseVCSAction          = "ReleaseVCS"
 	CheckoutApplicationAction = "CheckoutApplication"
 	DeployApplicationAction   = "DeployApplication"
+	PushBuildInfo             = "PushBuildInfo"
 	InstallKeyAction          = "InstallKey"
+	ReleaseAction             = "Release"
+	PromoteAction             = "Promote"
 
 	DefaultGitCloneParameterTagValue = "{{.git.tag}}"
 )
@@ -108,7 +111,7 @@ func (a *Action) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, a), "cannot unmarshal Action")
+	return WrapError(JSONUnmarshal(source, a), "cannot unmarshal Action")
 }
 
 // IsValidDefault returns default action validity.
@@ -146,7 +149,6 @@ func (a Action) IsValid() error {
 			}
 		}
 	}
-
 	return nil
 }
 

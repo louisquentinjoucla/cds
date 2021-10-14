@@ -3,7 +3,6 @@ package cdn
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,15 +10,21 @@ import (
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
-	"github.com/ovh/cds/engine/cdn/item"
 	"github.com/ovh/cds/engine/cdn/redis"
 	"github.com/ovh/cds/engine/cdn/storage"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/engine/websocket"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
+
+type WSLine struct {
+	Number     int64  `json:"number"`
+	Value      string `json:"value"`
+	Since      int64  `json:"since,omitempty"`
+	ApiRefHash string `json:"api_ref_hash"`
+}
 
 func (s *Service) getItemLogsStreamHandler() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
@@ -28,10 +33,10 @@ func (s *Service) getItemLogsStreamHandler() service.Handler {
 			service.WriteError(ctx, w, r, sdk.NewErrorWithStack(err, sdk.ErrWebsocketUpgrade))
 			return nil
 		}
-		defer c.Close()
+		defer c.Close() //nolint
 
-		jwt := ctx.Value(service.ContextJWT).(*jwt.Token)
-		claims := jwt.Claims.(*sdk.AuthSessionJWTClaims)
+		jwtToken := ctx.Value(service.ContextJWT).(*jwt.Token)
+		claims := jwtToken.Claims.(*sdk.AuthSessionJWTClaims)
 		sessionID := claims.StandardClaims.Id
 
 		wsClient := websocket.NewClient(c)
@@ -40,8 +45,25 @@ func (s *Service) getItemLogsStreamHandler() service.Handler {
 		defer s.WSServer.RemoveClient(wsClient.UUID())
 
 		wsClient.OnMessage(func(m []byte) {
-			if err := wsClientData.UpdateFilter(m); err != nil {
-				log.WarningWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+			var filter sdk.CDNStreamFilter
+			if err := sdk.JSONUnmarshal(m, &filter); err != nil {
+				ctx = sdk.ContextWithStacktrace(ctx, err)
+				log.Warn(ctx, err.Error())
+				return
+			}
+
+			// Load last running step
+			var iuID string
+			if filter.JobRunID > 0 {
+				iu, _ := storage.LoadLastItemUnitByJobUnitType(ctx, s.Mapper, s.mustDBWithCtx(ctx), s.Units.LogsBuffer().ID(), filter.JobRunID, sdk.CDNTypeItemStepLog)
+				if iu != nil {
+					iuID = iu.ID
+				}
+			}
+
+			if err := wsClientData.UpdateFilter(filter, iuID); err != nil {
+				ctx = sdk.ContextWithStacktrace(ctx, err)
+				log.Warn(ctx, err.Error())
 				return
 			}
 			// Trigger one update at routine startup
@@ -53,7 +75,7 @@ func (s *Service) getItemLogsStreamHandler() service.Handler {
 		defer cancel()
 
 		s.GoRoutines.Exec(ctx, "getItemLogsStreamHandler."+wsClient.UUID(), func(ctx context.Context) {
-			log.Debug("getItemLogsStreamHandler> start routine for client %s (session %s)", wsClient.UUID(), s.sessionID(ctx))
+			log.Debug(ctx, "getItemLogsStreamHandler> start routine for client %s (session %s)", wsClient.UUID(), s.sessionID(ctx))
 
 			// Create a ticker to periodically send logs if needed
 			sendTicker := time.NewTicker(time.Millisecond * 100)
@@ -61,14 +83,14 @@ func (s *Service) getItemLogsStreamHandler() service.Handler {
 			for {
 				select {
 				case <-ctx.Done():
-					log.Debug("getItemLogsStreamHandler> stop routine for stream client %s", wsClient.UUID())
+					log.Debug(ctx, "getItemLogsStreamHandler> stop routine for stream client %s", wsClient.UUID())
 					return
 				case <-sendTicker.C:
 					if !wsClientData.ConsumeTrigger() {
 						continue
 					}
 					if err := s.sendLogsToWSClient(ctx, wsClient, wsClientData); err != nil {
-						log.Warning(ctx, "getItemLogsStreamHandler> can't send to client %s it will be removed: %+v", wsClient.UUID(), err)
+						log.Warn(ctx, "getItemLogsStreamHandler> can't send to client %s it will be removed: %+v", wsClient.UUID(), err)
 						return
 					}
 				}
@@ -79,7 +101,7 @@ func (s *Service) getItemLogsStreamHandler() service.Handler {
 			return err
 		}
 
-		log.Debug("getItemLogsStreamHandler> stop listenning for client %s", wsClient.UUID())
+		log.Debug(ctx, "getItemLogsStreamHandler> stop listenning for client %s", wsClient.UUID())
 		return nil
 	}
 }
@@ -92,32 +114,45 @@ func (s *Service) sendLogsToWSClient(ctx context.Context, wsClient websocket.Cli
 		return nil
 	}
 
-	if wsClientData.itemUnit == nil {
-		it, err := item.LoadByAPIRefHashAndType(ctx, s.Mapper, s.mustDBWithCtx(ctx), wsClientData.itemFilter.APIRef, wsClientData.itemFilter.ItemType)
-		if err != nil {
-			// Catch not found error as the item can be created after the client stream subscription
-			if sdk.ErrorIs(err, sdk.ErrNotFound) {
-				log.Debug("sendLogsToWSClient> can't found item with type %s and ref %s for client %s: %+v", wsClientData.itemFilter.ItemType, wsClientData.itemFilter.APIRef, wsClient.UUID(), err)
-				return nil
+	if wsClientData.itemUnitsData == nil {
+		wsClientData.itemUnitsData = make(map[string]ItemUnitClientData)
+	}
+
+	for k := range wsClientData.itemUnitsData {
+		if wsClientData.itemUnitsData[k].itemUnit == nil {
+			iu, err := storage.LoadItemUnitByID(ctx, s.Mapper, s.mustDBWithCtx(ctx), k)
+			if err != nil {
+				return err
 			}
-			return nil
+
+			if err := s.itemAccessCheck(ctx, *iu.Item); err != nil {
+				var projectKey, workflow string
+				logRef, has := iu.Item.GetCDNLogApiRef()
+				if has {
+					projectKey = logRef.ProjectKey
+					workflow = logRef.WorkflowName
+				}
+				return sdk.WrapError(err, "client %s can't access logs for workflow %s/%s", wsClient.UUID(), projectKey, workflow)
+			}
+			wsClientData.itemUnitsData[k] = ItemUnitClientData{
+				itemUnit:            iu,
+				scoreNextLineToSend: wsClientData.itemUnitsData[k].scoreNextLineToSend,
+			}
 		}
 
-		if err := s.itemAccessCheck(ctx, *it); err != nil {
-			return sdk.WrapError(err, "client %s can't access logs for workflow %s/%s", wsClient.UUID(), it.APIRef.ProjectKey, it.APIRef.WorkflowName)
-		}
-
-		iu, err := storage.LoadItemUnitByUnit(ctx, s.Mapper, s.mustDBWithCtx(ctx), s.Units.Buffer.ID(), it.ID)
-		if err != nil {
+		if err := s.sendStepLog(ctx, wsClient, wsClientData, k); err != nil {
 			return err
 		}
 
-		wsClientData.itemUnit = iu
 	}
+	return nil
+}
 
-	log.Debug("getItemLogsStreamHandler> send log to client %s from %d", wsClient.UUID(), wsClientData.scoreNextLineToSend)
+func (s *Service) sendStepLog(ctx context.Context, wsClient websocket.Client, wsClientData *websocketClientData, mapIndex string) error {
+	data := wsClientData.itemUnitsData[mapIndex]
 
-	rc, err := s.Units.Buffer.NewAdvancedReader(ctx, *wsClientData.itemUnit, sdk.CDNReaderFormatJSON, wsClientData.scoreNextLineToSend, 100, 0)
+	log.Debug(ctx, "getItemLogsStreamHandler> send log to client %s from %d", wsClient.UUID(), data.scoreNextLineToSend)
+	rc, err := s.Units.LogsBuffer().NewAdvancedReader(ctx, *data.itemUnit, sdk.CDNReaderFormatJSON, data.scoreNextLineToSend, 100, 0)
 	if err != nil {
 		return err
 	}
@@ -127,32 +162,62 @@ func (s *Service) sendLogsToWSClient(ctx context.Context, wsClient websocket.Cli
 		return sdk.WrapError(err, "cannot copy data from reader to memory buffer")
 	}
 	var lines []redis.Line
-	if err := json.Unmarshal(buf.Bytes(), &lines); err != nil {
-		return sdk.WrapError(err, "cannot unmarshal lines from buffer %v", string(buf.Bytes()))
+	if err := sdk.JSONUnmarshal(buf.Bytes(), &lines); err != nil {
+		return sdk.WrapError(err, "cannot unmarshal lines from buffer %v", buf.String())
 	}
 
-	log.Debug("getItemLogsStreamHandler> iterate over %d lines to send for client %s", len(lines), wsClient.UUID())
-	oldNextLineToSend := wsClientData.scoreNextLineToSend
+	log.Debug(ctx, "getItemLogsStreamHandler> iterate over %d lines to send for client %s", len(lines), wsClient.UUID())
+	oldNextLineToSend := data.scoreNextLineToSend
 	for i := range lines {
-		if wsClientData.scoreNextLineToSend > 0 && wsClientData.scoreNextLineToSend != lines[i].Number {
+		if data.scoreNextLineToSend > 0 && data.scoreNextLineToSend != lines[i].Number {
 			break
 		}
-		if err := wsClient.Send(lines[i]); err != nil {
+
+		if err := wsClient.Send(WSLine{
+			Number:     lines[i].Number,
+			Value:      lines[i].Value,
+			Since:      lines[i].Since,
+			ApiRefHash: data.itemUnit.Item.APIRefHash,
+		}); err != nil {
 			return err
 		}
-		if wsClientData.scoreNextLineToSend < 0 {
-			wsClientData.scoreNextLineToSend = lines[i].Number + 1
+		if data.scoreNextLineToSend < 0 {
+			data.scoreNextLineToSend = lines[i].Number + 1
 		} else {
-			wsClientData.scoreNextLineToSend++
+			data.scoreNextLineToSend++
 		}
 	}
-
+	wsClientData.itemUnitsData[mapIndex] = data
 	// If all the lines were sent, we can trigger another update, if only one line was send do not trigger an update wait for next event from broker
-	if len(lines) > 1 && (oldNextLineToSend > 0 || wsClientData.scoreNextLineToSend-oldNextLineToSend == int64(len(lines))) {
+	if len(lines) > 1 && (oldNextLineToSend > 0 || int(data.scoreNextLineToSend-oldNextLineToSend) == len(lines)) {
 		wsClientData.TriggerUpdate()
 	}
-
 	return nil
+}
+
+func (s *Service) getItemsAllLogsLinesHandler() service.Handler {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		vars := mux.Vars(r)
+		itemType := sdk.CDNItemType(vars["type"])
+		if !itemType.IsLog() {
+			return sdk.NewErrorFrom(sdk.ErrWrongRequest, "invalid item log type")
+		}
+		refsHash := r.URL.Query()["apiRefHash"]
+
+		resp := make([]sdk.CDNLogsLines, 0)
+
+		for _, hash := range refsHash {
+			linesCount, err := s.getItemLogLinesCount(ctx, itemType, hash)
+			if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
+				return err
+			}
+			if err != nil && sdk.ErrorIs(err, sdk.ErrNotFound) {
+				break
+			}
+			resp = append(resp, sdk.CDNLogsLines{APIRef: hash, LinesCount: linesCount})
+		}
+		return service.WriteJSON(w, resp, http.StatusOK)
+	}
 }
 
 func (s *Service) getItemLogsLinesHandler() service.Handler {
@@ -165,12 +230,28 @@ func (s *Service) getItemLogsLinesHandler() service.Handler {
 
 		apiRef := vars["apiRef"]
 
-		// offset can be lower than 0 if we want the n last lines
-		offset := service.FormInt64(r, "offset")
-		limit := service.FormUInt(r, "limit")
-		sort := service.FormInt64(r, "sort") // < 0 for latest logs first, >= 0 for older logs first
+		opts := getItemLogOptions{
+			format:      sdk.CDNReaderFormatJSON,
+			from:        service.FormInt64(r, "offset"), // offset can be lower than 0 if we want the n last lines
+			size:        service.FormUInt(r, "limit"),
+			sort:        service.FormInt64(r, "sort"), // < 0 for latest logs first, >= 0 for older logs first
+			cacheClean:  service.FormBool(r, "cacheClean"),
+			cacheSource: r.FormValue("cacheSource"),
+		}
 
-		_, linesCount, rc, _, err := s.getItemLogValue(ctx, itemType, apiRef, sdk.CDNReaderFormatJSON, offset, limit, sort)
+		// Only admin can use the parameter 'cacheRefresh*'
+		if opts.cacheClean || opts.cacheSource != "" {
+			sessionID := s.sessionID(ctx)
+			data, err := s.Client.AuthSessionGet(sessionID)
+			if err != nil {
+				return err
+			}
+			if data.Consumer.AuthentifiedUser.Ring != sdk.UserRingAdmin {
+				return sdk.WithStack(sdk.ErrUnauthorized)
+			}
+		}
+
+		_, linesCount, rc, _, err := s.getItemLogValue(ctx, itemType, apiRef, opts)
 		if err != nil {
 			return err
 		}

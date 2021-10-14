@@ -2,12 +2,12 @@ package bitbucketcloud
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // Repos list repositories that are accessible to the authenticated user
@@ -119,14 +119,14 @@ func (client *bitbucketcloudClient) repoByFullname(ctx context.Context, fullname
 	url := fmt.Sprintf("/repositories/%s", fullname)
 	status, body, _, err := client.get(url)
 	if err != nil {
-		log.Warning(ctx, "bitbucketcloudClient.Repos> Error %s", err)
+		log.Warn(ctx, "bitbucketcloudClient.Repos> Error %s", err)
 		return repo, err
 	}
 	if status >= 400 {
 		return repo, sdk.NewError(sdk.ErrRepoNotFound, errorAPI(body))
 	}
 
-	if err := json.Unmarshal(body, &repo); err != nil {
+	if err := sdk.JSONUnmarshal(body, &repo); err != nil {
 		return repo, sdk.WrapError(err, "Unable to parse github repository")
 	}
 

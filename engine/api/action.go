@@ -2,12 +2,12 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"io/ioutil"
 	"net/http"
 
 	"github.com/go-gorp/gorp"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 	yaml "gopkg.in/yaml.v2"
 
 	"github.com/ovh/cds/engine/api/action"
@@ -18,7 +18,6 @@ import (
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (api *API) getActionsHandler() service.Handler {
@@ -124,8 +123,12 @@ func (api *API) postActionHandler() service.Handler {
 			return err
 		}
 
-		if !isGroupAdmin(ctx, grp) && !isAdmin(ctx) {
-			return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+		if !isGroupAdmin(ctx, grp) {
+			if isAdmin(ctx) {
+				trackSudo(ctx, w)
+			} else {
+				return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+			}
 		}
 
 		tx, err := api.mustDB().Begin()
@@ -249,8 +252,12 @@ func (api *API) putActionHandler() service.Handler {
 		}
 
 		if *old.GroupID != *data.GroupID || old.Name != data.Name {
-			if !isGroupAdmin(ctx, grp) && !isAdmin(ctx) {
-				return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+			if !isGroupAdmin(ctx, grp) {
+				if isAdmin(ctx) {
+					trackSudo(ctx, w)
+				} else {
+					return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+				}
 			}
 
 			// check that no action already exists for same group/name
@@ -377,7 +384,7 @@ func (api *API) getActionAuditHandler() service.Handler {
 
 			if clone.DataBefore != "" {
 				var before sdk.Action
-				if err := json.Unmarshal([]byte(clone.DataBefore), &before); err != nil {
+				if err := sdk.JSONUnmarshal([]byte(clone.DataBefore), &before); err != nil {
 					log.Error(ctx, "%+v", sdk.WrapError(err, "cannot parse action audit"))
 					continue
 				}
@@ -394,7 +401,7 @@ func (api *API) getActionAuditHandler() service.Handler {
 
 			if clone.DataAfter != "" {
 				var after sdk.Action
-				if err := json.Unmarshal([]byte(clone.DataAfter), &after); err != nil {
+				if err := sdk.JSONUnmarshal([]byte(clone.DataAfter), &after); err != nil {
 					log.Error(ctx, "%+v", sdk.WrapError(err, "cannot parse action audit"))
 					continue
 				}
@@ -450,7 +457,7 @@ func (api *API) postActionAuditRollbackHandler() service.Handler {
 		}
 
 		var before sdk.Action
-		if err := json.Unmarshal([]byte(aa.DataBefore), &before); err != nil {
+		if err := sdk.JSONUnmarshal([]byte(aa.DataBefore), &before); err != nil {
 			return sdk.WrapError(err, "cannot parse action audit")
 		}
 
@@ -477,8 +484,12 @@ func (api *API) postActionAuditRollbackHandler() service.Handler {
 		}
 
 		if grp.ID != newGrp.ID || old.Name != ea.Name {
-			if !isGroupAdmin(ctx, grp) && !isAdmin(ctx) {
-				return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+			if !isGroupAdmin(ctx, grp) {
+				if isAdmin(ctx) {
+					trackSudo(ctx, w)
+				} else {
+					return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+				}
 			}
 
 			// check that no action already exists for same group/name
@@ -655,8 +666,12 @@ func (api *API) importActionHandler() service.Handler {
 			}
 		}
 
-		if !isGroupAdmin(ctx, grp) && !isAdmin(ctx) {
-			return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+		if !isGroupAdmin(ctx, grp) {
+			if isAdmin(ctx) {
+				trackSudo(ctx, w)
+			} else {
+				return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+			}
 		}
 
 		data, err := ea.GetAction()

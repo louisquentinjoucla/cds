@@ -3,14 +3,14 @@ package cdn
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"sync"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/websocket"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -31,11 +31,11 @@ func (s *Service) initWebsocket() error {
 	s.WSBroker = websocket.NewBroker()
 	s.WSBroker.OnMessage(func(m []byte) {
 		telemetry.Record(s.Router.Background, s.Metrics.WSEvents, 1)
-
 		var e sdk.CDNWSEvent
-		if err := json.Unmarshal(m, &e); err != nil {
+		if err := sdk.JSONUnmarshal(m, &e); err != nil {
 			err = sdk.WrapError(err, "cannot parse event from WS broker")
-			log.WarningWithFields(s.Router.Background, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+			ctx := sdk.ContextWithStacktrace(context.TODO(), err)
+			log.Warn(ctx, err.Error())
 			return
 		}
 
@@ -57,7 +57,8 @@ func (s *Service) initWebsocket() error {
 				telemetry.Record(s.Router.Background, s.Metrics.WSClients, int64(len(s.WSServer.server.ClientIDs())))
 			case <-tickerPublish.C:
 				if err := s.sendWSEvent(ctx); err != nil {
-					log.ErrorWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+					ctx = sdk.ContextWithStacktrace(ctx, err)
+					log.Error(ctx, err.Error())
 				}
 			}
 		}
@@ -65,16 +66,22 @@ func (s *Service) initWebsocket() error {
 	return nil
 }
 
-func (s *Service) publishWSEvent(item sdk.CDNItem) {
+func (s *Service) publishWSEvent(itemUnit sdk.CDNItemUnit) {
 	s.WSEventsMutex.Lock()
 	defer s.WSEventsMutex.Unlock()
 	if s.WSEvents == nil {
 		s.WSEvents = make(map[string]sdk.CDNWSEvent)
 	}
-	s.WSEvents[item.ID] = sdk.CDNWSEvent{
-		ItemType: item.Type,
-		APIRef:   item.APIRefHash,
+	apiRefItem, _ := itemUnit.Item.GetCDNLogApiRef()
+	if apiRefItem == nil {
+		return
 	}
+	event := sdk.CDNWSEvent{
+		ItemType: itemUnit.Type,
+		JobRunID: apiRefItem.NodeRunJobID,
+	}
+	event.ItemUnitID = itemUnit.ID
+	s.WSEvents[itemUnit.ID] = event
 }
 
 func (s *Service) sendWSEvent(ctx context.Context) error {
@@ -107,9 +114,17 @@ func (s *Service) websocketOnMessage(e sdk.CDNWSEvent) {
 
 	for _, id := range clientIDs {
 		c := s.WSServer.GetClientData(id)
-		if c == nil || c.itemFilter == nil || !(c.itemFilter.ItemType == e.ItemType && c.itemFilter.APIRef == e.APIRef) {
+
+		if c == nil || c.itemFilter == nil || c.itemFilter.JobRunID != e.JobRunID {
 			continue
 		}
+
+		// Add new step on client data
+		c.mutexData.Lock()
+		if _, has := c.itemUnitsData[e.ItemUnitID]; !has {
+			c.itemUnitsData[e.ItemUnitID] = ItemUnitClientData{}
+		}
+		c.mutexData.Unlock()
 		c.TriggerUpdate()
 	}
 }
@@ -145,13 +160,17 @@ func (s *websocketServer) GetClientData(uuid string) *websocketClientData {
 }
 
 type websocketClientData struct {
-	sessionID           string
-	mutexData           sync.Mutex
-	itemFilter          *sdk.CDNStreamFilter
+	sessionID       string
+	mutexData       sync.Mutex
+	itemFilter      *sdk.CDNStreamFilter
+	itemUnitsData   map[string]ItemUnitClientData
+	mutexTrigger    sync.Mutex
+	triggeredUpdate bool
+}
+
+type ItemUnitClientData struct {
 	itemUnit            *sdk.CDNItemUnit
 	scoreNextLineToSend int64
-	mutexTrigger        sync.Mutex
-	triggeredUpdate     bool
 }
 
 func (d *websocketClientData) TriggerUpdate() {
@@ -168,11 +187,7 @@ func (d *websocketClientData) ConsumeTrigger() (triggered bool) {
 	return
 }
 
-func (d *websocketClientData) UpdateFilter(msg []byte) error {
-	var filter sdk.CDNStreamFilter
-	if err := json.Unmarshal(msg, &filter); err != nil {
-		return sdk.WithStack(err)
-	}
+func (d *websocketClientData) UpdateFilter(filter sdk.CDNStreamFilter, itemUnitID string) error {
 	if err := filter.Validate(); err != nil {
 		return err
 	}
@@ -181,7 +196,12 @@ func (d *websocketClientData) UpdateFilter(msg []byte) error {
 	defer d.mutexData.Unlock()
 
 	d.itemFilter = &filter
-	d.scoreNextLineToSend = filter.Offset
-	d.itemUnit = nil // reset verified will trigger a new permission check
+	d.itemUnitsData = make(map[string]ItemUnitClientData)
+	if itemUnitID != "" {
+		d.itemUnitsData[itemUnitID] = ItemUnitClientData{
+			itemUnit:            nil,
+			scoreNextLineToSend: -10,
+		}
+	}
 	return nil
 }

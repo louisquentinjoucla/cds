@@ -29,16 +29,15 @@
               "node_modules/codemirror/addon/hint/show-hint.css",
               "node_modules/codemirror/addon/lint/lint.css",
               "node_modules/codemirror/theme/darcula.css",
-              "node_modules/fomantic-ui/dist/semantic.css",
               "node_modules/angular2-toaster-sgu/toaster.css",
               "node_modules/font-awesome/css/font-awesome.css",
               "node_modules/animate.css/animate.min.css",
               "node_modules/prismjs/themes/prism-okaidia.css",
+              "semantic/dist/semantic.min.css",
               "src/styles.scss"
             ],
             "scripts": [
               "node_modules/jquery/dist/jquery.js",
-              "node_modules/fomantic-ui/dist/semantic.min.js",
               "node_modules/codemirror/lib/codemirror.js",
               "node_modules/codemirror/mode/shell/shell.js",
               "node_modules/codemirror/addon/mode/simple.js",
@@ -58,12 +57,22 @@
               "node_modules/codemirror/mode/lua/lua.js",
               "node_modules/codemirror/addon/edit/matchbrackets.js",
               "node_modules/codemirror/addon/display/autorefresh.js",
+              "node_modules/codemirror/addon/display/placeholder.js",
               "node_modules/js-yaml/dist/js-yaml.js",
               "resources/cds-hint.js",
               "node_modules/ansi_up/ansi_up.js",
-              "node_modules/sanitize-html/dist/sanitize-html.min.js",
               "node_modules/prismjs/prism.js",
-              "src/assets/js/pacman.js"
+              "semantic/dist/semantic.min.js"
+            ],
+            "allowedCommonJsDependencies": [
+                "raven-js",
+                "dragula",
+                "js-yaml",
+                "jsonschema",
+                "dagre-d3",
+                "ansi_up",
+                "fast-json-patch",
+                "zxcvbn"
             ]
           },
           "configurations": {
@@ -80,7 +89,6 @@
               "optimization": true,
               "outputHashing": "all",
               "sourceMap": true,
-              "extractCss": true,
               "namedChunks": false,
               "aot": true,
               "extractLicenses": true,
@@ -129,7 +137,6 @@
             "tsConfig": "src/tsconfig.spec.json",
             "scripts": [
               "node_modules/jquery/dist/jquery.js",
-              "node_modules/fomantic-ui/dist/semantic.min.js",
               "node_modules/codemirror/lib/codemirror.js",
               "node_modules/codemirror/mode/shell/shell.js",
               "node_modules/codemirror/addon/mode/simple.js",
@@ -148,17 +155,16 @@
               "node_modules/codemirror/addon/display/autorefresh.js",
               "resources/cds-hint.js",
               "node_modules/ansi_up/ansi_up.js",
-              "node_modules/sanitize-html/dist/sanitize-html.min.js",
-              "src/assets/js/pacman.js"
+              "semantic/dist/semantic.min.js"
             ],
             "styles": [
               "node_modules/dragula/dist/dragula.css",
               "node_modules/codemirror/lib/codemirror.css",
               "node_modules/codemirror/addon/hint/show-hint.css",
-              "node_modules/fomantic-ui/dist/semantic.css",
               "node_modules/angular2-toaster-sgu/toaster.css",
               "node_modules/font-awesome/css/font-awesome.css",
               "node_modules/animate.css/animate.min.css",
+              "semantic/dist/semantic.min.css",
               "src/styles.scss"
             ],
             "assets": [
@@ -173,19 +179,11 @@
           }
         },
         "lint": {
-          "builder": "@angular-devkit/build-angular:tslint",
+          "builder": "@angular-eslint/builder:lint",
           "options": {
-            "tsConfig": [
-              "src/tsconfig.lint.json"
-            ],
-            "files": [
-              "src/**/*.ts"
-            ],
-            "exclude": [
-              "src/**/*.spec.ts",
-              "src/test.ts",
-              "../node_modules/**/*",
-              "e2e/**/*.ts"
+            "lintFilePatterns": [
+              "src/app/**/*.ts",
+              "src/app/**/*.html"
             ]
           }
         }

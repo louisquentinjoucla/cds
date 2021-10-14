@@ -7,12 +7,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func returnHTTPError(ctx context.Context, w http.ResponseWriter, code int, e error) {
@@ -26,7 +25,7 @@ func returnHTTPError(ctx context.Context, w http.ResponseWriter, code int, e err
 
 func LogMiddleware(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Debug("[Worker HTTP Server] " + r.Method + " " + r.URL.String())
+		log.Debug(context.TODO(), "[Worker HTTP Server] "+r.Method+" "+r.URL.String())
 		h(w, r)
 	}
 }
@@ -58,14 +57,15 @@ func (w *CurrentWorker) Serve(c context.Context) error {
 	r.HandleFunc("/upload", LogMiddleware(uploadHandler(c, w)))
 	r.HandleFunc("/checksecret", LogMiddleware(checkSecretHandler(c, w)))
 	r.HandleFunc("/var", LogMiddleware(addBuildVarHandler(c, w)))
+	r.HandleFunc("/run-result", LogMiddleware(getRunResultHandler(c, w)))
+	r.HandleFunc("/run-result/add/artifact-manager", LogMiddleware(addRunResultArtifactManagerHandler(c, w)))
+	r.HandleFunc("/run-result/add/static-file", LogMiddleware(addRunResultStaticFileHandler(c, w)))
 	r.HandleFunc("/vulnerability", LogMiddleware(vulnerabilityHandler(c, w)))
 	r.HandleFunc("/version", LogMiddleware(setVersionHandler(c, w)))
 
 	srv := &http.Server{
-		Handler:      r,
-		Addr:         "127.0.0.1:0",
-		WriteTimeout: 6 * time.Minute,
-		ReadTimeout:  6 * time.Minute,
+		Handler: r,
+		Addr:    "127.0.0.1:0",
 	}
 
 	//Start the server
@@ -99,7 +99,6 @@ func writeJSON(w http.ResponseWriter, data interface{}, status int) {
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
-	al := r.Header.Get("Accept-Language")
-	sdkErr := sdk.ExtractHTTPError(err, al)
+	sdkErr := sdk.ExtractHTTPError(err)
 	writeJSON(w, sdkErr, sdkErr.Status)
 }

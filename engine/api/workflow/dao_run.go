@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -13,13 +12,14 @@ import (
 	"github.com/fsamin/go-dump"
 	"github.com/go-gorp/gorp"
 	"github.com/lib/pq"
+	"github.com/rockbears/log"
 	"go.opencensus.io/stats"
 
 	"github.com/ovh/cds/engine/api/authentication"
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/api/services"
+	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -54,7 +54,6 @@ type LoadRunOptions struct {
 	WithVulnerabilities     bool
 	WithDeleted             bool
 	DisableDetailledNodeRun bool
-	Language                string
 }
 
 // insertWorkflowRun inserts in table "workflow_run""
@@ -85,7 +84,12 @@ func UpdateWorkflowRun(ctx context.Context, db gorp.SqlExecutor, wr *sdk.Workflo
 
 	runDB := Run(*wr)
 	if _, err := db.Update(&runDB); err != nil {
-		return sdk.WrapError(err, "Unable to update workflow run")
+		if e, ok := err.(*pq.Error); ok {
+			if e.Code == gorpmapper.ViolateUniqueKeyPGCode {
+				return sdk.NewError(sdk.ErrConflictData, e)
+			}
+		}
+		return sdk.WrapError(err, "unable to update workflow run")
 	}
 	wr.ID = runDB.ID
 	return nil
@@ -172,7 +176,7 @@ func updateTags(db gorp.SqlExecutor, r *Run) error {
 }
 
 // LoadLastRun returns the last run for a workflow
-func LoadLastRun(db gorp.SqlExecutor, projectkey, workflowname string, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+func LoadLastRun(ctx context.Context, db gorp.SqlExecutor, projectkey, workflowname string, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
 	query := fmt.Sprintf(`select %s
 	from workflow_run
 	join project on workflow_run.project_id = project.id
@@ -180,16 +184,16 @@ func LoadLastRun(db gorp.SqlExecutor, projectkey, workflowname string, loadOpts 
 	where project.projectkey = $1
 	and workflow.name = $2
 	order by workflow_run.num desc limit 1`, wfRunfields)
-	return loadRun(db, loadOpts, query, projectkey, workflowname)
+	return loadRun(ctx, db, loadOpts, query, projectkey, workflowname)
 }
 
 // LoadLastRuns returns the last run per workflowIDs
-func LoadLastRuns(db gorp.SqlExecutor, workflowIDs []int64, limit int) ([]sdk.WorkflowRun, error) {
+func LoadLastRuns(ctx context.Context, db gorp.SqlExecutor, workflowIDs []int64, limit int) ([]sdk.WorkflowRun, error) {
 	query := fmt.Sprintf(`select %s
 	from workflow_run
 	where workflow_run.workflow_id = ANY($1)
 	order by workflow_run.workflow_id, workflow_run.num desc limit $2`, wfRunfields)
-	return loadRuns(db, query, pq.Int64Array(workflowIDs), limit)
+	return loadRuns(ctx, db, query, pq.Int64Array(workflowIDs), limit)
 }
 
 // LoadRun returns a specific run
@@ -207,46 +211,67 @@ func LoadRun(ctx context.Context, db gorp.SqlExecutor, projectkey, workflowname 
 	where project.projectkey = $1
 	and workflow.name = $2
 	and workflow_run.num = $3`, wfRunfields)
-	return loadRun(db, loadOpts, query, projectkey, workflowname, number)
+	return loadRun(ctx, db, loadOpts, query, projectkey, workflowname, number)
 }
 
 // LoadRunByIDAndProjectKey returns a specific run
-func LoadRunByIDAndProjectKey(db gorp.SqlExecutor, projectkey string, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+func LoadRunByIDAndProjectKey(ctx context.Context, db gorp.SqlExecutor, projectkey string, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
 	query := fmt.Sprintf(`select %s
 	from workflow_run
 	join project on workflow_run.project_id = project.id
 	where project.projectkey = $1
 	and workflow_run.id = $2`, wfRunfields)
-	return loadRun(db, loadOpts, query, projectkey, id)
+	return loadRun(ctx, db, loadOpts, query, projectkey, id)
 }
 
 // LoadRunByID loads run by ID
-func LoadRunByID(db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+func LoadRunByID(ctx context.Context, db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+	ctx, end := telemetry.Span(ctx, "workflow.LoadRunByID")
+	defer end()
 	query := fmt.Sprintf(`select %s
 	from workflow_run
 	where workflow_run.id = $1`, wfRunfields)
-	return loadRun(db, loadOpts, query, id)
+	return loadRun(ctx, db, loadOpts, query, id)
 }
 
 // LoadAndLockRunByID loads run by ID
-func LoadAndLockRunByID(db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+func LoadAndLockRunByID(ctx context.Context, db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+	ctx, end := telemetry.Span(ctx, "workflow.LoadAndLockRunByID")
+	defer end()
 	query := fmt.Sprintf(`select %s
 	from workflow_run
 	where workflow_run.id = $1 for update skip locked`, wfRunfields)
-	return loadRun(db, loadOpts, query, id)
+	return loadRun(ctx, db, loadOpts, query, id)
+}
+
+// LoadRunByJobID loads a run by a job id
+func LoadRunByJobID(ctx context.Context, db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+	ctx, end := telemetry.Span(ctx, "workflow.LoadRunByJobID")
+	defer end()
+	query := fmt.Sprintf(`select %s
+	from workflow_run
+	join workflow_node_run on workflow_run.id = workflow_node_run.workflow_run_id
+	join workflow_node_run_job on workflow_node_run.id = workflow_node_run_job.workflow_node_run_id
+	where workflow_node_run_job.id = $1`, wfRunfields)
+	return loadRun(ctx, db, loadOpts, query, id)
 }
 
 // LoadAndLockRunByJobID loads a run by a job id
-func LoadAndLockRunByJobID(db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+func LoadAndLockRunByJobID(ctx context.Context, db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowRun, error) {
+	ctx, end := telemetry.Span(ctx, "workflow.LoadAndLockRunByJobID")
+	defer end()
 	query := fmt.Sprintf(`select %s
 	from workflow_run
 	join workflow_node_run on workflow_run.id = workflow_node_run.workflow_run_id
 	join workflow_node_run_job on workflow_node_run.id = workflow_node_run_job.workflow_node_run_id
 	where workflow_node_run_job.id = $1 for update skip locked`, wfRunfields)
-	return loadRun(db, loadOpts, query, id)
+	return loadRun(ctx, db, loadOpts, query, id)
 }
 
-func loadRuns(db gorp.SqlExecutor, query string, args ...interface{}) ([]sdk.WorkflowRun, error) {
+func loadRuns(ctx context.Context, db gorp.SqlExecutor, query string, args ...interface{}) ([]sdk.WorkflowRun, error) {
+	_, end := telemetry.Span(ctx, "workflow.loadRuns")
+	defer end()
+
 	runs := []Run{}
 	if _, err := db.Select(&runs, query, args...); err != nil {
 		return nil, sdk.WrapError(err, "Unable to load runs")
@@ -254,7 +279,7 @@ func loadRuns(db gorp.SqlExecutor, query string, args ...interface{}) ([]sdk.Wor
 	wruns := make([]sdk.WorkflowRun, len(runs))
 	for i := range runs {
 		wr := sdk.WorkflowRun(runs[i])
-		tags, err := loadRunTags(db, wr.ID)
+		tags, err := loadRunTags(ctx, db, wr.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +300,7 @@ func LoadRunsIDsToDelete(db gorp.SqlExecutor, offset int64, limit int64) ([]int6
 	}
 
 	var ids []int64
-	querySelect := `SELECT id FROM workflow_run 
+	querySelect := `SELECT id FROM workflow_run
 					WHERE to_delete = true
 					ORDER BY workflow_run.start ASC limit $1 offset $2`
 	_, err = db.Select(&ids, querySelect, limit, offset)
@@ -287,7 +312,13 @@ func LoadRunsIDsToDelete(db gorp.SqlExecutor, offset int64, limit int64) ([]int6
 
 //LoadRunsSummaries loads a short version of workflow runs
 //It returns runs, offset, limit count and an error
-func LoadRunsSummaries(db gorp.SqlExecutor, projectkey, workflowname string, offset, limit int, tagFilter map[string]string) ([]sdk.WorkflowRunSummary, int, int, int, error) {
+func LoadRunsSummaries(ctx context.Context, db gorp.SqlExecutor, projectkey, workflowname string, offset, limit int, tagFilter map[string]string) ([]sdk.WorkflowRunSummary, int, int, int, error) {
+	ctx, end := telemetry.Span(ctx, "workflow.LoadRunsSummaries",
+		telemetry.Tag(telemetry.TagProjectKey, projectkey),
+		telemetry.Tag(telemetry.TagWorkflow, workflowname),
+	)
+	defer end()
+
 	queryCount := `select count(workflow_run.id)
 					from workflow_run
 					join project on workflow_run.project_id = project.id
@@ -319,32 +350,39 @@ func LoadRunsSummaries(db gorp.SqlExecutor, projectkey, workflowname string, off
 
 	if len(tagFilter) > 0 {
 		// Posgres operator: '<@' means 'is contained by' eg. 'ARRAY[2,7] <@ ARRAY[1,7,4,2,6]' ==> returns true
-		query = fmt.Sprintf(`select %s
-		from workflow_run wr
-		join project on wr.project_id = project.id
-		join workflow on wr.workflow_id = workflow.id
-		join (
-			select workflow_run_id, string_agg(all_tags, ',') as tags
-			from (
-				select workflow_run_id, tag || '=' || value "all_tags"
-				from workflow_run_tag
-				order by tag
-			) as all_wr_tags
-			group by workflow_run_id
-		) as tags on wr.id = tags.workflow_run_id
-		where project.projectkey = $1
-		and workflow.name = $2
-		AND wr.to_delete = false
-		and string_to_array($5, ',') <@ string_to_array(tags.tags, ',')
-		order by wr.start desc
-		limit $3 offset $4`, selectedColumn)
-
+		query = fmt.Sprintf(`
+			WITH workflowID as (
+				SELECT workflow.id FROM workflow
+				JOIN project ON project.id = workflow.project_id
+				WHERE workflow.name = $2 AND project.projectkey = $1
+			), 
+			runs as (
+				SELECT %s 
+				FROM workflow_run wr
+				JOIN workflowID ON workflowID.id = wr.workflow_id
+				WHERE wr.to_delete = false
+			),
+			tags as (
+				SELECT workflow_run_id, tag || '=' || value "all_tags" 
+				FROM workflow_run_tag
+				JOIN runs ON runs.id = workflow_run_id
+			),
+			aggTags as (
+				SELECT workflow_run_id, string_agg(all_tags, ',') as tags 
+				FROM tags
+				GROUP BY workflow_run_id
+			)
+			SELECT runs.*
+			FROM runs
+			JOIN aggTags ON aggTags.workflow_run_id = runs.id
+			WHERE string_to_array($5, ',') <@ string_to_array(aggTags.tags, ',') 
+			ORDER BY runs.start DESC OFFSET $4 LIMIT $3`, selectedColumn)
 		var tags []string
 		for k, v := range tagFilter {
 			tags = append(tags, k+"="+v)
 		}
 
-		log.Debug("tags=%v", tags)
+		log.Debug(ctx, "tags=%v", tags)
 
 		args = append(args, strings.Join(tags, ","))
 	}
@@ -356,7 +394,7 @@ func LoadRunsSummaries(db gorp.SqlExecutor, projectkey, workflowname string, off
 	}
 	for i := range shortRuns {
 		run := &shortRuns[i]
-		tags, err := loadRunTags(db, run.ID)
+		tags, err := loadRunTags(ctx, db, run.ID)
 		if err != nil {
 			return nil, 0, 0, 0, err
 		}
@@ -403,7 +441,10 @@ func LoadRunsIDByTag(db gorp.SqlExecutor, projectKey, workflowName, tag, tagValu
 	return ids, nil
 }
 
-func loadRunTags(db gorp.SqlExecutor, runID int64) ([]sdk.WorkflowRunTag, error) {
+func loadRunTags(ctx context.Context, db gorp.SqlExecutor, runID int64) ([]sdk.WorkflowRunTag, error) {
+	_, end := telemetry.Span(ctx, "workflow.loadRunTags")
+	defer end()
+
 	dbRunTags := []RunTag{}
 	if _, err := db.Select(&dbRunTags, "SELECT * from workflow_run_tag WHERE workflow_run_id=$1", runID); err != nil {
 		return nil, sdk.WithStack(err)
@@ -416,7 +457,7 @@ func loadRunTags(db gorp.SqlExecutor, runID int64) ([]sdk.WorkflowRunTag, error)
 	return tags, nil
 }
 
-func loadRun(db gorp.SqlExecutor, loadOpts LoadRunOptions, query string, args ...interface{}) (*sdk.WorkflowRun, error) {
+func loadRun(ctx context.Context, db gorp.SqlExecutor, loadOpts LoadRunOptions, query string, args ...interface{}) (*sdk.WorkflowRun, error) {
 	runDB := &Run{}
 	if err := db.SelectOne(runDB, query, args...); err != nil {
 		if err == sql.ErrNoRows {
@@ -718,7 +759,7 @@ func PurgeWorkflowRun(ctx context.Context, db gorp.SqlExecutor, wf sdk.Workflow)
 	}{}
 
 	if wf.HistoryLength == 0 {
-		log.Debug("PurgeWorkflowRun> history length equals 0, skipping purge")
+		log.Debug(ctx, "PurgeWorkflowRun> history length equals 0, skipping purge")
 		return nil
 	}
 
@@ -863,7 +904,7 @@ func purgeWorkflowRunWithoutTags(ctx context.Context, db gorp.SqlExecutor, wf sd
 
 	lastWfrID, errID := db.SelectInt(qLastSuccess, wf.ID, wf.HistoryLength, sdk.StatusSuccess)
 	if errID != nil && errID != sql.ErrNoRows {
-		log.Warning(ctx, "PurgeWorkflowRun> Unable to last success run for workflow id %d and history length %d : %s", wf.ID, wf.HistoryLength, errID)
+		log.Warn(ctx, "PurgeWorkflowRun> Unable to last success run for workflow id %d and history length %d : %s", wf.ID, wf.HistoryLength, errID)
 		return errID
 	}
 
@@ -883,7 +924,7 @@ func purgeWorkflowRunWithoutTags(ctx context.Context, db gorp.SqlExecutor, wf sd
 		WHERE workflow_run.id = run_to_delete.id
 	`
 	if _, err := db.Exec(qDelete, wf.ID, lastWfrID, sdk.StatusBuilding, sdk.StatusChecking, sdk.StatusWaiting); err != nil {
-		log.Warning(ctx, "PurgeWorkflowRun> Unable to update workflow run for purge without tags for workflow id %d and history length %d : %s", wf.ID, wf.HistoryLength, err)
+		log.Warn(ctx, "PurgeWorkflowRun> Unable to update workflow run for purge without tags for workflow id %d and history length %d : %s", wf.ID, wf.HistoryLength, err)
 		return err
 	}
 
@@ -901,7 +942,7 @@ func CountWorkflowRunsMarkToDelete(ctx context.Context, db gorp.SqlExecutor, wor
 		log.Error(ctx, "countWorkflowRunsMarkToDelete> %v", err)
 		return 0
 	}
-	log.Debug("CountWorkflowRunsMarkToDelete> %d workflow to delete", n)
+	log.Debug(ctx, "CountWorkflowRunsMarkToDelete> %d workflow to delete", n)
 	if workflowRunsMarkToDelete != nil {
 		telemetry.Record(ctx, workflowRunsMarkToDelete, n)
 	}
@@ -955,11 +996,7 @@ func syncNodeRuns(db gorp.SqlExecutor, wr *sdk.WorkflowRun, loadOpts LoadRunOpti
 			}
 			wnr.Coverage = cov
 		}
-		var l = loadOpts.Language
-		if l == "" {
-			l = "en"
-		}
-		wnr.Translate(l)
+		wnr.Translate()
 		wr.WorkflowNodeRuns[wnr.WorkflowNodeID] = append(wr.WorkflowNodeRuns[wnr.WorkflowNodeID], *wnr)
 	}
 
@@ -1057,7 +1094,7 @@ func stopRunsBlocked(ctx context.Context, db *gorp.DbMap) error {
 			Status: resp[i].Status,
 		}
 		if resp[i].Stages.Valid {
-			if err := json.Unmarshal([]byte(resp[i].Stages.String), &nr.Stages); err != nil {
+			if err := sdk.JSONUnmarshal([]byte(resp[i].Stages.String), &nr.Stages); err != nil {
 				return sdk.WrapError(err, "cannot unmarshal stages")
 			}
 		}
@@ -1068,7 +1105,7 @@ func stopRunsBlocked(ctx context.Context, db *gorp.DbMap) error {
 			nr.Done = now
 		}
 
-		if err := updateNodeRunStatusAndStage(tx, &nr); err != nil {
+		if err := UpdateNodeRunStatusAndStage(tx, &nr); err != nil {
 			return sdk.WrapError(err, "cannot update node runs stages")
 		}
 	}

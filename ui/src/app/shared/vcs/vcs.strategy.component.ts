@@ -39,7 +39,7 @@ export class VCSStrategyComponent implements OnInit {
     selectedPublicKey: string;
 
     _strategy: VCSStrategy;
-    @Input('strategy')
+    @Input()
     set strategy(data: VCSStrategy) {
         if (data) {
             this._strategy = data;
@@ -81,12 +81,18 @@ export class VCSStrategyComponent implements OnInit {
                 .pipe(finalize(() => this._cd.markForCheck()))
                 .subscribe(k => {
                 this.keys = k;
+                if (this.strategy?.ssh_key) {
+                    this.updatePublicKey(this.strategy.ssh_key);
+                }
             });
         } else {
             this._keyService.getAllKeys(this.project.key, this.appName)
                 .pipe(finalize(() => this._cd.markForCheck()))
                 .subscribe(k => {
                 this.keys = k;
+                if (this.strategy?.ssh_key) {
+                    this.updatePublicKey(this.strategy.ssh_key);
+                }
             });
         }
     }

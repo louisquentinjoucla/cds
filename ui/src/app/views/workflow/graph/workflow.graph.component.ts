@@ -1,14 +1,14 @@
-// tslint:disable-next-line: max-line-length
+// eslint-disable-next-line max-len
 import { AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, Component, ComponentFactoryResolver, ComponentRef, EventEmitter, HostListener, Input, OnDestroy, Output, ViewChild, ViewContainerRef } from '@angular/core';
 import * as d3 from 'd3';
 import * as dagreD3 from 'dagre-d3';
-import { Project } from '../../../model/project.model';
-import { WNode, Workflow } from '../../../model/workflow.model';
-import { WorkflowCoreService } from '../../../service/workflow/workflow.core.service';
-import { WorkflowStore } from '../../../service/workflow/workflow.store';
-import { AutoUnsubscribe } from '../../../shared/decorator/autoUnsubscribe';
-import { WorkflowNodeHookComponent } from '../../../shared/workflow/wnode/hook/hook.component';
-import { WorkflowWNodeComponent } from '../../../shared/workflow/wnode/wnode.component';
+import { Project } from 'app/model/project.model';
+import { WNode, Workflow } from 'app/model/workflow.model';
+import { WorkflowCoreService } from 'app/service/workflow/workflow.core.service';
+import { WorkflowStore } from 'app/service/workflow/workflow.store';
+import { AutoUnsubscribe } from 'app/shared/decorator/autoUnsubscribe';
+import { WorkflowNodeHookComponent } from 'app/shared/workflow/wnode/hook/hook.component';
+import { WorkflowWNodeComponent } from 'app/shared/workflow/wnode/wnode.component';
 
 @Component({
     selector: 'app-workflow-graph',
@@ -28,7 +28,7 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
     static maxOriginScale = 1;
 
     workflow: Workflow;
-    @Input('workflowData')
+    @Input()
     set workflowData(data: Workflow) {
         this.workflow = data;
         this.nodesComponent = new Map<string, ComponentRef<WorkflowWNodeComponent>>();
@@ -38,13 +38,15 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
 
     @Input() project: Project;
 
-    @Input('direction')
+    @Input()
     set direction(data: string) {
         this._direction = data;
-        this._workflowStore.setDirection(this.project.key, this.workflow.name, this.direction);
+        this._workflowStore.setDirection(this.project?.key, this.workflow?.name, this.direction);
         this.changeDisplay();
     }
-    get direction() { return this._direction; }
+    get direction() {
+        return this._direction;
+    }
 
     @Output() deleteJoinSrcEvent = new EventEmitter<{ source: any, target: any }>();
 
@@ -52,7 +54,7 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
     _direction: string;
 
     // workflow graph
-    @ViewChild('svgGraph', { read: ViewContainerRef }) svgContainer: any;
+    @ViewChild('svgGraph', { read: ViewContainerRef }) svgContainer: ViewContainerRef;
     g: dagreD3.graphlib.Graph;
     render = new dagreD3.render();
 
@@ -71,22 +73,33 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
         private _workflowCore: WorkflowCoreService,
     ) { }
 
-    ngOnDestroy(): void {} // Should be set to use @AutoUnsubscribe with AOT
+    ngOnDestroy(): void { } // Should be set to use @AutoUnsubscribe with AOT
 
     ngAfterViewInit(): void {
         this.ready = true;
+        this._cd.detectChanges();
         this.changeDisplay();
-        this._cd.markForCheck();
+    }
+
+    @HostListener('window:resize')
+    onResize() {
+        if (!this.svg) { return; }
+        const element = this.svgContainer.element.nativeElement;
+        this.svg.attr('width', element.offsetWidth);
+        this.svg.attr('height', element.offsetHeight);
     }
 
     changeDisplay(): void {
-        if (!this.ready && this.workflow) {
+        if (!this.ready) {
             return;
         }
         this.initWorkflow();
     }
 
     initWorkflow() {
+        if (!this.workflow) {
+            return;
+        }
         // https://github.com/cpettitt/dagre/wiki#configuring-the-layout
         this.g = new dagreD3.graphlib.Graph().setGraph({ rankdir: this.direction, nodesep: 10, ranksep: 15, edgesep: 5 });
         // Create all nodes
@@ -99,15 +112,12 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
             });
         }
 
-        // Run the renderer. This is what draws the final graph.
-        this.svg = d3.select('svg');
-        let oldG = this.svg.select('g');
-        if (oldG) {
-            oldG.remove();
-        }
-        let g = this.svg.append('g');
+        const element = this.svgContainer.element.nativeElement;
+        d3.select(element).selectAll('svg').remove();
+        this.svg = d3.select(element).append('svg');
 
-        this.render(g, this.g);
+        let g = this.svg.append('g');
+        this.render(g, <any>this.g);
 
         this.zoom = d3.zoom().scaleExtent([
             WorkflowGraphComponent.minScale,
@@ -126,11 +136,12 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
     }
 
     clickOrigin() {
-        if (!this.svgContainer?.element?.nativeElement?.width?.baseVal || !this.svgContainer?.element?.nativeElement?.height?.baseVal) {
+        this.onResize();
+        if (!this.svgContainer?.element?.nativeElement?.offsetWidth || !this.svgContainer?.element?.nativeElement?.offsetHeight) {
             return;
         }
-        let w = this.svgContainer.element.nativeElement.width.baseVal.value - WorkflowGraphComponent.margin;
-        let h = this.svgContainer.element.nativeElement.height.baseVal.value - WorkflowGraphComponent.margin;
+        let w = this.svgContainer.element.nativeElement.offsetWidth - WorkflowGraphComponent.margin;
+        let h = this.svgContainer.element.nativeElement.offsetHeight - WorkflowGraphComponent.margin;
         let gw = this.g.graph().width;
         let gh = this.g.graph().height;
         let oScale = Math.min(w / gw, h / gh); // calculate optimal scale for current graph
@@ -162,7 +173,7 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
             let componentRef = this.hooksComponent.get(hookId);
             if (!componentRef) {
                 let hookComponent = this.componentFactoryResolver.resolveComponentFactory(WorkflowNodeHookComponent);
-                componentRef = hookComponent.create(this.svgContainer.parentInjector);
+                componentRef = this.svgContainer.createComponent<WorkflowNodeHookComponent>(hookComponent);
             }
             componentRef.instance.hook = h;
             componentRef.instance.workflow = this.workflow;
@@ -170,7 +181,6 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
             componentRef.changeDetectorRef.detectChanges();
             this.hooksComponent.set(hookId, componentRef);
 
-            this.svgContainer.insert(componentRef.hostView, 0);
             this.g.setNode(
                 'hook-' + node.ref + '-' + hookId, <any>{
                     label: () => componentRef.location.nativeElement,
@@ -211,10 +221,9 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
                 break;
         }
 
-        this.svgContainer.insert(componentRef.hostView, 0);
         this.g.setNode('node-' + node.ref, <any>{
             label: () => componentRef.location.nativeElement,
-            shape: shape,
+            shape,
             labelStyle: `width: ${width}px;height: ${height}px;`
         });
 
@@ -249,8 +258,8 @@ export class WorkflowGraphComponent implements AfterViewInit, OnDestroy {
     }
 
     createNodeComponent(node: WNode): ComponentRef<WorkflowWNodeComponent> {
-        let nodeComponentFactory = this.componentFactoryResolver.resolveComponentFactory(WorkflowWNodeComponent);
-        let componentRef = nodeComponentFactory.create(this.svgContainer.parentInjector);
+        const nodeComponentFactory = this.componentFactoryResolver.resolveComponentFactory(WorkflowWNodeComponent);
+        const componentRef = this.svgContainer.createComponent<WorkflowWNodeComponent>(nodeComponentFactory);
         componentRef.instance.node = node;
         componentRef.instance.workflow = this.workflow;
         componentRef.instance.project = this.project;

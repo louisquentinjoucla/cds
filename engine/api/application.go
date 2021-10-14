@@ -152,11 +152,7 @@ func (api *API) getApplicationHandler() service.Handler {
 		}
 
 		if app.FromRepository != "" {
-			proj, err := project.Load(ctx, api.mustDB(), projectKey,
-				project.LoadOptions.WithApplicationWithDeploymentStrategies,
-				project.LoadOptions.WithPipelines,
-				project.LoadOptions.WithEnvironments,
-				project.LoadOptions.WithIntegrations)
+			proj, err := project.Load(ctx, api.mustDB(), projectKey, project.LoadOptions.WithIntegrations)
 			if err != nil {
 				return err
 			}
@@ -238,7 +234,7 @@ func (api *API) getApplicationVCSInfosHandler() service.Handler {
 		if remote != "" && remote != app.RepositoryFullname {
 			repositoryFullname = remote
 		}
-		branches, err := client.Branches(ctx, repositoryFullname)
+		branches, err := client.Branches(ctx, repositoryFullname, sdk.VCSBranchesFilter{Limit: 50})
 		if err != nil {
 			return err
 		}
@@ -463,6 +459,28 @@ func (api *API) updateAsCodeApplicationHandler() service.Handler {
 		if appDB.FromRepository == "" {
 			return sdk.NewErrorFrom(sdk.ErrForbidden, "current application is not ascode")
 		}
+		if appDB.FromRepository != a.FromRepository {
+			return sdk.NewErrorFrom(sdk.ErrForbidden, "you can't use this repository to update your application: %s", a.FromRepository)
+		}
+
+		vcsServer, err := repositoriesmanager.LoadProjectVCSServerLinkByProjectKeyAndVCSServerName(ctx, tx, projectKey, appDB.VCSServer)
+		if err != nil {
+			return sdk.WrapError(sdk.ErrNoReposManagerClientAuth, "updateAsCodeApplicationHandler> Cannot get client got %s %s : %v", projectKey, appDB.VCSServer, err)
+		}
+
+		client, err := repositoriesmanager.AuthorizedClient(ctx, tx, api.Cache, projectKey, vcsServer)
+		if err != nil {
+			return sdk.WrapError(sdk.ErrNoReposManagerClientAuth, "updateAsCodeApplicationHandler> Cannot get client got %s %s : %v", projectKey, appDB.VCSServer, err)
+		}
+
+		b, err := client.Branch(ctx, appDB.RepositoryFullname, sdk.VCSBranchFilters{BranchName: branch})
+		if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
+			return err
+		}
+
+		if b != nil && b.Default {
+			return sdk.NewErrorFrom(sdk.ErrForbidden, "cannot push the the default branch on your git repository")
+		}
 
 		wkHolder, err := workflow.LoadByRepo(ctx, tx, *proj, appDB.FromRepository, workflow.LoadOptions{
 			WithTemplate: true,
@@ -497,9 +515,13 @@ func (api *API) updateAsCodeApplicationHandler() service.Handler {
 			k.KeyID = newKey.KeyID
 		}
 
+		if a.RepositoryStrategy.ConnectionType == "https" && a.RepositoryStrategy.Password == sdk.PasswordPlaceholder {
+			a.RepositoryStrategy.Password = rootApp.RepositoryStrategy.Password
+		}
+
 		u := getAPIConsumer(ctx)
 		a.ProjectID = proj.ID
-		app, err := application.ExportApplication(tx, a, project.EncryptWithBuiltinKey, fmt.Sprintf("app:%d:%s", appDB.ID, branch))
+		app, err := application.ExportApplication(ctx, tx, a, project.EncryptWithBuiltinKey, fmt.Sprintf("app:%d:%s", appDB.ID, branch))
 		if err != nil {
 			return sdk.WrapError(err, "unable to export app %s", a.Name)
 		}
@@ -507,7 +529,7 @@ func (api *API) updateAsCodeApplicationHandler() service.Handler {
 			Applications: []exportentities.Application{app},
 		}
 
-		ope, err := operation.PushOperationUpdate(ctx, tx, api.Cache, *proj, wp, rootApp.VCSServer, rootApp.RepositoryFullname, branch, message, rootApp.RepositoryStrategy, u)
+		ope, err := operation.PushOperationUpdate(ctx, tx, api.Cache, *proj, wp, rootApp.VCSServer, rootApp.RepositoryFullname, branch, message, a.RepositoryStrategy, u)
 		if err != nil {
 			return err
 		}
@@ -525,7 +547,7 @@ func (api *API) updateAsCodeApplicationHandler() service.Handler {
 				OperationUUID: ope.UUID,
 			}
 			ascode.UpdateAsCodeResult(ctx, api.mustDB(), api.Cache, api.GoRoutines, *proj, *wkHolder, *rootApp, ed, u)
-		}, api.PanicDump())
+		})
 
 		return service.WriteJSON(w, sdk.Operation{
 			UUID:   ope.UUID,

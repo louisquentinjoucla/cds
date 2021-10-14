@@ -2,25 +2,24 @@ package gerrit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/andygrunwald/go-gerrit"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // SetStatus set build status on Gerrit
 func (c *gerritClient) SetStatus(ctx context.Context, event sdk.Event) error {
 	var eventNR sdk.EventRunWorkflowNode
-	if err := json.Unmarshal(event.Payload, &eventNR); err != nil {
+	if err := sdk.JSONUnmarshal(event.Payload, &eventNR); err != nil {
 		return sdk.WrapError(err, "cannot unmarshal payload")
 	}
 
 	if eventNR.GerritChange == nil {
-		log.Debug("gerrit.setStatus> no gerrit change provided: %s/%s", eventNR.Status, eventNR.NodeName)
+		log.Debug(ctx, "gerrit.setStatus> no gerrit change provided: %s/%s", eventNR.Status, eventNR.NodeName)
 		return nil
 	}
 

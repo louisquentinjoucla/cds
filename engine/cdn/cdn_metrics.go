@@ -2,14 +2,16 @@ package cdn
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/rockbears/log"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
 
 	"github.com/ovh/cds/engine/cdn/item"
 	"github.com/ovh/cds/engine/cdn/storage"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -47,7 +49,7 @@ func (s *Service) initMetrics(ctx context.Context) error {
 	s.Metrics.ItemSize = stats.Int64("cdn/items/size", "size items by type (in bytes) by percentil", stats.UnitBytes)
 	itemSizeView := telemetry.NewViewLast(s.Metrics.ItemSize.Name(), s.Metrics.ItemSize, []tag.Key{tagItemType, tagPercentil})
 
-	s.Metrics.ItemToSyncCount = stats.Int64("cdn/items/sync", "number of items to sync per storage and type", stats.UnitDimensionless)
+	s.Metrics.ItemToSyncCount = stats.Int64("cdn/items/sync_lag", "number of items to sync per storage and type", stats.UnitDimensionless)
 	itemToSyncCountView := telemetry.NewViewLast(s.Metrics.ItemToSyncCount.Name(), s.Metrics.ItemToSyncCount, []tag.Key{tagStorage, tagItemType})
 
 	s.Metrics.WSClients = stats.Int64("cdn/websocket_clients", "number of  websocket clients", stats.UnitDimensionless)
@@ -63,7 +65,7 @@ func (s *Service) initMetrics(ctx context.Context) error {
 	itemUnitToDeleteView := telemetry.NewViewLast(s.Metrics.ItemUnitToDelete.Name(), s.Metrics.ItemUnitToDelete, []tag.Key{tagStorage, tagItemType})
 
 	if s.DBConnectionFactory != nil {
-		s.GoRoutines.Run(ctx, "cds-compute-metrics", func(ctx context.Context) {
+		s.GoRoutines.RunWithRestart(ctx, "cds-compute-metrics", func(ctx context.Context) {
 			s.ComputeMetrics(ctx)
 		})
 	}
@@ -86,71 +88,78 @@ func (s *Service) initMetrics(ctx context.Context) error {
 }
 
 func (s *Service) ComputeMetrics(ctx context.Context) {
+	tickPercentil := time.NewTicker(1 * time.Hour)
+	defer tickPercentil.Stop()
+	tickStatsItems := time.NewTicker(time.Duration(s.Cfg.Metrics.Frequency) * time.Second)
+	defer tickStatsItems.Stop()
 	for {
-		time.Sleep(30 * time.Second)
-
 		select {
 		case <-ctx.Done():
 			return
-		default:
-			stats, err := item.CountItems(s.mustDBWithCtx(ctx))
+		case <-tickStatsItems.C:
+			start := time.Now()
+			// All Items by type
+			allItemsByType, err := item.CountItems(s.mustDBWithCtx(ctx))
 			if err != nil {
 				log.Error(ctx, "cdn> Unable to compute metrics: %v", err)
 				continue
 			}
-
-			for _, stat := range stats {
+			for _, stat := range allItemsByType {
 				ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagType, stat.Type, telemetry.TagStatus, stat.Status)
 				telemetry.Record(ctxItem, s.Metrics.itemInDatabaseCount, stat.Number)
 			}
 
-			storageStats, err := storage.CountItems(s.mustDBWithCtx(ctx))
-			if err != nil {
-				log.Error(ctx, "cdn> Unable to compute metrics: %v", err)
-				continue
+			// Count all unit_item by type
+			var storageStatsBuffer []storage.Stat
+			for _, bu := range s.Units.Buffers {
+				storageStatsBuffer = append(storageStatsBuffer, s.countItemsForUnit(ctx, bu)...)
+			}
+
+			for _, stat := range storageStatsBuffer {
+				ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagType, stat.Type, telemetry.TagStorage, stat.StorageName)
+				telemetry.Record(ctxItem, s.Metrics.itemPerStorageUnitCount, stat.Number)
+			}
+
+			var storageStats []storage.Stat
+			for _, su := range s.Units.Storages {
+				if !su.CanSync() {
+					continue
+				}
+				storageStats = append(storageStats, s.countItemsForUnit(ctx, su)...)
 			}
 
 			for _, stat := range storageStats {
 				ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagType, stat.Type, telemetry.TagStorage, stat.StorageName)
 				telemetry.Record(ctxItem, s.Metrics.itemPerStorageUnitCount, stat.Number)
-			}
 
-			statsSize, err := item.CountItemSizePercentil(s.mustDBWithCtx(ctx))
-			if err != nil {
-				log.Error(ctx, "cdn> Unable to compute metrics: %v", err)
-				continue
-			}
+				key := fmt.Sprintf("backend/%s/%s", stat.StorageName, stat.Type)
+				if previous, ok := s.storageUnitSizes.Load(key); ok {
+					s.storageUnitPreviousSizes.Store(key, previous)
+				}
+				s.storageUnitSizes.Store(key, stat.Number)
 
-			for _, stat := range statsSize {
-				// Export only 50, 75, 90, 95, 99, 100 percentil
-				switch stat.Percentile {
-				case 50, 75, 90, 95, 99, 100:
-					ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagType, stat.Type, telemetry.TagPercentil, stat.Percentile)
-					telemetry.Record(ctxItem, s.Metrics.ItemSize, stat.Size)
+				// to synchronized
+				for _, allItems := range allItemsByType {
+					if allItems.Type == stat.Type && allItems.Status == sdk.CDNStatusItemCompleted {
+						ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagStorage, stat.StorageName, telemetry.TagType, stat.Type)
+						lag := allItems.Number - stat.Number
+						telemetry.Record(ctxItem, s.Metrics.ItemToSyncCount, lag)
+						if previous, ok := s.storageUnitLags.Load(key); ok {
+							s.storageUnitPreviousLags.Store(key, previous)
+						}
+						s.storageUnitLags.Store(key, lag)
+						break
+					}
 				}
 			}
 
-			statsItemToSync, err := storage.CountUnknownItemsByStorage(s.mustDBWithCtx(ctx))
+			nbItemsToDelete, err := item.CountItemsToDelete(s.mustDBWithCtx(ctx))
 			if err != nil {
 				log.Error(ctx, "cdn> Unable to compute metrics: %v", err)
 				continue
 			}
 
-			for _, stat := range statsItemToSync {
-				ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagStorage, stat.StorageName, telemetry.TagType, stat.Type)
-				telemetry.Record(ctxItem, s.Metrics.ItemToSyncCount, stat.Number)
-			}
-
-			stats, err = item.CountItemsToDelete(s.mustDBWithCtx(ctx))
-			if err != nil {
-				log.Error(ctx, "cdn> Unable to compute metrics: %v", err)
-				continue
-			}
-
-			for _, stat := range stats {
-				ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagType, stat.Type)
-				telemetry.Record(ctxItem, s.Metrics.ItemToDelete, stat.Number)
-			}
+			telemetry.Record(ctx, s.Metrics.ItemToDelete, nbItemsToDelete)
 
 			storageStats, err = storage.CountItemUnitToDelete(s.mustDBWithCtx(ctx))
 			if err != nil {
@@ -162,6 +171,46 @@ func (s *Service) ComputeMetrics(ctx context.Context) {
 				ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagType, stat.Type, telemetry.TagStorage, stat.StorageName)
 				telemetry.Record(ctxItem, s.Metrics.ItemUnitToDelete, stat.Number)
 			}
+
+			elapsed := time.Since(start)
+			if elapsed > 5*time.Second {
+				log.Warn(ctx, "ComputeMetrics is too long, it took %v", elapsed)
+			} else if elapsed > 15*time.Second {
+				log.Error(ctx, "ComputeMetrics is too long, it took %v", elapsed)
+			}
+		case <-tickPercentil.C:
+			statsPercentils, err := item.CountItemSizePercentil(s.mustDBWithCtx(ctx))
+			if err != nil {
+				log.Error(ctx, "cdn> Unable to compute metrics: %v", err)
+				continue
+			}
+			for _, stat := range statsPercentils {
+				// Export only 50, 75, 90, 95, 99, 100 percentil
+				switch stat.Percentile {
+				case 50, 75, 90, 95, 99, 100:
+					ctxItem := telemetry.ContextWithTag(ctx, telemetry.TagType, stat.Type, telemetry.TagPercentil, stat.Percentile)
+					telemetry.Record(ctxItem, s.Metrics.ItemSize, stat.Size)
+				}
+			}
 		}
 	}
+}
+
+func (s *Service) countItemsForUnit(ctx context.Context, storageUnit storage.Interface) []storage.Stat {
+	types := []sdk.CDNItemType{sdk.CDNTypeItemStepLog, sdk.CDNTypeItemServiceLog, sdk.CDNTypeItemRunResult}
+	var storageStats []storage.Stat
+	for _, typ := range types {
+		suStats, err := storage.CountItemsForUnitByType(s.mustDBWithCtx(ctx), storageUnit.ID(), string(typ))
+		if err != nil {
+			log.Error(ctx, "cdn> Unable to compute CountItemsForUnit for %s: %v", storageUnit.Name(), err)
+			return nil
+		}
+		for i := range suStats {
+			s := suStats[i]
+			s.StorageName = storageUnit.Name()
+			s.Type = string(typ)
+			storageStats = append(storageStats, s)
+		}
+	}
+	return storageStats
 }

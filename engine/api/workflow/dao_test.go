@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/fsamin/go-dump"
+	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
@@ -20,6 +22,7 @@ import (
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/bootstrap"
 	"github.com/ovh/cds/engine/api/environment"
+	"github.com/ovh/cds/engine/api/integration"
 	"github.com/ovh/cds/engine/api/permission"
 	"github.com/ovh/cds/engine/api/pipeline"
 	"github.com/ovh/cds/engine/api/project"
@@ -30,7 +33,6 @@ import (
 	"github.com/ovh/cds/engine/api/workflow"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func TestLoadAllShouldNotReturnAnyWorkflows(t *testing.T) {
@@ -41,7 +43,7 @@ func TestLoadAllShouldNotReturnAnyWorkflows(t *testing.T) {
 
 	proj, _ = project.LoadByID(db, proj.ID, project.LoadOptions.WithApplications, project.LoadOptions.WithPipelines, project.LoadOptions.WithEnvironments, project.LoadOptions.WithGroups)
 
-	ws, err := workflow.LoadAll(db, proj.Key)
+	ws, err := workflow.LoadAll(context.TODO(), db, proj.Key)
 	test.NoError(t, err)
 	assert.Equal(t, 0, len(ws))
 }
@@ -95,7 +97,7 @@ func TestInsertSimpleWorkflowAndExport(t *testing.T) {
 
 	assert.False(t, w1.WorkflowData.Node.Context.Mutex)
 
-	ws, err := workflow.LoadAll(db, proj.Key)
+	ws, err := workflow.LoadAll(context.TODO(), db, proj.Key)
 	test.NoError(t, err)
 	assert.Equal(t, 1, len(ws))
 
@@ -200,6 +202,112 @@ func TestInsertSimpleWorkflowWithApplicationAndEnv(t *testing.T) {
 	assert.Equal(t, w.WorkflowData.Node.Context.ApplicationID, w1.WorkflowData.Node.Context.ApplicationID)
 	assert.Equal(t, w.WorkflowData.Node.Context.EnvironmentID, w1.WorkflowData.Node.Context.EnvironmentID)
 	assert.Equal(t, w.WorkflowData.Node.Context.Mutex, w1.WorkflowData.Node.Context.Mutex)
+}
+
+func TestUpdateWorkflowIntegration(t *testing.T) {
+	db, cache := test.SetupPG(t, bootstrap.InitiliazeDB)
+
+	u, _ := assets.InsertAdminUser(t, db)
+
+	// Create project
+	key := sdk.RandomString(10)
+	proj := assets.InsertTestProject(t, db, cache, key, key)
+
+	fooModel := sdk.IntegrationModel{
+		Name:            sdk.RandomString(10),
+		Author:          "foo",
+		ArtifactManager: true,
+		DefaultConfig: map[string]sdk.IntegrationConfigValue{
+			"Host": {
+				Type: sdk.IntegrationConfigTypeString,
+			},
+			"Token": {
+				Type: sdk.IntegrationConfigTypePassword,
+			},
+		},
+		AdditionalDefaultConfig: map[string]sdk.IntegrationConfigValue{
+			"BuildInfo": {
+				Type:  sdk.IntegrationConfigTypeString,
+				Value: "defaultValue",
+			},
+		},
+	}
+	require.NoError(t, integration.InsertModel(db, &fooModel))
+	t.Cleanup(func() {
+		integration.DeleteModel(context.TODO(), db, fooModel.ID)
+	})
+
+	projInt := sdk.ProjectIntegration{
+		Name:               "Artifactory",
+		Config:             fooModel.DefaultConfig.Clone(),
+		Model:              fooModel,
+		IntegrationModelID: fooModel.ID,
+		ProjectID:          proj.ID,
+	}
+	projInt.Config["Host"] = sdk.IntegrationConfigValue{
+		Type:  sdk.IntegrationConfigTypeString,
+		Value: "myhost",
+	}
+	projInt.Config["Token"] = sdk.IntegrationConfigValue{
+		Type:  sdk.IntegrationConfigTypePassword,
+		Value: "mypassword",
+	}
+	require.NoError(t, integration.InsertIntegration(db, &projInt))
+
+	proj.Integrations = append(proj.Integrations, projInt)
+
+	pip := createEmptyPipeline(t, db, cache, proj, u)
+
+	// RELOAD PROJECT WITH DEPENDENCIES
+	proj.Pipelines = append(proj.Pipelines, *pip)
+
+	// WORKFLOW TO RUN
+	w := sdk.Workflow{
+		ProjectID:  proj.ID,
+		ProjectKey: proj.Key,
+		Name:       sdk.RandomString(10),
+		WorkflowData: sdk.WorkflowData{
+			Node: sdk.Node{
+				Name: "root",
+				Ref:  "root",
+				Type: sdk.NodeTypePipeline,
+				Context: &sdk.NodeContext{
+					PipelineID: proj.Pipelines[0].ID,
+				},
+			},
+		},
+		Pipelines: map[int64]sdk.Pipeline{
+			proj.Pipelines[0].ID: proj.Pipelines[0],
+		},
+		Integrations: []sdk.WorkflowProjectIntegration{
+			{
+				ProjectIntegration:   projInt,
+				ProjectIntegrationID: projInt.ID,
+			},
+		},
+	}
+	require.NoError(t, workflow.Insert(context.TODO(), db, cache, *proj, &w))
+
+	buildInfoValue, has := w.Integrations[0].Config["BuildInfo"]
+	require.True(t, has)
+
+	// Update buildinf
+	buildInfoValue.Value = "newValue"
+	w.Integrations[0].Config["BuildInfo"] = buildInfoValue
+	require.NoError(t, workflow.Update(context.TODO(), db, cache, *proj, &w, workflow.UpdateOptions{}))
+
+	wfDb, err := workflow.LoadByID(context.TODO(), db, cache, *proj, w.ID, workflow.LoadOptions{})
+	require.NoError(t, err)
+	require.Equal(t, "newValue", wfDb.Integrations[0].Config["BuildInfo"].Value)
+
+	w.Integrations = append(w.Integrations, sdk.WorkflowProjectIntegration{
+
+		ProjectIntegration:   projInt,
+		ProjectIntegrationID: projInt.ID,
+	})
+	errUpdate := workflow.Update(context.TODO(), db, cache, *proj, &w, workflow.UpdateOptions{})
+	require.NotNil(t, errUpdate)
+	require.Contains(t, errUpdate.Error(), "you can't have multiple artifact manager integrations on a workflow")
 }
 
 func TestInsertComplexeWorkflowAndExport(t *testing.T) {
@@ -800,10 +908,10 @@ func TestInsertComplexeWorkflowWithJoinsAndExport(t *testing.T) {
 	assert.Equal(t, pip3.ID, w.WorkflowData.Node.Triggers[0].ChildNode.Triggers[0].ChildNode.Context.PipelineID)
 	assert.Equal(t, pip4.ID, w.WorkflowData.Node.Triggers[0].ChildNode.Triggers[0].ChildNode.Triggers[0].ChildNode.Context.PipelineID)
 
-	log.Warning(context.Background(), "%d-%d", w1.WorkflowData.Node.Triggers[0].ChildNode.Triggers[0].ChildNode.ID,
+	log.Warn(context.Background(), "%d-%d", w1.WorkflowData.Node.Triggers[0].ChildNode.Triggers[0].ChildNode.ID,
 		w1.WorkflowData.Node.Triggers[0].ChildNode.Triggers[0].ChildNode.Triggers[0].ChildNode.ID)
 
-	log.Warning(context.Background(), "%+v", w1.WorkflowData.Joins[0].JoinContext)
+	log.Warn(context.Background(), "%+v", w1.WorkflowData.Joins[0].JoinContext)
 	test.EqualValuesWithoutOrder(t, []int64{
 		w1.WorkflowData.Node.Triggers[0].ChildNode.Triggers[0].ChildNode.ID,
 		w1.WorkflowData.Node.Triggers[0].ChildNode.Triggers[0].ChildNode.Triggers[0].ChildNode.ID,
@@ -1447,7 +1555,7 @@ func TestInsertSimpleWorkflowWithHookAndExport(t *testing.T) {
 	assert.Equal(t, w.WorkflowData.Node.Context.PipelineID, w1.WorkflowData.Node.Context.PipelineID)
 	assertEqualNode(t, &w.WorkflowData.Node, &w1.WorkflowData.Node)
 
-	ws, err := workflow.LoadAll(db, proj.Key)
+	ws, err := workflow.LoadAll(context.TODO(), db, proj.Key)
 	test.NoError(t, err)
 	assert.Equal(t, 1, len(ws))
 
@@ -1540,13 +1648,13 @@ func TestInsertAndDeleteMultiHook(t *testing.T) {
 				}
 
 				// NEED for default payload on insert
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "mylastcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 			case "/task/bulk":
@@ -1805,5 +1913,407 @@ vcs_ssh_key: proj-blabla
 			t.Fail()
 		}
 	}
+
+}
+
+func TestDeleteWorkflowWithDependencies(t *testing.T) {
+	ctx := context.Background()
+	db, cache := test.SetupPG(t)
+
+	u, _ := assets.InsertAdminUser(t, db)
+
+	bootstrap.InitiliazeDB(ctx, sdk.DefaultValues{}, func() *gorp.DbMap { return db.DbMap })
+	a, _ := assets.InsertService(t, db, "TestDeleteWorkflowWithDependenciesVCS", sdk.TypeVCS)
+	b, _ := assets.InsertService(t, db, "TestDeleteWorkflowWithDependenciesHook", sdk.TypeHooks)
+
+	defer func() {
+		_ = services.Delete(db, a)
+		_ = services.Delete(db, b)
+	}()
+
+	services.HTTPClient = mock(
+		func(r *http.Request) (*http.Response, error) {
+			body := new(bytes.Buffer)
+			w := new(http.Response)
+			enc := json.NewEncoder(body)
+			w.Body = ioutil.NopCloser(body)
+			switch r.URL.String() {
+			// NEED get REPO
+			case "/vcs/github/repos/sguiheux/demo":
+				repo := sdk.VCSRepo{
+					URL:          "https",
+					Name:         "demo",
+					ID:           "123",
+					Fullname:     "sguiheux/demo",
+					Slug:         "sguiheux",
+					HTTPCloneURL: "https://github.com/sguiheux/demo.git",
+					SSHCloneURL:  "git://github.com/sguiheux/demo.git",
+				}
+				if err := enc.Encode(repo); err != nil {
+					return writeError(w, err)
+				}
+				// NEED for default payload on insert
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
+				b := sdk.VCSBranch{
+					Default:      true,
+					DisplayID:    "master",
+					LatestCommit: "mylastcommit",
+				}
+				if err := enc.Encode(b); err != nil {
+					return writeError(w, err)
+				}
+			case "/task/bulk":
+				var hooks map[string]sdk.NodeHook
+				request, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					return writeError(w, err)
+				}
+				if err := json.Unmarshal(request, &hooks); err != nil {
+					return writeError(w, err)
+				}
+				if len(hooks) != 1 {
+					return writeError(w, fmt.Errorf("Must only have 1 hook"))
+				}
+				k := reflect.ValueOf(hooks).MapKeys()[0].String()
+				hooks[k].Config["webHookURL"] = sdk.WorkflowNodeHookConfigValue{
+					Value:        fmt.Sprintf("http://6.6.6:8080/%s", hooks[k].UUID),
+					Type:         "string",
+					Configurable: false,
+				}
+
+				if err := enc.Encode(map[string]sdk.NodeHook{
+					hooks[k].UUID: hooks[k],
+				}); err != nil {
+					return writeError(w, err)
+				}
+			case "/vcs/github/webhooks":
+				infos := repositoriesmanager.WebhooksInfos{
+					WebhooksDisabled:  false,
+					WebhooksSupported: true,
+					Icon:              "github",
+				}
+				if err := enc.Encode(infos); err != nil {
+					return writeError(w, err)
+				}
+			case "/vcs/github/repos/sguiheux/demo/hooks":
+				pr := sdk.VCSHook{
+					ID: "666",
+				}
+				if err := enc.Encode(pr); err != nil {
+					return writeError(w, err)
+				}
+			default:
+				if strings.HasPrefix(r.URL.String(), "/vcs/github/repos/sguiheux/demo/hooks?url=htt") && strings.HasSuffix(r.URL.String(), "&id=666") {
+					// Do NOTHING
+				} else {
+					t.Fatalf("UNKNOWN ROUTE: %s", r.URL.String())
+				}
+			}
+
+			return w, nil
+		},
+	)
+
+	proj := assets.InsertTestProject(t, db, cache, sdk.RandomString(10), sdk.RandomString(10))
+	vcsServer := sdk.ProjectVCSServerLink{
+		ProjectID: proj.ID,
+		Name:      "github",
+	}
+	vcsServer.Set("token", "foo")
+	vcsServer.Set("secret", "bar")
+	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
+
+	// Add pipeline
+	pipS := `version: v1.0
+name: print-env
+jobs:
+- job: New Job
+  steps:
+  - script:
+    - '#!/bin/bash'
+    - env
+  requirements:
+  - binary: docker
+  - binary: git`
+
+	var epip = new(exportentities.PipelineV1)
+	require.NoError(t, yaml.Unmarshal([]byte(pipS), epip))
+
+	pip, _, err := pipeline.ParseAndImport(ctx, db, cache, *proj, epip, u, pipeline.ImportOptions{PipelineName: epip.Name, FromRepository: "from/my-repo"})
+	require.NotNil(t, pip)
+	require.NoError(t, err)
+
+	// Add application
+	appS := `version: v1.0
+name: blabla
+vcs_server: github
+repo: sguiheux/demo
+vcs_ssh_key: proj-blabla`
+
+	var eapp = new(exportentities.Application)
+	require.NoError(t, yaml.Unmarshal([]byte(appS), eapp))
+	app, _, _, err := application.ParseAndImport(context.Background(), db, cache, *proj, eapp, application.ImportOptions{FromRepository: "from/my-repo"}, nil, u)
+	require.NotNil(t, app)
+	require.NoError(t, err)
+
+	// Add environmment
+	envS := `name: test
+values:
+  var_a:
+    type: string
+    value: a`
+
+	var eEnv = new(exportentities.Environment)
+	require.NoError(t, yaml.Unmarshal([]byte(envS), eEnv))
+	env, _, _, err := environment.ParseAndImport(ctx, db, *proj, *eEnv, environment.ImportOptions{FromRepository: "from/my-repo"}, project.DecryptWithBuiltinKey, u)
+	require.NotNil(t, env)
+	require.NoError(t, err)
+
+	proj.Applications = append(proj.Applications, *app)
+	proj.Pipelines = append(proj.Pipelines, *pip)
+	proj.Environments = append(proj.Environments, *env)
+
+	workflowS := `name: test-env
+version: v2.0
+workflow:
+  test-env:
+    pipeline: print-env
+    environment: test
+    application: blabla`
+
+	eWf, err := exportentities.UnmarshalWorkflow([]byte(workflowS), exportentities.FormatYAML)
+	require.NoError(t, err)
+
+	wf, _, err := workflow.ParseAndImport(ctx, db, cache, *proj, nil, eWf, u, workflow.ImportOptions{WorkflowName: "test-env", FromRepository: "from/my-repo"})
+	require.NotNil(t, wf)
+	require.NoError(t, err)
+
+	wf.ToDelete = true
+	wf.ToDeleteWithDependencies = &sdk.True
+	require.NoError(t, workflow.Update(ctx, db, cache, *proj, wf, workflow.UpdateOptions{DisableHookManagement: true}))
+
+	// Now delete
+	require.NoError(t, workflow.Delete(ctx, db, cache, *proj, wf))
+
+	// Now the app, pip, env should not exist anymore
+	_, err = application.LoadByID(db.DbMap, app.ID)
+	t.Logf("error: %v", err)
+	require.True(t, sdk.ErrorIs(err, sdk.ErrNotFound))
+
+	_, err = pipeline.LoadPipelineByID(ctx, db.DbMap, pip.ID, true)
+	t.Logf("error: %v", err)
+	require.True(t, sdk.ErrorIs(err, sdk.ErrPipelineNotFound))
+
+	_, err = environment.LoadEnvironmentByID(db.DbMap, env.ID)
+	t.Logf("error: %v", err)
+	require.True(t, sdk.ErrorIs(err, sdk.ErrEnvironmentNotFound))
+}
+
+func TestDeleteWorkflowWithDependencies2(t *testing.T) {
+	ctx := context.Background()
+	db, cache := test.SetupPG(t)
+
+	u, _ := assets.InsertAdminUser(t, db)
+
+	bootstrap.InitiliazeDB(ctx, sdk.DefaultValues{}, func() *gorp.DbMap { return db.DbMap })
+	a, _ := assets.InsertService(t, db, "TestDeleteWorkflowWithDependenciesVCS", sdk.TypeVCS)
+	b, _ := assets.InsertService(t, db, "TestDeleteWorkflowWithDependenciesHook", sdk.TypeHooks)
+
+	defer func() {
+		_ = services.Delete(db, a)
+		_ = services.Delete(db, b)
+	}()
+
+	services.HTTPClient = mock(
+		func(r *http.Request) (*http.Response, error) {
+			body := new(bytes.Buffer)
+			w := new(http.Response)
+			enc := json.NewEncoder(body)
+			w.Body = ioutil.NopCloser(body)
+			switch r.URL.String() {
+			// NEED get REPO
+			case "/vcs/github/repos/sguiheux/demo":
+				repo := sdk.VCSRepo{
+					URL:          "https",
+					Name:         "demo",
+					ID:           "123",
+					Fullname:     "sguiheux/demo",
+					Slug:         "sguiheux",
+					HTTPCloneURL: "https://github.com/sguiheux/demo.git",
+					SSHCloneURL:  "git://github.com/sguiheux/demo.git",
+				}
+				if err := enc.Encode(repo); err != nil {
+					return writeError(w, err)
+				}
+				// NEED for default payload on insert
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
+				b := sdk.VCSBranch{
+					Default:      true,
+					DisplayID:    "master",
+					LatestCommit: "mylastcommit",
+				}
+				if err := enc.Encode(b); err != nil {
+					return writeError(w, err)
+				}
+			case "/task/bulk":
+				var hooks map[string]sdk.NodeHook
+				request, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					return writeError(w, err)
+				}
+				if err := json.Unmarshal(request, &hooks); err != nil {
+					return writeError(w, err)
+				}
+				if len(hooks) != 1 {
+					return writeError(w, fmt.Errorf("Must only have 1 hook"))
+				}
+				k := reflect.ValueOf(hooks).MapKeys()[0].String()
+				hooks[k].Config["webHookURL"] = sdk.WorkflowNodeHookConfigValue{
+					Value:        fmt.Sprintf("http://6.6.6:8080/%s", hooks[k].UUID),
+					Type:         "string",
+					Configurable: false,
+				}
+
+				if err := enc.Encode(map[string]sdk.NodeHook{
+					hooks[k].UUID: hooks[k],
+				}); err != nil {
+					return writeError(w, err)
+				}
+			case "/vcs/github/webhooks":
+				infos := repositoriesmanager.WebhooksInfos{
+					WebhooksDisabled:  false,
+					WebhooksSupported: true,
+					Icon:              "github",
+				}
+				if err := enc.Encode(infos); err != nil {
+					return writeError(w, err)
+				}
+			case "/vcs/github/repos/sguiheux/demo/hooks":
+				pr := sdk.VCSHook{
+					ID: "666",
+				}
+				if err := enc.Encode(pr); err != nil {
+					return writeError(w, err)
+				}
+			default:
+				if strings.HasPrefix(r.URL.String(), "/vcs/github/repos/sguiheux/demo/hooks?url=htt") && strings.HasSuffix(r.URL.String(), "&id=666") {
+					// Do NOTHING
+				} else {
+					t.Fatalf("UNKNOWN ROUTE: %s", r.URL.String())
+				}
+			}
+
+			return w, nil
+		},
+	)
+
+	proj := assets.InsertTestProject(t, db, cache, sdk.RandomString(10), sdk.RandomString(10))
+	vcsServer := sdk.ProjectVCSServerLink{
+		ProjectID: proj.ID,
+		Name:      "github",
+	}
+	vcsServer.Set("token", "foo")
+	vcsServer.Set("secret", "bar")
+	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
+
+	// Add pipeline
+	pipS := `version: v1.0
+name: print-env
+jobs:
+- job: New Job
+  steps:
+  - script:
+    - '#!/bin/bash'
+    - env
+  requirements:
+  - binary: docker
+  - binary: git`
+
+	var epip = new(exportentities.PipelineV1)
+	require.NoError(t, yaml.Unmarshal([]byte(pipS), epip))
+
+	pip, _, err := pipeline.ParseAndImport(ctx, db, cache, *proj, epip, u, pipeline.ImportOptions{PipelineName: epip.Name, FromRepository: "from/my-repo"})
+	require.NotNil(t, pip)
+	require.NoError(t, err)
+
+	// Add application
+	appS := `version: v1.0
+name: blabla
+vcs_server: github
+repo: sguiheux/demo
+vcs_ssh_key: proj-blabla`
+
+	var eapp = new(exportentities.Application)
+	require.NoError(t, yaml.Unmarshal([]byte(appS), eapp))
+	app, _, _, err := application.ParseAndImport(context.Background(), db, cache, *proj, eapp, application.ImportOptions{FromRepository: "from/my-repo"}, nil, u)
+	require.NotNil(t, app)
+	require.NoError(t, err)
+
+	// Add environmment
+	envS := `name: test
+values:
+  var_a:
+    type: string
+    value: a`
+
+	var eEnv = new(exportentities.Environment)
+	require.NoError(t, yaml.Unmarshal([]byte(envS), eEnv))
+	env, _, _, err := environment.ParseAndImport(ctx, db, *proj, *eEnv, environment.ImportOptions{FromRepository: "from/my-repo"}, project.DecryptWithBuiltinKey, u)
+	require.NotNil(t, env)
+	require.NoError(t, err)
+
+	proj.Applications = append(proj.Applications, *app)
+	proj.Pipelines = append(proj.Pipelines, *pip)
+	proj.Environments = append(proj.Environments, *env)
+
+	workflowS := `name: test-env
+version: v2.0
+workflow:
+  test-env:
+    pipeline: print-env
+    environment: test
+    application: blabla`
+
+	eWf, err := exportentities.UnmarshalWorkflow([]byte(workflowS), exportentities.FormatYAML)
+	require.NoError(t, err)
+
+	wf, _, err := workflow.ParseAndImport(ctx, db, cache, *proj, nil, eWf, u, workflow.ImportOptions{WorkflowName: "test-env", FromRepository: "from/my-repo"})
+	require.NotNil(t, wf)
+	require.NoError(t, err)
+
+	// Craft a new workflow that use the same resources
+	workflowS2 := `name: test-env-2
+version: v2.0
+workflow:
+  test-env:
+    pipeline: print-env
+    environment: test
+    application: blabla`
+
+	eWf2, err := exportentities.UnmarshalWorkflow([]byte(workflowS2), exportentities.FormatYAML)
+	require.NoError(t, err)
+
+	wf2, _, err := workflow.ParseAndImport(ctx, db, cache, *proj, nil, eWf2, u, workflow.ImportOptions{WorkflowName: "test-env-2", FromRepository: "from/my-repo-2"})
+	require.NotNil(t, wf2)
+	require.NoError(t, err)
+
+	// Delete the first workflow
+	wf.ToDelete = true
+	wf.ToDeleteWithDependencies = &sdk.True
+	require.NoError(t, workflow.Update(ctx, db, cache, *proj, wf, workflow.UpdateOptions{DisableHookManagement: true}))
+	require.NoError(t, workflow.Delete(ctx, db, cache, *proj, wf))
+
+	// Now the app, pip, env should still exist, but unlinked from the repo
+	app, err = application.LoadByID(db.DbMap, app.ID)
+	require.NoError(t, err)
+	require.Empty(t, app.FromRepository)
+
+	pip, err = pipeline.LoadPipelineByID(ctx, db.DbMap, pip.ID, true)
+	require.NoError(t, err)
+	require.Empty(t, pip.FromRepository)
+
+	env, err = environment.LoadEnvironmentByID(db.DbMap, env.ID)
+	require.NoError(t, err)
+	require.Empty(t, env.FromRepository)
 
 }

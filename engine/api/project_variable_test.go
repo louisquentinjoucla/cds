@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -88,8 +89,17 @@ func Test_postEncryptVariableHandler(t *testing.T) {
 	//Check result
 	test.NoError(t, json.Unmarshal(rec.Body.Bytes(), v))
 
-	decrypt, err := project.DecryptWithBuiltinKey(db, proj.ID, v.Value)
+	decrypt, err := project.DecryptWithBuiltinKey(context.TODO(), db, proj.ID, v.Value)
 	test.NoError(t, err)
 
 	assert.Equal(t, "bar", decrypt)
+
+	uri = router.GetRoute("DELETE", api.deleteEncryptVariableHandler, vars)
+	req = assets.NewAuthentifiedRequest(t, u, pass, "DELETE", uri+"?name="+v.Name, v)
+
+	//Do the request
+	rec = httptest.NewRecorder()
+	api.Router.Mux.ServeHTTP(rec, req)
+	assert.Equal(t, 204, rec.Code)
+
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/authentication"
 	"github.com/ovh/cds/engine/api/bootstrap"
+	"github.com/ovh/cds/engine/api/integration"
 	"github.com/ovh/cds/engine/api/pipeline"
 	"github.com/ovh/cds/engine/api/repositoriesmanager"
 	"github.com/ovh/cds/engine/api/services"
@@ -56,6 +57,7 @@ func TestHookRunWithoutPayloadProcessNodeBuildParameter(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -95,17 +97,17 @@ func TestHookRunWithoutPayloadProcessNodeBuildParameter(t *testing.T) {
 					return writeError(w, err)
 				}
 				// NEED for default payload on insert
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "mylastcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=master":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=master&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "master",
@@ -249,6 +251,7 @@ func TestHookRunWithHashOnlyProcessNodeBuildParameter(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -288,13 +291,13 @@ func TestHookRunWithHashOnlyProcessNodeBuildParameter(t *testing.T) {
 					return writeError(w, err)
 				}
 				// NEED for default payload on insert
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "mylastcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET COMMIT TO GET AUTHOR AND MESSAGE
@@ -430,6 +433,7 @@ func TestManualRunWithPayloadProcessNodeBuildParameter(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -465,17 +469,17 @@ func TestManualRunWithPayloadProcessNodeBuildParameter(t *testing.T) {
 					return writeError(w, err)
 				}
 				// NEED for default payload on insert
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "mylastcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branch",
@@ -617,17 +621,17 @@ func TestManualRunBranchAndCommitInPayloadProcessNodeBuildParameter(t *testing.T
 					return writeError(w, err)
 				}
 				// NEED for default payload on insert
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "mylastcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				t.Fatalf("No need to get branch: %s", r.URL.String())
 				// NEED GET COMMIT TO GET AUTHOR AND MESSAGE
 			case "/vcs/github/repos/sguiheux/demo/commits/currentcommit":
@@ -757,22 +761,17 @@ func TestManualRunBranchAndRepositoryInPayloadProcessNodeBuildParameter(t *testi
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "defaultcommit",
 				}
-				b2 := sdk.VCSBranch{
-					Default:      false,
-					DisplayID:    "feat/branch",
-					LatestCommit: "mylastcommit",
-				}
-				if err := enc.Encode([]sdk.VCSBranch{b, b2}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branch",
@@ -810,7 +809,7 @@ func TestManualRunBranchAndRepositoryInPayloadProcessNodeBuildParameter(t *testi
 					return writeError(w, err)
 				}
 			// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2FbranchForked":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2FbranchForked&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branchForked",
@@ -834,7 +833,7 @@ func TestManualRunBranchAndRepositoryInPayloadProcessNodeBuildParameter(t *testi
 					return writeError(w, err)
 				}
 			// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/richardlt/demo/branches/?branch=feat%2FbranchForked":
+			case "/vcs/github/repos/richardlt/demo/branches/?branch=feat%2FbranchForked&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branchForked",
@@ -971,6 +970,7 @@ func TestManualRunBuildParameterMultiApplication(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer2))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -1004,28 +1004,24 @@ func TestManualRunBuildParameterMultiApplication(t *testing.T) {
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/stash/repos/ovh/cds/branches":
-				bs := []sdk.VCSBranch{
-					{
-						LatestCommit: "defaultCommit",
-						DisplayID:    "defaultBranch",
-						Default:      true,
-						ID:           "1",
-					},
+			case "/vcs/stash/repos/ovh/cds/branches/?branch=&default=true":
+				bs := sdk.VCSBranch{
+					LatestCommit: "defaultCommit",
+					DisplayID:    "defaultBranch",
+					Default:      true,
+					ID:           "1",
 				}
 				if err := enc.Encode(bs); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/stash/repos/ovh/cds/branches/?branch=feat%2Fbranch":
+			case "/vcs/stash/repos/ovh/cds/branches/?branch=feat%2Fbranch&default=false":
 				return writeError(w, sdk.ErrNotFound)
-			case "/vcs/github/repos/sguiheux/demo/branches":
-				bs := []sdk.VCSBranch{
-					{
-						LatestCommit: "defaultCommit",
-						DisplayID:    "defaultBranch",
-						Default:      true,
-						ID:           "1",
-					},
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
+				bs := sdk.VCSBranch{
+					LatestCommit: "defaultCommit",
+					DisplayID:    "defaultBranch",
+					Default:      true,
+					ID:           "1",
 				}
 				if err := enc.Encode(bs); err != nil {
 					return writeError(w, err)
@@ -1058,7 +1054,7 @@ func TestManualRunBuildParameterMultiApplication(t *testing.T) {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branch",
@@ -1216,6 +1212,7 @@ func TestManualRunBuildParameterNoApplicationOnRoot(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer2))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -1249,32 +1246,18 @@ func TestManualRunBuildParameterNoApplicationOnRoot(t *testing.T) {
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/stash/repos/ovh/cds/branches":
-				bs := []sdk.VCSBranch{
-					{
-						LatestCommit: "defaultCommit",
-						DisplayID:    "defaultBranch",
-						Default:      true,
-						ID:           "1",
-					},
+			case "/vcs/stash/repos/ovh/cds/branches/?branch=&default=true":
+				bs := sdk.VCSBranch{
+					LatestCommit: "defaultCommit",
+					DisplayID:    "defaultBranch",
+					Default:      true,
+					ID:           "1",
 				}
 				if err := enc.Encode(bs); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/stash/repos/ovh/cds/branches/?branch=feat%2Fbranch":
+			case "/vcs/stash/repos/ovh/cds/branches/?branch=feat%2Fbranch&default=false":
 				return writeError(w, sdk.ErrNotFound)
-			case "/vcs/github/repos/sguiheux/demo/branches":
-				bs := []sdk.VCSBranch{
-					{
-						LatestCommit: "defaultCommit",
-						DisplayID:    "defaultBranch",
-						Default:      true,
-						ID:           "1",
-					},
-				}
-				if err := enc.Encode(bs); err != nil {
-					return writeError(w, err)
-				}
 			case "/vcs/stash/repos/ovh/cds/commits/defaultCommit":
 				c := sdk.VCSCommit{
 					Author: sdk.VCSAuthor{
@@ -1304,7 +1287,7 @@ func TestManualRunBuildParameterNoApplicationOnRoot(t *testing.T) {
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
 			//case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=defaultBranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=defaultBranch&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "defaultBranch",
@@ -1461,6 +1444,7 @@ func TestGitParamOnPipelineWithoutApplication(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer2))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -1495,19 +1479,17 @@ func TestGitParamOnPipelineWithoutApplication(t *testing.T) {
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "defaultCommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{
-					b,
-				}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branch",
@@ -1603,7 +1585,7 @@ func TestGitParamOnPipelineWithoutApplication(t *testing.T) {
 
 	// Load run
 	var errRun error
-	wr, errRun = workflow.LoadRunByID(db, wr.ID, workflow.LoadRunOptions{})
+	wr, errRun = workflow.LoadRunByID(context.Background(), db, wr.ID, workflow.LoadRunOptions{})
 	assert.NoError(t, errRun)
 
 	assert.Equal(t, 2, len(wr.WorkflowNodeRuns))
@@ -1649,6 +1631,7 @@ func TestGitParamOnApplicationWithoutRepo(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer2))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -1683,17 +1666,17 @@ func TestGitParamOnApplicationWithoutRepo(t *testing.T) {
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "defaultcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branch",
@@ -1831,6 +1814,7 @@ func TestGitParamOn2ApplicationSameRepo(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -1872,17 +1856,17 @@ func TestGitParamOn2ApplicationSameRepo(t *testing.T) {
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branch",
 					LatestCommit: "mylastcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				repoBranch++
 				if repoBranch == 2 {
 					t.Fatalf("Must not be call twice: %s", r.URL.String())
@@ -2033,6 +2017,7 @@ func TestGitParamWithJoin(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -2074,17 +2059,17 @@ func TestGitParamWithJoin(t *testing.T) {
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "defaultcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				repoBranch++
 				if repoBranch == 2 {
 					t.Fatalf("Must not be call twice: %s", r.URL.String())
@@ -2227,6 +2212,123 @@ func TestGitParamWithJoin(t *testing.T) {
 	assert.Equal(t, "feat/branch", wr.WorkflowNodeRuns[w.WorkflowData.Joins[0].Triggers[0].ChildNode.ID][0].VCSBranch)
 }
 
+// Test with artifact manager parameter
+func TestIntegrationParam(t *testing.T) {
+	db, cache := test.SetupPG(t, bootstrap.InitiliazeDB)
+
+	u, _ := assets.InsertAdminUser(t, db)
+
+	// Create project
+	key := sdk.RandomString(10)
+	proj := assets.InsertTestProject(t, db, cache, key, key)
+
+	fooModel := sdk.IntegrationModel{
+		Name:            sdk.RandomString(10),
+		Author:          "foo",
+		ArtifactManager: true,
+		DefaultConfig: map[string]sdk.IntegrationConfigValue{
+			"Host": {
+				Type: sdk.IntegrationConfigTypeString,
+			},
+			"Token": {
+				Type: sdk.IntegrationConfigTypePassword,
+			},
+		},
+		AdditionalDefaultConfig: map[string]sdk.IntegrationConfigValue{
+			"BuildInfo": {
+				Type:  sdk.IntegrationConfigTypeString,
+				Value: "defaultValue",
+			},
+		},
+	}
+	require.NoError(t, integration.InsertModel(db, &fooModel))
+	t.Cleanup(func() {
+		integration.DeleteModel(context.TODO(), db, fooModel.ID)
+	})
+
+	projInt := sdk.ProjectIntegration{
+		Name:               "Artifactory",
+		Config:             fooModel.DefaultConfig.Clone(),
+		Model:              fooModel,
+		IntegrationModelID: fooModel.ID,
+		ProjectID:          proj.ID,
+	}
+	projInt.Config["Host"] = sdk.IntegrationConfigValue{
+		Type:  sdk.IntegrationConfigTypeString,
+		Value: "myhost",
+	}
+	projInt.Config["Token"] = sdk.IntegrationConfigValue{
+		Type:  sdk.IntegrationConfigTypePassword,
+		Value: "mypassword",
+	}
+	require.NoError(t, integration.InsertIntegration(db, &projInt))
+
+	proj.Integrations = append(proj.Integrations, projInt)
+
+	pip := createEmptyPipeline(t, db, cache, proj, u)
+
+	// RELOAD PROJECT WITH DEPENDENCIES
+	proj.Pipelines = append(proj.Pipelines, *pip)
+
+	// WORKFLOW TO RUN
+	w := sdk.Workflow{
+		ProjectID:  proj.ID,
+		ProjectKey: proj.Key,
+		Name:       sdk.RandomString(10),
+		WorkflowData: sdk.WorkflowData{
+			Node: sdk.Node{
+				Name: "root",
+				Ref:  "root",
+				Type: sdk.NodeTypePipeline,
+				Context: &sdk.NodeContext{
+					PipelineID: proj.Pipelines[0].ID,
+				},
+			},
+		},
+		Pipelines: map[int64]sdk.Pipeline{
+			proj.Pipelines[0].ID: proj.Pipelines[0],
+		},
+		Integrations: []sdk.WorkflowProjectIntegration{
+			{
+				ProjectIntegration:   projInt,
+				ProjectIntegrationID: projInt.ID,
+			},
+		},
+	}
+
+	require.NoError(t, workflow.Insert(context.TODO(), db, cache, *proj, &w))
+
+	// CREATE RUN
+	var manualEvent sdk.WorkflowNodeRunManual
+	manualEvent.Payload = map[string]string{
+		"git.branch": "feat/branch",
+		"my.value":   "bar",
+	}
+
+	consumer, _ := authentication.LoadConsumerByTypeAndUserID(context.TODO(), db, sdk.ConsumerLocal, u.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
+	opts := &sdk.WorkflowRunPostHandlerOption{
+		Manual:         &manualEvent,
+		AuthConsumerID: consumer.ID,
+	}
+	wr, err := workflow.CreateRun(db.DbMap, &w, *opts)
+	require.NoError(t, err)
+	wr.Workflow = w
+
+	_, errR := workflow.StartWorkflowRun(context.TODO(), db, cache, *proj, wr, opts, *consumer, nil)
+	require.NoError(t, errR)
+
+	require.Equal(t, 1, len(wr.WorkflowNodeRuns))
+	require.Equal(t, 1, len(wr.WorkflowNodeRuns[w.WorkflowData.Node.ID]))
+
+	mapParams := sdk.ParametersToMap(wr.WorkflowNodeRuns[w.WorkflowData.Node.ID][0].BuildParameters)
+	require.Equal(t, "Artifactory", mapParams["cds.integration.artifact_manager"])
+	require.Equal(t, "myhost", mapParams["cds.integration.artifact_manager.Host"])
+	require.Equal(t, "defaultValue", mapParams["cds.integration.artifact_manager.BuildInfo"])
+
+	_, has := mapParams["cds.integration.artifact_manager.Token"]
+	require.False(t, has)
+}
+
 // Payload: branch only
 func TestGitParamOn2ApplicationSameRepoWithFork(t *testing.T) {
 	db, cache := test.SetupPG(t, bootstrap.InitiliazeDB)
@@ -2253,6 +2355,7 @@ func TestGitParamOn2ApplicationSameRepoWithFork(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -2294,17 +2397,17 @@ func TestGitParamOn2ApplicationSameRepoWithFork(t *testing.T) {
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "defaultcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				repoBranch++
 				if repoBranch == 2 {
 					t.Fatalf("Must not be call twice: %s", r.URL.String())
@@ -2463,6 +2566,7 @@ func TestManualRunWithPayloadAndRunCondition(t *testing.T) {
 	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
 
 	allSrv, err := services.LoadAll(context.TODO(), db)
+	require.NoError(t, err)
 	for _, s := range allSrv {
 		if err := services.Delete(db, &s); err != nil {
 			t.Fatalf("unable to delete service: %v", err)
@@ -2497,17 +2601,17 @@ func TestManualRunWithPayloadAndRunCondition(t *testing.T) {
 				if err := enc.Encode(repo); err != nil {
 					return writeError(w, err)
 				}
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
 					LatestCommit: "defaultcommit",
 				}
-				if err := enc.Encode([]sdk.VCSBranch{b}); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=feat%2Fbranch&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "feat/branch",
@@ -2776,7 +2880,7 @@ func writeError(w *http.Response, err error) (*http.Response, error) {
 	body := new(bytes.Buffer)
 	enc := json.NewEncoder(body)
 	w.Body = ioutil.NopCloser(body)
-	sdkErr := sdk.ExtractHTTPError(err, "")
+	sdkErr := sdk.ExtractHTTPError(err)
 	_ = enc.Encode(sdkErr) // nolint
 	w.StatusCode = sdkErr.Status
 	return w, sdkErr

@@ -9,13 +9,13 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/event"
 	"github.com/ovh/cds/engine/api/services"
 	"github.com/ovh/cds/engine/api/worker"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (api *API) getServiceHandler() service.Handler {
@@ -36,7 +36,7 @@ func (api *API) getServiceHandler() service.Handler {
 		// Try to load from DB
 		var srvs []sdk.Service
 		var err error
-		if isAdmin(ctx) || isMaintainer(ctx) {
+		if isMaintainer(ctx) {
 			srvs, err = services.LoadAllByType(ctx, api.mustDB(), typeService)
 		} else {
 			c := getAPIConsumer(ctx)
@@ -109,7 +109,7 @@ func (api *API) postServiceRegisterHandler() service.Handler {
 			if err := services.Update(ctx, tx, srv); err != nil {
 				return err
 			}
-			log.Debug("postServiceRegisterHandler> update existing service %s(%d) registered for consumer %s", srv.Name, srv.ID, *srv.ConsumerID)
+			log.Debug(ctx, "postServiceRegisterHandler> update existing service %s(%d) registered for consumer %s", srv.Name, srv.ID, *srv.ConsumerID)
 		} else {
 			srv = &data
 			srv.ConsumerID = &consumer.ID
@@ -117,7 +117,7 @@ func (api *API) postServiceRegisterHandler() service.Handler {
 			if err := services.Insert(ctx, tx, srv); err != nil {
 				return sdk.WithStack(err)
 			}
-			log.Debug("postServiceRegisterHandler> insert new service %s(%d) registered for consumer %s", srv.Name, srv.ID, *srv.ConsumerID)
+			log.Debug(ctx, "postServiceRegisterHandler> insert new service %s(%d) registered for consumer %s", srv.Name, srv.ID, *srv.ConsumerID)
 		}
 
 		if err := services.UpsertStatus(tx, *srv, sessionID); err != nil {
@@ -125,7 +125,7 @@ func (api *API) postServiceRegisterHandler() service.Handler {
 		}
 
 		if len(srv.PublicKey) > 0 {
-			log.Debug("postServiceRegisterHandler> service %s registered with public key: %s", srv.Name, string(srv.PublicKey))
+			log.Debug(ctx, "postServiceRegisterHandler> service %s registered with public key: %s", srv.Name, string(srv.PublicKey))
 		}
 
 		// For hatchery service we need to check if there are workers that are not attached to an existing hatchery
@@ -232,7 +232,7 @@ func (api *API) serviceAPIHeartbeatUpdate(ctx context.Context, db *gorp.DbMap) {
 
 	var srvConfig sdk.ServiceConfig
 	b, _ := json.Marshal(api.Config)
-	json.Unmarshal(b, &srvConfig) // nolint
+	sdk.JSONUnmarshal(b, &srvConfig) // nolint
 
 	srv := &sdk.Service{
 		CanonicalService: sdk.CanonicalService{

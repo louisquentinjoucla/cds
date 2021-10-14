@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -17,6 +16,7 @@ import (
 	"github.com/blang/semver"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
+	"github.com/rockbears/log"
 	"go.opencensus.io/stats"
 
 	"github.com/ovh/cds/engine/api/action"
@@ -32,6 +32,7 @@ import (
 	"github.com/ovh/cds/engine/api/bootstrap"
 	"github.com/ovh/cds/engine/api/broadcast"
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
+	"github.com/ovh/cds/engine/api/download"
 	"github.com/ovh/cds/engine/api/event"
 	"github.com/ovh/cds/engine/api/integration"
 	"github.com/ovh/cds/engine/api/mail"
@@ -55,7 +56,6 @@ import (
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
 	"github.com/ovh/cds/sdk/jws"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // Configuration is the configuration structure for CDS API
@@ -65,10 +65,7 @@ type Configuration struct {
 		API string `toml:"api" default:"http://localhost:8081" json:"api"`
 		UI  string `toml:"ui" default:"http://localhost:8080" json:"ui"`
 	} `toml:"url" comment:"#####################\n CDS URLs Settings \n####################" json:"url"`
-	HTTP struct {
-		Addr string `toml:"addr" default:"" commented:"true" comment:"Listen HTTP address without port, example: 127.0.0.1" json:"addr"`
-		Port int    `toml:"port" default:"8081" json:"port"`
-	} `toml:"http" json:"http"`
+	HTTP    service.HTTPRouterConfiguration `toml:"http" json:"http"`
 	Secrets struct {
 		Key string `toml:"key" json:"-"`
 	} `toml:"secrets" json:"secrets"`
@@ -80,17 +77,28 @@ type Configuration struct {
 			Password string `toml:"password" json:"-"`
 		} `toml:"redis" comment:"Connect CDS to a redis cache If you more than one CDS instance and to avoid losing data at startup" json:"redis"`
 	} `toml:"cache" comment:"######################\n CDS Cache Settings \n#####################" json:"cache"`
-	Directories struct {
-		Download string `toml:"download" default:"/var/lib/cds-engine" json:"download"`
-	} `toml:"directories" json:"directories"`
+	Download struct {
+		Directory          string   `toml:"directory" default:"/var/lib/cds-engine" json:"directory" comment:"this directory contains cds binaries. If it's empty, cds will download binaries from GitHub (property downloadFromGitHub) or from an artifactory instance (property artifactory) to it"`
+		SupportedOSArch    []string `toml:"supportedOSArch" default:"" json:"supportedOSArch" commented:"true" comment:"example: [\"darwin/amd64\",\"darwin/arm64\",\"linux/amd64\",\"windows/amd64\"]. If empty, all os / arch are supported: windows,darwin,linux,freebsd,openbsd and amd64,arm,386,arm64,ppc64le"`
+		DownloadFromGitHub bool     `toml:"downloadFromGitHub" default:"true" json:"downloadFromGitHub" comment:"allow downloading binaries from GitHub"`
+		Artifactory        struct {
+			URL        string `toml:"url" default:"https://your-artifactory/artifactory" json:"url" comment:"URL of your artifactory" commented:"true"`
+			Path       string `toml:"path" default:"artifactoryPath" json:"path" comment:"example: CDS/w-cds. This path must contains directory named as '0.49.0' and this directory must contains cds binaries"`
+			Repository string `toml:"repository" default:"artifactoryRepository" json:"repository" comment:"artifactory repository"`
+			Token      string `toml:"token" default:"artifactoryToken" json:"-" comment:"token used to get binaries"`
+		} `toml:"artifactory" default:"true" json:"artifactory" comment:"Artifactory Configuration (optional)." commented:"true"`
+	} `toml:"download" json:"download"`
 	InternalServiceMesh struct {
 		RequestSecondsTimeout int  `toml:"requestSecondsTimeout" json:"requestSecondsTimeout" default:"60"`
 		InsecureSkipVerifyTLS bool `toml:"insecureSkipVerifyTLS" json:"insecureSkipVerifyTLS" default:"false"`
 	} `toml:"internalServiceMesh" json:"internalServiceMesh"`
 	Auth struct {
-		DefaultGroup  string `toml:"defaultGroup" default:"" comment:"The default group is the group in which every new user will be granted at signup" json:"defaultGroup"`
-		RSAPrivateKey string `toml:"rsaPrivateKey" default:"" comment:"The RSA Private Key used to sign and verify the JWT Tokens issued by the API \nThis is mandatory." json:"-"`
-		LDAP          struct {
+		TokenDefaultDuration         int64  `toml:"tokenDefaultDuration" default:"30" comment:"The default duration of a token (in days)" json:"tokenDefaultDuration"`
+		TokenOverlapDefaultDuration  string `toml:"tokenOverlapDefaultDuration" default:"24h" comment:"The default overlap duration when a token is regen" json:"tokenOverlapDefaultDuration"`
+		DefaultGroup                 string `toml:"defaultGroup" default:"" comment:"The default group is the group in which every new user will be granted at signup" json:"defaultGroup"`
+		DisableAddUserInDefaultGroup bool   `toml:"disableAddUserInDefaultGroup" default:"false" comment:"If false, user are automatically added in the default group" json:"disableAddUserInDefaultGroup"`
+		RSAPrivateKey                string `toml:"rsaPrivateKey" default:"" comment:"The RSA Private Key used to sign and verify the JWT Tokens issued by the API \nThis is mandatory." json:"-"`
+		LDAP                         struct {
 			Enabled         bool   `toml:"enabled" default:"false" json:"enabled"`
 			SignupDisabled  bool   `toml:"signupDisabled" default:"false" json:"signupDisabled"`
 			Host            string `toml:"host" json:"host"`
@@ -109,12 +117,13 @@ type Configuration struct {
 			SignupAllowedDomains string `toml:"signupAllowedDomains" default:"" comment:"Allow signup from selected domains only - comma separated. Example: your-domain.com,another-domain.com" commented:"true" json:"signupAllowedDomains"`
 		} `toml:"local" json:"local"`
 		CorporateSSO struct {
-			Enabled        bool   `json:"enabled" default:"false" toml:"enabled"`
-			SignupDisabled bool   `json:"signupDisabled" default:"false" toml:"signupDisabled"`
-			MailDomain     string `json:"mailDomain" toml:"mailDomain"`
-			RedirectMethod string `json:"redirect_method" toml:"redirectMethod"`
-			RedirectURL    string `json:"redirect_url" toml:"redirectURL"`
-			Keys           struct {
+			MFASupportEnabled bool   `json:"mfa_support_enabled" default:"false" toml:"mfaSupportEnabled"`
+			Enabled           bool   `json:"enabled" default:"false" toml:"enabled"`
+			SignupDisabled    bool   `json:"signupDisabled" default:"false" toml:"signupDisabled"`
+			MailDomain        string `json:"mailDomain" toml:"mailDomain"`
+			RedirectMethod    string `json:"redirect_method" toml:"redirectMethod"`
+			RedirectURL       string `json:"redirect_url" toml:"redirectURL"`
+			Keys              struct {
 				RequestSigningKey  string `json:"-" toml:"requestSigningKey"`
 				TokenSigningKey    string `json:"-" toml:"tokenSigningKey"`
 				TokenKeySigningKey struct {
@@ -126,10 +135,10 @@ type Configuration struct {
 		Github struct {
 			Enabled        bool   `toml:"enabled" default:"false" json:"enabled"`
 			SignupDisabled bool   `toml:"signupDisabled" default:"false" json:"signupDisabled"`
-			URL            string `toml:"url" json:"url" default:"https://github.com" comment:"Github URL"`
-			APIURL         string `toml:"apiUrl" json:"apiUrl" default:"https://api.github.com" comment:"Github API URL"`
-			ClientID       string `toml:"clientId" json:"-" comment:"Github OAuth Client ID"`
-			ClientSecret   string `toml:"clientSecret" json:"-" comment:"Github OAuth Client Secret"`
+			URL            string `toml:"url" json:"url" default:"https://github.com" comment:"GitHub URL"`
+			APIURL         string `toml:"apiUrl" json:"apiUrl" default:"https://api.github.com" comment:"GitHub API URL"`
+			ClientID       string `toml:"clientId" json:"-" comment:"GitHub OAuth Client ID"`
+			ClientSecret   string `toml:"clientSecret" json:"-" comment:"GitHub OAuth Client Secret"`
 		} `toml:"github" json:"github" comment:"#######\n CDS <-> GitHub Auth. Documentation on https://ovh.github.io/cds/docs/integrations/github/github_authentication/ \n######"`
 		Gitlab struct {
 			Enabled        bool   `toml:"enabled" default:"false" json:"enabled"`
@@ -187,7 +196,7 @@ type Configuration struct {
 		} `toml:"awss3" json:"awss3"`
 	} `toml:"artifact" comment:"Either filesystem local storage or Openstack Swift Storage are supported" json:"artifact"`
 	Services    []sdk.ServiceConfiguration `toml:"services" comment:"###########################\n CDS Services Settings \n##########################" json:"services"`
-	DefaultOS   string                     `toml:"defaultOS" default:"linux" comment:"if no model and os/arch is specified in your job's requirements then spawn worker on this operating system (example: freebsd, linux, windows)" json:"defaultOS"`
+	DefaultOS   string                     `toml:"defaultOS" default:"linux" comment:"if no model and os/arch is specified in your job's requirements then spawn worker on this operating system (example: darwin, freebsd, linux, windows)" json:"defaultOS"`
 	DefaultArch string                     `toml:"defaultArch" default:"amd64" comment:"if no model and no os/arch is specified in your job's requirements then spawn worker on this architecture (example: amd64, arm, 386)" json:"defaultArch"`
 	Graylog     struct {
 		AccessToken string `toml:"accessToken" json:"-"`
@@ -203,7 +212,9 @@ type Configuration struct {
 		Error   string `toml:"error" comment:"Help displayed to user on each error. Warning: this message could be view by anonymous user. Markdown accepted." json:"error" default:""`
 	} `toml:"help" comment:"######################\n 'Help' informations \n######################" json:"help"`
 	Workflow struct {
-		MaxRuns int64 `toml:"maxRuns" comment:"Maximum of runs by workflow" json:"maxRuns" default:"255"`
+		MaxRuns                int64  `toml:"maxRuns" comment:"Maximum of runs by workflow" json:"maxRuns" default:"255"`
+		DefaultRetentionPolicy string `toml:"defaultRetentionPolicy" comment:"Default rule for workflow run retention policy, this rule can be overridden on each workflow.\n Example: 'return run_days_before < 365' keeps runs for one year." json:"defaultRetentionPolicy" default:"return run_days_before < 365"`
+		DisablePurgeDeletion   bool   `toml:"disablePurgeDeletion" comment:"Allow you to disable the deletion part of the purge. Workflow run will only be marked as delete" json:"disablePurgeDeletion" default:"false"`
 	} `toml:"workflow" comment:"######################\n 'Workflow' global configuration \n######################" json:"workflow"`
 }
 
@@ -284,7 +295,7 @@ func (a *API) ApplyConfiguration(config interface{}) error {
 	var ok bool
 	a.Config, ok = config.(Configuration)
 	if !ok {
-		return fmt.Errorf("Invalid configuration")
+		return fmt.Errorf("invalid configuration")
 	}
 
 	a.Common.ServiceType = sdk.TypeAPI
@@ -296,7 +307,7 @@ func (a *API) ApplyConfiguration(config interface{}) error {
 func (a *API) CheckConfiguration(config interface{}) error {
 	aConfig, ok := config.(Configuration)
 	if !ok {
-		return fmt.Errorf("Invalid API configuration")
+		return fmt.Errorf("invalid API configuration")
 	}
 
 	if aConfig.Name == "" {
@@ -309,32 +320,32 @@ func (a *API) CheckConfiguration(config interface{}) error {
 
 	if aConfig.URL.UI != "" {
 		if _, err := url.Parse(aConfig.URL.UI); err != nil {
-			return fmt.Errorf("Invalid given UI URL")
+			return fmt.Errorf("invalid given UI URL")
 		}
 	}
 
-	if aConfig.Directories.Download == "" {
-		return fmt.Errorf("Invalid download directory (empty)")
+	if aConfig.Download.Directory == "" {
+		return fmt.Errorf("invalid download directory (empty)")
 	}
 
-	if ok, err := sdk.DirectoryExists(aConfig.Directories.Download); !ok {
-		if err := os.MkdirAll(aConfig.Directories.Download, os.FileMode(0700)); err != nil {
-			return fmt.Errorf("Unable to create directory %s: %v", aConfig.Directories.Download, err)
+	if ok, err := sdk.DirectoryExists(aConfig.Download.Directory); !ok {
+		if err := os.MkdirAll(aConfig.Download.Directory, os.FileMode(0700)); err != nil {
+			return fmt.Errorf("Unable to create directory %s: %v", aConfig.Download.Directory, err)
 		}
-		log.Info(context.Background(), "Directory %s has been created", aConfig.Directories.Download)
+		log.Info(context.Background(), "Directory %s has been created", aConfig.Download.Directory)
 	} else if err != nil {
-		return fmt.Errorf("Invalid download directory %s: %v", aConfig.Directories.Download, err)
+		return fmt.Errorf("invalid download directory %s: %v", aConfig.Download.Directory, err)
 	}
 
 	switch aConfig.Artifact.Mode {
 	case "local", "awss3", "openstack", "swift":
 	default:
-		return fmt.Errorf("Invalid artifact mode")
+		return fmt.Errorf("invalid artifact mode")
 	}
 
 	if aConfig.Artifact.Mode == "local" {
 		if aConfig.Artifact.Local.BaseDirectory == "" {
-			return fmt.Errorf("Invalid artifact local base directory (empty name)")
+			return fmt.Errorf("invalid artifact local base directory (empty name)")
 		}
 		if ok, err := sdk.DirectoryExists(aConfig.Artifact.Local.BaseDirectory); !ok {
 			if err := os.MkdirAll(aConfig.Artifact.Local.BaseDirectory, os.FileMode(0700)); err != nil {
@@ -342,19 +353,19 @@ func (a *API) CheckConfiguration(config interface{}) error {
 			}
 			log.Info(context.Background(), "Directory %s has been created", aConfig.Artifact.Local.BaseDirectory)
 		} else if err != nil {
-			return fmt.Errorf("Invalid artifact local base directory %s: %v", aConfig.Artifact.Local.BaseDirectory, err)
+			return fmt.Errorf("invalid artifact local base directory %s: %v", aConfig.Artifact.Local.BaseDirectory, err)
 		}
 	}
 
 	if len(aConfig.Secrets.Key) != 32 {
-		return fmt.Errorf("Invalid secret key. It should be 32 bits (%d)", len(aConfig.Secrets.Key))
+		return fmt.Errorf("invalid secret key. It should be 32 bits (%d)", len(aConfig.Secrets.Key))
 	}
 
 	if aConfig.DefaultArch == "" {
-		log.Warning(context.Background(), `You should add a default architecture in your configuration (example: defaultArch: "amd64"). It means if there is no model and os/arch requirement on your job then spawn on a worker based on this architecture`)
+		log.Warn(context.Background(), `You should add a default architecture in your configuration (example: defaultArch: "amd64"). It means if there is no model and os/arch requirement on your job then spawn on a worker based on this architecture`)
 	}
 	if aConfig.DefaultOS == "" {
-		log.Warning(context.Background(), `You should add a default operating system in your configuration (example: defaultOS: "linux"). It means if there is no model and os/arch requirement on your job then spawn on a worker based on this OS`)
+		log.Warn(context.Background(), `You should add a default operating system in your configuration (example: defaultOS: "linux"). It means if there is no model and os/arch requirement on your job then spawn on a worker based on this OS`)
 	}
 
 	if (aConfig.DefaultOS == "" && aConfig.DefaultArch != "") || (aConfig.DefaultOS != "" && aConfig.DefaultArch == "") {
@@ -366,6 +377,18 @@ func (a *API) CheckConfiguration(config interface{}) error {
 	}
 
 	return nil
+}
+
+func (api *API) getDownloadConf() download.Conf {
+	return download.Conf{
+		Directory:             api.Config.Download.Directory,
+		DownloadFromGitHub:    api.Config.Download.DownloadFromGitHub,
+		ArtifactoryURL:        api.Config.Download.Artifactory.URL,
+		ArtifactoryPath:       api.Config.Download.Artifactory.Path,
+		ArtifactoryRepository: api.Config.Download.Artifactory.Repository,
+		ArtifactoryToken:      api.Config.Download.Artifactory.Token,
+		SupportedOSArch:       api.Config.Download.SupportedOSArch,
+	}
 }
 
 type StartupConfigConsumerType string
@@ -401,30 +424,8 @@ func (a *API) Serve(ctx context.Context) error {
 	a.StartupTime = time.Now()
 
 	// Checking downloadable binaries
-	resources := sdk.AllDownloadableResourcesWithAvailability(a.Config.Directories.Download)
-	var hasWorker, hasCtl, hasEngine bool
-	for _, r := range resources {
-		if r.Available != nil && *r.Available {
-			switch r.Name {
-			case "worker":
-				hasWorker = true
-			case "cdsctl":
-				hasCtl = true
-			case "engine":
-				hasEngine = true
-			}
-		}
-	}
-	if !hasEngine {
-		log.Error(ctx, "engine is unavailable for download, this may lead to a poor user experience. Please check your configuration file or the %s directory", a.Config.Directories.Download)
-	}
-	if !hasCtl {
-		log.Error(ctx, "cdsctl is unavailable for download, this may lead to a poor user experience. Please check your configuration file or the %s directory", a.Config.Directories.Download)
-	}
-	if !hasWorker {
-		// If no worker, let's exit because CDS for run anything
-		log.Error(ctx, "worker is unavailable for download. Please check your configuration file or the %s directory", a.Config.Directories.Download)
-		return errors.New("worker binary unavailable")
+	if err := download.Init(ctx, a.getDownloadConf()); err != nil {
+		return sdk.WrapError(err, "unable to initialize downloadable binaries")
 	}
 
 	// Initialize the jwt layer
@@ -547,11 +548,53 @@ func (a *API) Serve(ctx context.Context) error {
 		return sdk.WrapError(err, "cannot connect to cache store")
 	}
 
+	a.GoRoutines = sdk.NewGoRoutines(ctx)
+
+	log.Info(ctx, "Running migration")
+	migrate.Add(ctx, sdk.Migration{Name: "RunsSecrets", Release: "0.47.0", Blocker: false, Automatic: true, ExecFunc: func(ctx context.Context) error {
+		return migrate.RunsSecrets(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper))
+	}})
+
+	migrate.Add(ctx, sdk.Migration{Name: "AuthConsumerTokenExpiration", Release: "0.47.0", Blocker: true, Automatic: true, ExecFunc: func(ctx context.Context) error {
+		return migrate.AuthConsumerTokenExpiration(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), time.Duration(a.Config.Auth.TokenDefaultDuration)*(24*time.Hour))
+	}})
+
+	migrate.Add(ctx, sdk.Migration{Name: "ArtifactoryIntegration", Release: "0.49.0", Blocker: true, Automatic: true, ExecFunc: func(ctx context.Context) error {
+		return migrate.ArtifactoryIntegration(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper))
+	}})
+
+	isFreshInstall, errF := version.IsFreshInstall(a.mustDB())
+	if errF != nil {
+		return sdk.WrapError(errF, "Unable to check if it's a fresh installation of CDS")
+	}
+
+	if isFreshInstall {
+		if err := migrate.SaveAllMigrations(a.mustDB()); err != nil {
+			return sdk.WrapError(err, "Cannot save all migrations to done")
+		}
+	} else {
+		if sdk.VersionCurrent().Version != "" && !strings.HasPrefix(sdk.VersionCurrent().Version, "snapshot") {
+			major, minor, _, errV := version.MaxVersion(a.mustDB())
+			if errV != nil {
+				return sdk.WrapError(errV, "Cannot fetch max version of CDS already started")
+			}
+			if major != 0 || minor != 0 {
+				minSemverCompatible, _ := semver.Parse(migrate.MinCompatibleRelease)
+				if major < minSemverCompatible.Major || (major == minSemverCompatible.Major && minor < minSemverCompatible.Minor) {
+					return fmt.Errorf("there are some mandatory migrations which aren't done. Please check each changelog of CDS. Maybe you have skipped a release migration. The minimum compatible release is %s, please update to this release before", migrate.MinCompatibleRelease)
+				}
+			}
+		}
+
+		// Run all migrations in several goroutines
+		migrate.Run(ctx, a.mustDB())
+	}
+
 	log.Info(ctx, "Initializing HTTP router")
-	a.GoRoutines = sdk.NewGoRoutines()
 	a.Router = &Router{
 		Mux:        mux.NewRouter(),
 		Background: ctx,
+		Config:     a.Config.HTTP,
 	}
 	a.InitRouter()
 	if err := a.initWebsocket(event.DefaultPubSubKey); err != nil {
@@ -636,7 +679,8 @@ func (a *API) Serve(ctx context.Context) error {
 
 	if a.Config.Auth.CorporateSSO.Enabled {
 		driverConfig := corpsso.Config{
-			MailDomain: a.Config.Auth.CorporateSSO.MailDomain,
+			MailDomain:        a.Config.Auth.CorporateSSO.MailDomain,
+			MFASupportEnabled: a.Config.Auth.CorporateSSO.MFASupportEnabled,
 		}
 		driverConfig.Request.Keys.RequestSigningKey = a.Config.Auth.CorporateSSO.Keys.RequestSigningKey
 		driverConfig.Request.RedirectMethod = a.Config.Auth.CorporateSSO.RedirectMethod
@@ -653,90 +697,59 @@ func (a *API) Serve(ctx context.Context) error {
 		log.Error(ctx, "error while initializing event system: %s", err)
 	}
 
-	a.GoRoutines.Run(ctx, "event.dequeue", func(ctx context.Context) {
+	a.GoRoutines.RunWithRestart(ctx, "event.dequeue", func(ctx context.Context) {
 		event.DequeueEvent(ctx, a.mustDB())
-	}, a.PanicDump())
+	})
 
 	log.Info(ctx, "Initializing internal routines...")
-	a.GoRoutines.Run(ctx, "maintenance.Subscribe", func(ctx context.Context) {
+	a.GoRoutines.RunWithRestart(ctx, "maintenance.Subscribe", func(ctx context.Context) {
 		if err := a.listenMaintenance(ctx); err != nil {
 			log.Error(ctx, "error while initializing listen maintenance routine: %s", err)
 		}
-	}, a.PanicDump())
+	})
 
 	a.GoRoutines.Exec(ctx, "workermodel.Initialize", func(ctx context.Context) {
 		if err := workermodel.Initialize(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), a.Cache); err != nil {
 			log.Error(ctx, "error while initializing worker models routine: %s", err)
 		}
-	}, a.PanicDump())
-	a.GoRoutines.Run(ctx, "worker.Initialize", func(ctx context.Context) {
+	})
+	a.GoRoutines.RunWithRestart(ctx, "worker.Initialize", func(ctx context.Context) {
 		if err := worker.Initialize(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), a.Cache); err != nil {
 			log.Error(ctx, "error while initializing workers routine: %s", err)
 		}
-	}, a.PanicDump())
+	})
 	a.GoRoutines.Run(ctx, "action.ComputeAudit", func(ctx context.Context) {
 		chanEvent := make(chan sdk.Event)
 		event.Subscribe(chanEvent)
 		action.ComputeAudit(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), chanEvent)
-	}, a.PanicDump())
+	})
 	a.GoRoutines.Run(ctx, "audit.ComputePipelineAudit", func(ctx context.Context) {
 		audit.ComputePipelineAudit(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper))
-	}, a.PanicDump())
+	})
 	a.GoRoutines.Run(ctx, "audit.ComputeWorkflowAudit", func(ctx context.Context) {
 		audit.ComputeWorkflowAudit(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper))
-	}, a.PanicDump())
-	a.GoRoutines.Run(ctx, "auditCleanerRoutine(ctx", func(ctx context.Context) {
+	})
+	a.GoRoutines.Run(ctx, "auditCleanerRoutine", func(ctx context.Context) {
 		auditCleanerRoutine(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper))
 	})
-	a.GoRoutines.Run(ctx, "repositoriesmanager.ReceiveEvents", func(ctx context.Context) {
+	a.GoRoutines.RunWithRestart(ctx, "repositoriesmanager.ReceiveEvents", func(ctx context.Context) {
 		repositoriesmanager.ReceiveEvents(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), a.Cache)
-	}, a.PanicDump())
-	a.GoRoutines.Run(ctx, "services.KillDeadServices", func(ctx context.Context) {
+	})
+	a.GoRoutines.RunWithRestart(ctx, "services.KillDeadServices", func(ctx context.Context) {
 		services.KillDeadServices(ctx, a.mustDB)
-	}, a.PanicDump())
+	})
 	a.GoRoutines.Run(ctx, "broadcast.Initialize", func(ctx context.Context) {
 		broadcast.Initialize(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper))
-	}, a.PanicDump())
-	a.GoRoutines.Run(ctx, "api.serviceAPIHeartbeat", func(ctx context.Context) {
+	})
+	a.GoRoutines.RunWithRestart(ctx, "api.serviceAPIHeartbeat", func(ctx context.Context) {
 		a.serviceAPIHeartbeat(ctx)
-	}, a.PanicDump())
-	a.GoRoutines.Run(ctx, "authentication.SessionCleaner", func(ctx context.Context) {
+	})
+	a.GoRoutines.RunWithRestart(ctx, "authentication.SessionCleaner", func(ctx context.Context) {
 		authentication.SessionCleaner(ctx, a.mustDB, 10*time.Second)
-	}, a.PanicDump())
-	a.GoRoutines.Run(ctx, "api.WorkflowRunCraft", func(ctx context.Context) {
+	})
+	a.GoRoutines.RunWithRestart(ctx, "api.WorkflowRunCraft", func(ctx context.Context) {
 		a.WorkflowRunCraft(ctx, 100*time.Millisecond)
-	}, a.PanicDump())
-
-	migrate.Add(ctx, sdk.Migration{Name: "RunsSecrets", Release: "0.47.0", Blocker: false, Automatic: true, ExecFunc: func(ctx context.Context) error {
-		return migrate.RunsSecrets(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper))
-	}})
-
-	isFreshInstall, errF := version.IsFreshInstall(a.mustDB())
-	if errF != nil {
-		return sdk.WrapError(errF, "Unable to check if it's a fresh installation of CDS")
-	}
-
-	if isFreshInstall {
-		if err := migrate.SaveAllMigrations(a.mustDB()); err != nil {
-			return sdk.WrapError(err, "Cannot save all migrations to done")
-		}
-	} else {
-		if sdk.VersionCurrent().Version != "" && !strings.HasPrefix(sdk.VersionCurrent().Version, "snapshot") {
-			major, minor, _, errV := version.MaxVersion(a.mustDB())
-			if errV != nil {
-				return sdk.WrapError(errV, "Cannot fetch max version of CDS already started")
-			}
-			if major != 0 || minor != 0 {
-				minSemverCompatible, _ := semver.Parse(migrate.MinCompatibleRelease)
-				if major < minSemverCompatible.Major || (major == minSemverCompatible.Major && minor < minSemverCompatible.Minor) {
-					return fmt.Errorf("there are some mandatory migrations which aren't done. Please check each changelog of CDS. Maybe you have skipped a release migration. The minimum compatible release is %s, please update to this release before", migrate.MinCompatibleRelease)
-				}
-			}
-		}
-
-		// Run all migrations in several goroutines
-		migrate.Run(ctx, a.mustDB(), a.PanicDump())
-	}
+	})
 
 	log.Info(ctx, "Bootstrapping database...")
 	defaultValues := sdk.DefaultValues{
@@ -754,7 +767,7 @@ func (a *API) Serve(ctx context.Context) error {
 		return fmt.Errorf("cannot setup builtin workflow outgoing hook models: %v", err)
 	}
 
-	if err := integration.CreateBuiltinModels(a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper)()); err != nil {
+	if err := integration.CreateBuiltinModels(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper)()); err != nil {
 		return fmt.Errorf("cannot setup integrations: %v", err)
 	}
 
@@ -766,7 +779,7 @@ func (a *API) Serve(ctx context.Context) error {
 	log.Info(ctx, "API Public Key: \n%s", string(pubKey))
 
 	// Init Services
-	services.Initialize(ctx, a.DBConnectionFactory, a.GoRoutines, a.PanicDump())
+	services.Initialize(ctx, a.DBConnectionFactory, a.GoRoutines)
 
 	externalServices := make([]services.ExternalService, 0, len(a.Config.Services))
 	for _, s := range a.Config.Services {
@@ -795,31 +808,36 @@ func (a *API) Serve(ctx context.Context) error {
 	a.GoRoutines.Run(ctx, "pings-external-services",
 		func(ctx context.Context) {
 			services.Pings(ctx, a.mustDB, externalServices)
-		}, a.PanicDump())
-	a.GoRoutines.Run(ctx, "workflow.Initialize",
+		})
+	a.GoRoutines.RunWithRestart(ctx, "workflow.Initialize",
 		func(ctx context.Context) {
-			workflow.Initialize(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), a.Cache, a.Config.URL.UI, a.Config.DefaultOS, a.Config.DefaultArch, a.Config.Log.StepMaxSize, a.Config.Workflow.MaxRuns)
-		}, a.PanicDump())
+			workflow.SetMaxRuns(a.Config.Workflow.MaxRuns)
+			workflow.Initialize(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), a.Cache, a.Config.URL.UI, a.Config.DefaultOS, a.Config.DefaultArch, a.Config.Log.StepMaxSize)
+		})
 	a.GoRoutines.Run(ctx, "PushInElasticSearch",
 		func(ctx context.Context) {
 			event.PushInElasticSearch(ctx, a.mustDB(), a.Cache)
-		}, a.PanicDump())
+		})
 	a.GoRoutines.Run(ctx, "Metrics.pushInElasticSearch",
 		func(ctx context.Context) {
 			metrics.Init(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper))
-		}, a.PanicDump())
+		})
+	// init purge
+	if err := purge.SetPurgeConfiguration(a.Config.Workflow.DefaultRetentionPolicy, a.Config.Workflow.DisablePurgeDeletion); err != nil {
+		return err
+	}
 	a.GoRoutines.Run(ctx, "Purge-MarkRuns",
 		func(ctx context.Context) {
 			purge.MarkRunsAsDelete(ctx, a.Cache, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), a.Metrics.WorkflowRunsMarkToDelete)
-		}, a.PanicDump())
+		})
 	a.GoRoutines.Run(ctx, "Purge-Runs",
 		func(ctx context.Context) {
 			purge.WorkflowRuns(ctx, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), a.SharedStorage, a.Metrics.WorkflowRunsMarkToDelete, a.Metrics.WorkflowRunsDeleted)
-		}, a.PanicDump())
+		})
 	a.GoRoutines.Run(ctx, "Purge-Workflow",
 		func(ctx context.Context) {
 			purge.Workflow(ctx, a.Cache, a.DBConnectionFactory.GetDBMap(gorpmapping.Mapper), a.Metrics.WorkflowRunsMarkToDelete)
-		}, a.PanicDump())
+		})
 
 	// Check maintenance on redis
 	if _, err := a.Cache.Get(sdk.MaintenanceAPIKey, &a.Maintenance); err != nil {
@@ -835,14 +853,12 @@ func (a *API) Serve(ctx context.Context) error {
 	}
 
 	go func() {
-		select {
-		case <-ctx.Done():
-			log.Warning(ctx, "Cleanup SQL connections")
-			s.Shutdown(ctx)
-			a.DBConnectionFactory.Close()
-			event.Publish(ctx, sdk.EventEngine{Message: "shutdown"}, nil)
-			event.Close(ctx)
-		}
+		<-ctx.Done()
+		log.Warn(ctx, "Cleanup SQL connections")
+		s.Shutdown(ctx)               // nolint
+		a.DBConnectionFactory.Close() // nolint
+		event.Publish(ctx, sdk.EventEngine{Message: "shutdown"}, nil)
+		event.Close(ctx)
 	}()
 
 	event.Publish(ctx, sdk.EventEngine{Message: fmt.Sprintf("started - listen on %d", a.Config.HTTP.Port)}, nil)
@@ -876,39 +892,33 @@ func (a *API) Serve(ctx context.Context) error {
 	return nil
 }
 
-const panicDumpTTL = 60 * 60 * 24 // 24 hours
-
-func (a *API) PanicDump() func(s string) (io.WriteCloser, error) {
-	return func(s string) (io.WriteCloser, error) {
-		log.Error(context.TODO(), "API Panic stacktrace: %s", s)
-		return cache.NewWriteCloser(a.Cache, cache.Key("api", "panic_dump", s), panicDumpTTL), nil
-	}
-}
-
 // SetCookieSession on given response writter, automatically add domain and path based on api config.
 // This will returns a cookie with no expiration date that should be dropped by browser when closed.
 func (a *API) SetCookieSession(w http.ResponseWriter, name, value string) {
 	a.setCookie(w, &http.Cookie{
-		Name:  name,
-		Value: value,
+		Name:     name,
+		Value:    value,
+		HttpOnly: false,
 	})
 }
 
 // SetCookie on given response writter, automatically add domain and path based on api config.
-func (a *API) SetCookie(w http.ResponseWriter, name, value string, expires time.Time) {
+func (a *API) SetCookie(w http.ResponseWriter, name, value string, expires time.Time, httpOnly bool) {
 	a.setCookie(w, &http.Cookie{
-		Name:    name,
-		Value:   value,
-		Expires: expires,
+		Name:     name,
+		Value:    value,
+		Expires:  expires,
+		HttpOnly: httpOnly,
 	})
 }
 
 // UnsetCookie on given response writter, automatically add domain and path based on api config.
-func (a *API) UnsetCookie(w http.ResponseWriter, name string) {
+func (a *API) UnsetCookie(w http.ResponseWriter, name string, httpOnly bool) {
 	a.setCookie(w, &http.Cookie{
-		Name:   name,
-		Value:  "",
-		MaxAge: -1,
+		Name:     name,
+		Value:    "",
+		MaxAge:   -1,
+		HttpOnly: httpOnly,
 	})
 }
 
@@ -921,7 +931,12 @@ func (a *API) setCookie(w http.ResponseWriter, c *http.Cookie) {
 			c.Path = "/"
 		}
 	}
-
+	c.SameSite = http.SameSiteStrictMode
+	c.Secure = true
+	uiURL, _ := url.Parse(a.Config.URL.UI)
+	if uiURL != nil && uiURL.Hostname() != "" {
+		c.Domain = uiURL.Hostname()
+	}
 	http.SetCookie(w, c)
 }
 

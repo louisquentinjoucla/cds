@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rockbears/log"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
 
@@ -19,7 +20,6 @@ import (
 	"github.com/ovh/cds/engine/api/workermodel"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -48,9 +48,17 @@ func (api *API) statusHandler() service.Handler {
 			status = http.StatusServiceUnavailable
 		}
 
+		// Always load services to ensure that database connection is ok.
 		srvs, err := services.LoadAll(ctx, api.mustDB(), services.LoadOptions.WithStatus)
 		if err != nil {
 			return err
+		}
+
+		// If there is a valid session and user is maintainer, allows to get status details.
+		currentConsumer := getAPIConsumer(ctx)
+		if currentConsumer == nil || !isMaintainer(ctx) {
+			mStatus := api.computeGlobalPublicStatus()
+			return service.WriteJSON(w, mStatus, status)
 		}
 
 		mStatus := api.computeGlobalStatus(srvs)
@@ -72,6 +80,19 @@ var (
 	tagService     tag.Key
 	tagsService    []tag.Key
 )
+
+// computeGlobalPublicStatus returns global public status
+func (api *API) computeGlobalPublicStatus() sdk.MonitoringStatus {
+	return sdk.MonitoringStatus{
+		Lines: []sdk.MonitoringStatusLine{
+			{
+				Status:    sdk.MonitoringStatusOK,
+				Component: "Global/Maintenance",
+				Value:     fmt.Sprintf("%v", api.Maintenance),
+			},
+		},
+	}
+}
 
 // computeGlobalStatus returns global status
 func (api *API) computeGlobalStatus(srvs []sdk.Service) sdk.MonitoringStatus {
@@ -182,7 +203,6 @@ func (api *API) computeGlobalStatusByNumbers(s computeGlobalNumbers) string {
 }
 
 func (api *API) initMetrics(ctx context.Context) error {
-
 	log.Info(ctx, "Metrics initialized for %s/%s", api.Type(), api.Name())
 
 	// TODO refactor all the metrics name to replace "cds-api" by "api.Type()"
@@ -259,7 +279,7 @@ func (api *API) computeMetrics(ctx context.Context) {
 		log.Error(ctx, "api.computeMetrics> unable to tag observability context: %v", err)
 	}
 
-	api.GoRoutines.Run(ctx, "api.computeMetrics", func(ctx context.Context) {
+	api.GoRoutines.RunWithRestart(ctx, "api.computeMetrics", func(ctx context.Context) {
 		tick := time.NewTicker(9 * time.Second).C
 		for {
 			select {
@@ -277,8 +297,8 @@ func (api *API) computeMetrics(ctx context.Context) {
 				api.countMetric(ctx, api.Metrics.nbWorkflows, "SELECT COUNT(1) FROM workflow")
 				api.countMetric(ctx, api.Metrics.nbArtifacts, "SELECT COUNT(1) FROM workflow_node_run_artifacts")
 				api.countMetric(ctx, api.Metrics.nbWorkerModels, "SELECT COUNT(1) FROM worker_model")
-				api.countMetric(ctx, api.Metrics.nbWorkflowRuns, "SELECT COALESCE(MAX(id), 0) FROM workflow_run")
-				api.countMetric(ctx, api.Metrics.nbWorkflowNodeRuns, "SELECT COALESCE(MAX(id),0) FROM workflow_node_run")
+				api.countMetric(ctx, api.Metrics.nbWorkflowRuns, "SELECT COUNT(1) FROM workflow_run")
+				api.countMetric(ctx, api.Metrics.nbWorkflowNodeRuns, "SELECT COUNT(1) FROM workflow_node_run")
 				api.countMetric(ctx, api.Metrics.nbMaxWorkersBuilding, "SELECT COUNT(1) FROM worker where status = 'Building'")
 
 				telemetry.Record(ctx, api.Metrics.DatabaseConns, int64(api.DBConnectionFactory.DB().Stats().OpenConnections))
@@ -313,7 +333,7 @@ func (api *API) computeMetrics(ctx context.Context) {
 func (api *API) countMetric(ctx context.Context, v *stats.Int64Measure, query string) {
 	n, err := api.mustDB().SelectInt(query)
 	if err != nil {
-		log.Warning(ctx, "metrics>Errors while fetching count %s: %v", query, err)
+		log.Warn(ctx, "metrics>Errors while fetching count %s: %v", query, err)
 	}
 	telemetry.Record(ctx, v, n)
 }
@@ -321,7 +341,7 @@ func (api *API) countMetric(ctx context.Context, v *stats.Int64Measure, query st
 func (api *API) countMetricRange(ctx context.Context, status string, timerange string, v *stats.Int64Measure, query string, args ...interface{}) {
 	n, err := api.mustDB().SelectInt(query, args...)
 	if err != nil {
-		log.Warning(ctx, "metrics>Errors while fetching count range %s: %v", query, err)
+		log.Warn(ctx, "metrics>Errors while fetching count range %s: %v", query, err)
 	}
 	ctx, _ = tag.New(ctx, tag.Upsert(tagStatus, status), tag.Upsert(tagRange, timerange))
 	telemetry.Record(ctx, v, n)
@@ -379,7 +399,7 @@ func (api *API) processStatusMetrics(ctx context.Context) {
 		ctx, _ = tag.New(ctx, tag.Upsert(tagServiceName, service), tag.Upsert(tagService, line.Type))
 		v, err := telemetry.FindAndRegisterViewLast(item, tagsService)
 		if err != nil {
-			log.Warning(ctx, "metrics>Errors while FindAndRegisterViewLast %s: %v", item, err)
+			log.Warn(ctx, "metrics>Errors while FindAndRegisterViewLast %s: %v", item, err)
 			continue
 		}
 		telemetry.Record(ctx, v.Measure, number)

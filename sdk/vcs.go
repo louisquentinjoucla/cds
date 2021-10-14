@@ -23,6 +23,7 @@ var (
 		"repo:comment:added",
 		"repo:comment:edited",
 		"repo:comment:deleted",
+		"pr:from_ref_updated",
 		"pr:opened",
 		"pr:modified",
 		"pr:reviewer:updated",
@@ -99,8 +100,8 @@ var (
 		"project_column",
 		"project",
 		"public",
-		"pull-request_review_comment",
-		"pull-request_review",
+		"pull_request_review_comment",
+		"pull_request_review",
 		"pull_request",
 		"repository",
 		"repository_import",
@@ -202,6 +203,15 @@ type VCSServerService interface {
 	GetAuthorizedClient(context.Context, string, string, int64) (VCSAuthorizedClientService, error)
 }
 
+type VCSBranchFilters struct {
+	BranchName string
+	Default    bool
+}
+
+type VCSBranchesFilter struct {
+	Limit int64
+}
+
 // VCSAuthorizedClientCommon is an interface for a connected client on a VCS Server.
 type VCSAuthorizedClientCommon interface {
 	//Repos
@@ -209,8 +219,8 @@ type VCSAuthorizedClientCommon interface {
 	RepoByFullname(ctx context.Context, fullname string) (VCSRepo, error)
 
 	//Branches
-	Branches(context.Context, string) ([]VCSBranch, error)
-	Branch(ctx context.Context, repo string, branch string) (*VCSBranch, error)
+	Branches(context.Context, string, VCSBranchesFilter) ([]VCSBranch, error)
+	Branch(ctx context.Context, repo string, filters VCSBranchFilters) (*VCSBranch, error)
 
 	//Tags
 	Tags(ctx context.Context, repo string) ([]VCSTag, error)
@@ -244,7 +254,7 @@ type VCSAuthorizedClientCommon interface {
 
 	// Release
 	Release(ctx context.Context, repo, tagName, releaseTitle, releaseDescription string) (*VCSRelease, error)
-	UploadReleaseFile(ctx context.Context, repo string, releaseName string, uploadURL string, artifactName string, r io.ReadCloser) error
+	UploadReleaseFile(ctx context.Context, repo string, releaseName string, uploadURL string, artifactName string, r io.Reader, length int) error
 
 	// Forks
 	ListForks(ctx context.Context, repo string) ([]VCSRepo, error)

@@ -137,7 +137,7 @@ func TestManualRun1(t *testing.T) {
 	require.NoError(t, errS)
 
 	//LoadLastRun
-	lastrun, err := workflow.LoadLastRun(db, proj.Key, "test_1", workflow.LoadRunOptions{})
+	lastrun, err := workflow.LoadLastRun(context.Background(), db, proj.Key, "test_1", workflow.LoadRunOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), lastrun.Number)
 
@@ -170,7 +170,7 @@ func TestManualRun1(t *testing.T) {
 	require.NoError(t, errS)
 
 	//TestLoadRuns
-	runs, offset, limit, count, err := workflow.LoadRunsSummaries(db, proj.Key, w1.Name, 0, 50, nil)
+	runs, offset, limit, count, err := workflow.LoadRunsSummaries(context.Background(), db, proj.Key, w1.Name, 0, 50, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, offset)
 	assert.Equal(t, 50, limit)
@@ -178,7 +178,7 @@ func TestManualRun1(t *testing.T) {
 	assert.Len(t, runs, 2)
 
 	//TestLoadRunByID
-	_, err = workflow.LoadRunByIDAndProjectKey(db, proj.Key, wr2.ID, workflow.LoadRunOptions{})
+	_, err = workflow.LoadRunByIDAndProjectKey(context.Background(), db, proj.Key, wr2.ID, workflow.LoadRunOptions{})
 	require.NoError(t, err)
 }
 
@@ -618,20 +618,15 @@ queueRun:
 		}, "hatchery_name")
 
 		//Load workflow node run
-		nodeRun, err := workflow.LoadNodeRunByID(db, takenJob.WorkflowNodeRunID, workflow.LoadRunOptions{})
+		nodeRun, err := workflow.LoadNodeRunByID(context.Background(), db, takenJob.WorkflowNodeRunID, workflow.LoadRunOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		//Load workflow run
-		workflowRun, err := workflow.LoadRunByID(db, nodeRun.WorkflowRunID, workflow.LoadRunOptions{})
-		if err != nil {
+		if _, err := workflow.LoadRunByID(context.Background(), db, nodeRun.WorkflowRunID, workflow.LoadRunOptions{}); err != nil {
 			t.Fatal(err)
 		}
-
-		//TestAddLog
-		require.NoError(t, workflow.AppendLog(db, j.ID, j.WorkflowNodeRunID, 1, "This is a log", workflow.DefaultMaxLogSize))
-		require.NoError(t, workflow.AppendLog(db, j.ID, j.WorkflowNodeRunID, 1, "This is another log", workflow.DefaultMaxLogSize))
 
 		j, err = workflow.LoadNodeJobRun(context.TODO(), db, cache, j.ID)
 		require.NoError(t, err)
@@ -643,7 +638,7 @@ queueRun:
 		_, err = workflow.UpdateNodeJobRunStatus(context.TODO(), db, cache, *proj, j, sdk.StatusSuccess)
 		require.NoError(t, err)
 
-		workflowRun, err = workflow.LoadRunByID(db, wr.ID, workflow.LoadRunOptions{})
+		workflowRun, err := workflow.LoadRunByID(context.Background(), db, wr.ID, workflow.LoadRunOptions{})
 		require.NoError(t, err)
 		var jobRunFound bool
 	checkJobRun:
@@ -667,10 +662,6 @@ queueRun:
 			t.Fatalf("unable to retrieve job run in the workflow run")
 		}
 
-		logs, err := workflow.LoadLogs(db, takenJob.ID)
-		require.NoError(t, err)
-		require.NotEmpty(t, logs)
-
 		// check if there is another job to run
 		if takenJob.Job.Action.Name == "job10" {
 			goto queueRun
@@ -678,7 +669,8 @@ queueRun:
 			assert.Equal(t, 2, len(takenJob.ExecGroups))
 			// this pipeline is attached to an deployment integration
 			// so, we check IntegrationPluginBinaries
-			assert.Equal(t, 1, len(takenJob.IntegrationPluginBinaries))
+			assert.Equal(t, 1, len(takenJob.IntegrationPlugins))
+			assert.Equal(t, 1, len(takenJob.IntegrationPlugins[0].Binaries))
 
 			// Check ExecGroups
 			var g0Found bool
@@ -860,7 +852,7 @@ func TestNoStage(t *testing.T) {
 	}, *consumer, nil)
 	require.NoError(t, errS)
 
-	lastrun, err := workflow.LoadLastRun(db, proj.Key, "test_1", workflow.LoadRunOptions{})
+	lastrun, err := workflow.LoadLastRun(context.Background(), db, proj.Key, "test_1", workflow.LoadRunOptions{})
 	require.NoError(t, err)
 
 	//TestLoadNodeRun
@@ -936,7 +928,7 @@ func TestNoJob(t *testing.T) {
 	}, *consumer, nil)
 	require.NoError(t, errS)
 
-	lastrun, err := workflow.LoadLastRun(db, proj.Key, "test_1", workflow.LoadRunOptions{})
+	lastrun, err := workflow.LoadLastRun(context.Background(), db, proj.Key, "test_1", workflow.LoadRunOptions{})
 	require.NoError(t, err)
 
 	//TestLoadNodeRun

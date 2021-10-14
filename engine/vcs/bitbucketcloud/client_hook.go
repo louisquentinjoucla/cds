@@ -9,8 +9,9 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (client *bitbucketcloudClient) CreateHook(ctx context.Context, repo string, hook *sdk.VCSHook) error {
@@ -51,7 +52,7 @@ func (client *bitbucketcloudClient) CreateHook(ctx context.Context, repo string,
 	}
 
 	var webhook Webhook
-	if err := json.Unmarshal(body, &webhook); err != nil {
+	if err := sdk.JSONUnmarshal(body, &webhook); err != nil {
 		return sdk.WrapError(err, "Cannot unmarshal response")
 	}
 	hook.ID = webhook.UUID

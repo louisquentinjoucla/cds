@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -34,7 +35,6 @@ import (
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/jws"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // InsertTestProject create a test project.
@@ -62,6 +62,8 @@ func InsertTestProject(t *testing.T, db gorpmapper.SqlExecutorWithTx, store cach
 	g := InsertTestGroup(t, db, name+"-group")
 
 	require.NoError(t, project.Insert(db, proj))
+
+	require.NoError(t, group.InitializeDefaultGroupName(db, ""))
 
 	require.NoError(t, group.InsertLinkGroupProject(context.TODO(), db, &group.LinkGroupProject{
 		GroupID:   g.ID,
@@ -143,10 +145,10 @@ func InsertAdminUser(t *testing.T, db gorpmapper.SqlExecutorWithTx) (*sdk.Authen
 	consumer, err := local.NewConsumer(context.TODO(), db, u.ID)
 	require.NoError(t, err, "cannot create auth consumer")
 
-	session, err := authentication.NewSession(context.TODO(), db, consumer, 5*time.Minute, false)
+	session, err := authentication.NewSession(context.TODO(), db, consumer, 5*time.Minute)
 	require.NoError(t, err, "cannot create auth session")
 
-	jwt, err := authentication.NewSessionJWT(session)
+	jwt, err := authentication.NewSessionJWT(session, "")
 	require.NoError(t, err, "cannot create jwt")
 
 	return u, jwt
@@ -182,10 +184,10 @@ func InsertMaintainerUser(t *testing.T, db gorpmapper.SqlExecutorWithTx) (*sdk.A
 	consumer, err := local.NewConsumer(context.TODO(), db, u.ID)
 	require.NoError(t, err, "cannot create auth consumer")
 
-	session, err := authentication.NewSession(context.TODO(), db, consumer, 5*time.Minute, false)
+	session, err := authentication.NewSession(context.TODO(), db, consumer, 5*time.Minute)
 	require.NoError(t, err, "cannot create auth session")
 
-	jwt, err := authentication.NewSessionJWT(session)
+	jwt, err := authentication.NewSessionJWT(session, "")
 	require.NoError(t, err, "cannot create jwt")
 
 	return u, jwt
@@ -222,15 +224,15 @@ func InsertLambdaUser(t *testing.T, db gorpmapper.SqlExecutorWithTx, groups ...*
 
 	btes, err := json.Marshal(u)
 	require.NoError(t, err)
-	log.Debug("lambda user: %s", string(btes))
+	log.Debug(context.TODO(), "lambda user: %s", string(btes))
 
 	consumer, err := local.NewConsumer(context.TODO(), db, u.ID)
 	require.NoError(t, err, "cannot create auth consumer")
 
-	session, err := authentication.NewSession(context.TODO(), db, consumer, 5*time.Minute, false)
+	session, err := authentication.NewSession(context.TODO(), db, consumer, 5*time.Minute)
 	require.NoError(t, err, "cannot create session")
 
-	jwt, err := authentication.NewSessionJWT(session)
+	jwt, err := authentication.NewSessionJWT(session, "")
 	require.NoError(t, err, "cannot create jwt")
 
 	return u, jwt
@@ -264,6 +266,23 @@ func NewAuthentifiedRequest(t *testing.T, _ *sdk.AuthentifiedUser, pass, method,
 	req.Header.Set("Date", date)
 	req.Header.Set("X-CDS-RemoteTime", date)
 
+	return req
+}
+
+func NewUploadFileRequest(t *testing.T, method string, uri string, body io.Reader, headers map[string]string) *http.Request {
+	req, err := http.NewRequest(method, uri, body)
+	if err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+	if headers != nil {
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+	}
+	date := sdk.FormatDateRFC5322(time.Now())
+	req.Header.Set("Date", date)
+	req.Header.Set("X-CDS-RemoteTime", date)
 	return req
 }
 
@@ -442,7 +461,7 @@ func InsertHatchery(t *testing.T, db gorpmapper.SqlExecutorWithTx, grp sdk.Group
 	consumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), db, sdk.ConsumerLocal, usr1.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
 	require.NoError(t, err)
 
-	hConsumer, _, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), "", consumer, []int64{grp.ID}, sdk.NewAuthConsumerScopeDetails(
+	hConsumer, _, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), "", 0, consumer, []int64{grp.ID}, sdk.NewAuthConsumerScopeDetails(
 		sdk.AuthConsumerScopeHatchery, sdk.AuthConsumerScopeRunExecution, sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeWorkerModel))
 	require.NoError(t, err)
 
@@ -462,10 +481,10 @@ func InsertHatchery(t *testing.T, db gorpmapper.SqlExecutorWithTx, grp sdk.Group
 
 	require.NoError(t, services.Insert(context.TODO(), db, &srv))
 
-	session, err := authentication.NewSession(context.TODO(), db, hConsumer, 5*time.Minute, false)
+	session, err := authentication.NewSession(context.TODO(), db, hConsumer, 5*time.Minute)
 	require.NoError(t, err)
 
-	jwt, err := authentication.NewSessionJWT(session)
+	jwt, err := authentication.NewSessionJWT(session, "")
 	require.NoError(t, err)
 
 	return &srv, privateKey, hConsumer, jwt
@@ -479,7 +498,7 @@ func InsertService(t *testing.T, db gorpmapper.SqlExecutorWithTx, name, serviceT
 
 	sharedGroup, err := group.LoadByName(context.TODO(), db, sdk.SharedInfraGroupName)
 	require.NoError(t, err)
-	hConsumer, _, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), "", consumer, []int64{sharedGroup.ID},
+	hConsumer, _, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), "", 0, consumer, []int64{sharedGroup.ID},
 		sdk.NewAuthConsumerScopeDetails(append(scopes, sdk.AuthConsumerScopeProject)...))
 	require.NoError(t, err)
 
@@ -502,7 +521,7 @@ func InsertService(t *testing.T, db gorpmapper.SqlExecutorWithTx, name, serviceT
 	return &srv, privateKey
 }
 
-func InitCDNService(t *testing.T, db gorpmapper.SqlExecutorWithTx, scopes ...sdk.AuthConsumerScope) (*sdk.Service, *rsa.PrivateKey) {
+func InitCDNService(t *testing.T, db gorpmapper.SqlExecutorWithTx, scopes ...sdk.AuthConsumerScope) (*sdk.Service, *rsa.PrivateKey, string) {
 	usr1, _ := InsertAdminUser(t, db)
 
 	consumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), db, sdk.ConsumerLocal, usr1.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
@@ -510,8 +529,8 @@ func InitCDNService(t *testing.T, db gorpmapper.SqlExecutorWithTx, scopes ...sdk
 
 	sharedGroup, err := group.LoadByName(context.TODO(), db, sdk.SharedInfraGroupName)
 	require.NoError(t, err)
-	hConsumer, _, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), "", consumer, []int64{sharedGroup.ID},
-		sdk.NewAuthConsumerScopeDetails(append(scopes, sdk.AuthConsumerScopeProject)...))
+	hConsumer, _, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), "", 0, consumer, []int64{sharedGroup.ID},
+		sdk.NewAuthConsumerScopeDetails(append(scopes, sdk.AuthConsumerScopeRunExecution, sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeWorker)...))
 	require.NoError(t, err)
 
 	privateKey, err := jws.NewRandomRSAKey()
@@ -526,15 +545,22 @@ func InitCDNService(t *testing.T, db gorpmapper.SqlExecutorWithTx, scopes ...sdk
 			PublicKey:  publicKey,
 			ConsumerID: &hConsumer.ID,
 			Config: map[string]interface{}{
-				"public_tcp":  "cdn.net:4545",
-				"public_http": "http://cdn.net:8080",
+				"public_tcp":            "cdn.net:4545",
+				"public_http":           "http://cdn.net:8080",
+				"public_tcp_enable_tls": true,
 			},
 		},
 	}
 
 	require.NoError(t, services.Insert(context.TODO(), db, &srv))
 
-	return &srv, privateKey
+	session, err := authentication.NewSession(context.TODO(), db, hConsumer, 5*time.Minute)
+	require.NoError(t, err)
+
+	jwt, err := authentication.NewSessionJWT(session, "")
+	require.NoError(t, err)
+
+	return &srv, privateKey, jwt
 }
 
 func InsertTestWorkflow(t *testing.T, db gorpmapper.SqlExecutorWithTx, store cache.Store, proj *sdk.Project, name string) *sdk.Workflow {
@@ -580,6 +606,7 @@ func InsertTestWorkflow(t *testing.T, db gorpmapper.SqlExecutorWithTx, store cac
 				},
 			},
 		},
+		MaxRuns: 255,
 	}
 
 	require.NoError(t, workflow.Insert(context.TODO(), db, store, *proj, &w))

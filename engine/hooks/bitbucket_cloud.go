@@ -2,23 +2,20 @@ package hooks
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (s *Service) generatePayloadFromBitbucketCloudRequest(ctx context.Context, t *sdk.TaskExecution, event string) ([]map[string]interface{}, error) {
 	payloads := []map[string]interface{}{}
 
 	var request BitbucketCloudWebHookEvent
-	if err := json.Unmarshal(t.WebHook.RequestBody, &request); err != nil {
+	if err := sdk.JSONUnmarshal(t.WebHook.RequestBody, &request); err != nil {
 		return nil, sdk.WrapError(err, "unable ro read bitbucket request: %s", string(t.WebHook.RequestBody))
 	}
-
-	projectKey := t.Config["project"].Value
-	workflowName := t.Config["workflow"].Value
 
 	payload := make(map[string]interface{})
 	payload[GIT_EVENT] = event
@@ -28,20 +25,7 @@ func (s *Service) generatePayloadFromBitbucketCloudRequest(ctx context.Context, 
 
 	for _, pushChange := range request.Push.Changes {
 		if pushChange.Closed {
-			if pushChange.Old.Type == "branch" {
-				if err := s.enqueueBranchDeletion(projectKey, workflowName, strings.TrimPrefix(pushChange.Old.Name, "refs/heads/")); err != nil {
-					log.Error(ctx, "cannot enqueue branch deletion: %v", err)
-				}
-			}
 			continue
-		}
-
-		if pushChange.New.Type == "branch" {
-			branch := strings.TrimPrefix(pushChange.New.Name, "refs/heads/")
-			if err := s.stopBranchDeletionTask(ctx, branch); err != nil {
-				log.Error(ctx, "cannot stop branch deletion task for branch %s : %v", branch, err)
-			}
-
 		}
 
 		payloadChange := make(map[string]interface{})
@@ -63,7 +47,7 @@ func getVariableFromBitbucketCloudChange(ctx context.Context, payload map[string
 	} else if change.New.Type == "tag" {
 		payload[GIT_TAG] = strings.TrimPrefix(change.New.Name, "refs/tags/")
 	} else {
-		log.Warning(ctx, "unknown push type: %s", change.New.Type)
+		log.Warn(ctx, "unknown push type: %s", change.New.Type)
 		return
 	}
 	payload[GIT_HASH_BEFORE] = change.Old.Target.Hash

@@ -7,11 +7,12 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ovh/cds/sdk/slug"
-
 	"github.com/go-gorp/gorp"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
+	"github.com/ovh/cds/engine/api/authentication"
+	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/api/event"
 	"github.com/ovh/cds/engine/api/group"
 	"github.com/ovh/cds/engine/api/integration"
@@ -19,10 +20,12 @@ import (
 	"github.com/ovh/cds/engine/api/permission"
 	"github.com/ovh/cds/engine/api/project"
 	"github.com/ovh/cds/engine/api/user"
+	"github.com/ovh/cds/engine/api/worker"
 	"github.com/ovh/cds/engine/api/workflow"
+	"github.com/ovh/cds/engine/featureflipping"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/ovh/cds/sdk/slug"
 )
 
 func (api *API) getProjectsHandler_FilterByRepo(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
@@ -31,7 +34,7 @@ func (api *API) getProjectsHandler_FilterByRepo(ctx context.Context, w http.Resp
 
 	var projects sdk.Projects
 	var err error
-	var filterByRepoFunc = func(db gorp.SqlExecutor, p *sdk.Project) error {
+	var filterByRepoFunc = func(ctx context.Context, db gorp.SqlExecutor, p *sdk.Project) error {
 		//Filter the applications by repo
 		apps := []sdk.Application{}
 		for i := range p.Applications {
@@ -70,7 +73,7 @@ func (api *API) getProjectsHandler_FilterByRepo(ctx context.Context, w http.Resp
 	}
 	opts = append(opts, filterByRepoFunc)
 
-	if isMaintainer(ctx) || isAdmin(ctx) {
+	if isMaintainer(ctx) {
 		projects, err = project.LoadAllByRepo(ctx, api.mustDB(), api.Cache, filterByRepo, opts...)
 		if err != nil {
 			return err
@@ -161,7 +164,7 @@ func (api *API) getProjectsHandler() service.Handler {
 				return sdk.WrapError(errG, "unable to load user '%s' groups", requestedUserName)
 			}
 			requestedUser.Groups = groups
-			log.Debug("load all projects for user %s", requestedUser.Fullname)
+			log.Debug(ctx, "load all projects for user %s", requestedUser.Fullname)
 			projects, err = project.LoadAllByGroupIDs(ctx, api.mustDB(), api.Cache, requestedUser.GetGroupIDs(), opts...)
 		default:
 			projects, err = project.LoadAllByGroupIDs(ctx, api.mustDB(), api.Cache, getAPIConsumer(ctx).GetGroupIDs(), opts...)
@@ -505,8 +508,12 @@ func (api *API) postProjectHandler() service.Handler {
 			}
 
 			// consumer should be group member to add it on a project
-			if !isGroupMember(ctx, grp) && !isAdmin(ctx) {
-				return sdk.WithStack(sdk.ErrInvalidGroupMember)
+			if !isGroupMember(ctx, grp) {
+				if isAdmin(ctx) {
+					trackSudo(ctx, w)
+				} else {
+					return sdk.WithStack(sdk.ErrInvalidGroupMember)
+				}
 			}
 
 			groupIDs = append(groupIDs, grp.ID)
@@ -649,5 +656,72 @@ func (api *API) deleteProjectHandler() service.Handler {
 
 		event.PublishDeleteProject(ctx, p, getAPIConsumer(ctx))
 		return nil
+	}
+}
+
+func (api *API) getProjectAccessHandler() service.Handler {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		vars := mux.Vars(r)
+
+		projectKey := vars["key"]
+		itemType := vars["type"]
+
+		var enabled bool
+		switch sdk.CDNItemType(itemType) {
+		case sdk.CDNTypeItemWorkerCache:
+			_, enabled = featureflipping.IsEnabled(ctx, gorpmapping.Mapper, api.mustDB(), sdk.FeatureCDNArtifact, map[string]string{
+				"project_key": projectKey,
+			})
+		}
+
+		if !enabled {
+			return sdk.WrapError(sdk.ErrForbidden, "cdn is not enabled for project %s", projectKey)
+		}
+
+		if !isCDN(ctx) {
+			return sdk.WrapError(sdk.ErrForbidden, "only CDN can call this route")
+		}
+
+		sessionID := r.Header.Get(sdk.CDSSessionID)
+		if sessionID == "" {
+			return sdk.WrapError(sdk.ErrForbidden, "missing session id header")
+		}
+
+		session, err := authentication.LoadSessionByID(ctx, api.mustDBWithCtx(ctx), sessionID)
+		if err != nil {
+			return err
+		}
+		consumer, err := authentication.LoadConsumerByID(ctx, api.mustDB(), session.ConsumerID,
+			authentication.LoadConsumerOptions.WithAuthentifiedUser)
+		if err != nil {
+			return sdk.NewErrorWithStack(err, sdk.ErrUnauthorized)
+		}
+
+		if consumer.Disabled {
+			return sdk.WrapError(sdk.ErrUnauthorized, "consumer (%s) is disabled", consumer.ID)
+		}
+
+		// Add worker for consumer if exists
+		worker, err := worker.LoadByConsumerID(ctx, api.mustDB(), consumer.ID)
+		if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
+			return err
+		}
+		if err != nil && sdk.ErrorIs(err, sdk.ErrNotFound) {
+			return sdk.WrapError(sdk.ErrForbidden, "consumer (%s) is not a worker", consumer.ID)
+		}
+		consumer.Worker = worker
+
+		maintainerOrAdmin := consumer.Maintainer() || consumer.Admin()
+
+		perms, err := permission.LoadProjectMaxLevelPermission(ctx, api.mustDB(), []string{projectKey}, consumer.GetGroupIDs())
+		if err != nil {
+			return sdk.NewErrorWithStack(err, sdk.ErrUnauthorized)
+		}
+		maxLevelPermission := perms.Level(projectKey)
+		if maxLevelPermission < sdk.PermissionRead && !maintainerOrAdmin {
+			return sdk.WrapError(sdk.ErrUnauthorized, "not authorized for project %s", projectKey)
+		}
+
+		return service.WriteJSON(w, nil, http.StatusOK)
 	}
 }

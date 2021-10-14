@@ -15,6 +15,7 @@ import (
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gambol99/go-marathon"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ovh/cds/engine/api"
@@ -22,17 +23,13 @@ import (
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
 	"github.com/ovh/cds/sdk/hatchery"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
 // New instanciates a new Hatchery Marathon
 func New() *HatcheryMarathon {
 	s := new(HatcheryMarathon)
-	s.GoRoutines = sdk.NewGoRoutines()
-	s.Router = &api.Router{
-		Mux: mux.NewRouter(),
-	}
+	s.GoRoutines = sdk.NewGoRoutines(context.Background())
 	return s
 }
 
@@ -50,7 +47,10 @@ func (h *HatcheryMarathon) Init(config interface{}) (cdsclient.ServiceConfig, er
 	if !ok {
 		return cfg, sdk.WithStack(fmt.Errorf("invalid marathon hatchery configuration"))
 	}
-
+	h.Router = &api.Router{
+		Mux:    mux.NewRouter(),
+		Config: sConfig.HTTP,
+	}
 	cfg.Host = sConfig.API.HTTP.URL
 	cfg.Token = sConfig.API.Token
 	cfg.InsecureSkipVerifyTLS = sConfig.API.HTTP.Insecure
@@ -142,6 +142,11 @@ func (h *HatcheryMarathon) CheckConfiguration(cfg interface{}) error {
 	return nil
 }
 
+// Start inits client and routines for hatchery
+func (h *HatcheryMarathon) Start(ctx context.Context) error {
+	return hatchery.Create(ctx, h)
+}
+
 // Serve start the hatchery server
 func (h *HatcheryMarathon) Serve(ctx context.Context) error {
 	return h.CommonServe(ctx, h)
@@ -173,10 +178,10 @@ func (h *HatcheryMarathon) CanSpawn(ctx context.Context, model *sdk.Model, jobID
 	// Service and Hostname requirement are not supported
 	for _, r := range requirements {
 		if r.Type == sdk.ServiceRequirement {
-			log.Debug("CanSpawn> Job %d has a service requirement. Marathon can't spawn a worker for this job", jobID)
+			log.Debug(ctx, "CanSpawn> Job %d has a service requirement. Marathon can't spawn a worker for this job", jobID)
 			return false
 		} else if r.Type == sdk.HostnameRequirement {
-			log.Debug("CanSpawn> Job %d has a hostname requirement. Marathon can't spawn a worker for this job", jobID)
+			log.Debug(ctx, "CanSpawn> Job %d has a hostname requirement. Marathon can't spawn a worker for this job", jobID)
 			return false
 		}
 	}
@@ -217,9 +222,9 @@ func (h *HatcheryMarathon) SpawnWorker(ctx context.Context, spawnArgs hatchery.S
 	defer end()
 
 	if spawnArgs.JobID > 0 {
-		log.Debug("spawnWorker> spawning worker %s (%s) for job %d", spawnArgs.Model.Name, spawnArgs.Model.ModelDocker.Image, spawnArgs.JobID)
+		log.Debug(ctx, "spawnWorker> spawning worker %s (%s) for job %d", spawnArgs.Model.Name, spawnArgs.Model.ModelDocker.Image, spawnArgs.JobID)
 	} else {
-		log.Debug("spawnWorker> spawning worker %s (%s)", spawnArgs.Model.Name, spawnArgs.Model.ModelDocker.Image)
+		log.Debug(ctx, "spawnWorker> spawning worker %s (%s)", spawnArgs.Model.Name, spawnArgs.Model.ModelDocker.Image)
 	}
 
 	if spawnArgs.JobID == 0 && !spawnArgs.RegisterOnly {
@@ -232,20 +237,9 @@ func (h *HatcheryMarathon) SpawnWorker(ctx context.Context, spawnArgs hatchery.S
 	instance := 1
 	forcePull := strings.HasSuffix(spawnArgs.Model.ModelDocker.Image, ":latest")
 
-	udataParam := sdk.WorkerArgs{
-		API:               h.Configuration().API.HTTP.URL,
-		Token:             spawnArgs.WorkerToken,
-		HTTPInsecure:      h.Config.API.HTTP.Insecure,
-		Name:              spawnArgs.WorkerName,
-		TTL:               h.Config.WorkerTTL,
-		Model:             spawnArgs.Model.Path(),
-		HatcheryName:      h.Name(),
-		GraylogHost:       h.Configuration().Provision.WorkerLogsOptions.Graylog.Host,
-		GraylogPort:       h.Configuration().Provision.WorkerLogsOptions.Graylog.Port,
-		GraylogExtraKey:   h.Configuration().Provision.WorkerLogsOptions.Graylog.ExtraKey,
-		GraylogExtraValue: h.Configuration().Provision.WorkerLogsOptions.Graylog.ExtraValue,
-		WorkflowJobID:     spawnArgs.JobID,
-	}
+	udataParam := h.GenerateWorkerArgs(ctx, h, spawnArgs)
+	udataParam.TTL = h.Config.WorkerTTL
+	udataParam.WorkflowJobID = spawnArgs.JobID
 
 	tmpl, errt := template.New("cmd").Parse(spawnArgs.Model.ModelDocker.Cmd)
 	if errt != nil {
@@ -272,7 +266,7 @@ func (h *HatcheryMarathon) SpawnWorker(ctx context.Context, spawnArgs hatchery.S
 				var err error
 				memory, err = strconv.ParseInt(r.Value, 10, 64)
 				if err != nil {
-					log.Warning(ctx, "spawnMarathonDockerWorker> unable to parse memory requirement %d: %v", memory, err)
+					log.Warn(ctx, "spawnMarathonDockerWorker> unable to parse memory requirement %d: %v", memory, err)
 					return err
 				}
 			}
@@ -285,7 +279,7 @@ func (h *HatcheryMarathon) SpawnWorker(ctx context.Context, spawnArgs hatchery.S
 		spawnArgs.Model.ModelDocker.Envs = map[string]string{}
 	}
 
-	envsWm := map[string]string{}
+	envsWm := udataParam.InjectEnvVars
 	envsWm["CDS_MODEL_MEMORY"] = fmt.Sprintf("%d", memory)
 	envsWm["CDS_API"] = udataParam.API
 	envsWm["CDS_TOKEN"] = udataParam.Token
@@ -326,6 +320,10 @@ func (h *HatcheryMarathon) SpawnWorker(ctx context.Context, spawnArgs hatchery.S
 		Labels:    &h.marathonLabels,
 	}
 
+	if h.Config.MarathonApplicationURIs != nil && len(h.Config.MarathonApplicationURIs) > 0 {
+		application.Uris = &h.Config.MarathonApplicationURIs
+	}
+
 	_, next := telemetry.Span(ctx, "marathonClient.CreateApplication")
 	if _, err := h.marathonClient.CreateApplication(application); err != nil {
 		next()
@@ -347,20 +345,20 @@ func (h *HatcheryMarathon) SpawnWorker(ctx context.Context, spawnArgs hatchery.S
 			select {
 			case t := <-ticker.C:
 				delta := math.Floor(t.Sub(t0).Seconds())
-				log.Debug("spawnMarathonDockerWorker> worker %s spawning in progress [%d seconds] please wait...", application.ID, int(delta))
+				log.Debug(ctx, "spawnMarathonDockerWorker> worker %s spawning in progress [%d seconds] please wait...", application.ID, int(delta))
 			case <-stop:
 				return
 			}
 		}
 	}()
 
-	log.Debug("spawnMarathonDockerWorker> worker %s spawning in progress, please wait...", application.ID)
+	log.Debug(ctx, "spawnMarathonDockerWorker> worker %s spawning in progress, please wait...", application.ID)
 	_, next = telemetry.Span(ctx, "marathonClient.ApplicationDeployments")
 	deployments, err := h.marathonClient.ApplicationDeployments(application.ID)
 	next()
 	if err != nil {
 		ticker.Stop()
-		return fmt.Errorf("spawnMarathonDockerWorker> failed to list deployments: %s", err.Error())
+		return sdk.WrapError(err, "failed to list deployments")
 	}
 
 	if len(deployments) == 0 {
@@ -399,7 +397,7 @@ func (h *HatcheryMarathon) SpawnWorker(ctx context.Context, spawnArgs hatchery.S
 						errorsChan <- fmt.Errorf("error on deployment %s: %s", id, err.Error())
 					}
 					if !found {
-						log.Debug("spawnMarathonDockerWorker> deployment %s succeeded", id)
+						log.Debug(ctx, "spawnMarathonDockerWorker> deployment %s succeeded", id)
 						errorsChan <- nil
 						return
 					}
@@ -421,7 +419,7 @@ func (h *HatcheryMarathon) SpawnWorker(ctx context.Context, spawnArgs hatchery.S
 		return nil
 	}
 
-	return fmt.Errorf("spawnMarathonDockerWorker> %s", errors.Error())
+	return fmt.Errorf(errors.Error())
 }
 
 func (h *HatcheryMarathon) listApplications(idPrefix string) ([]string, error) {
@@ -436,7 +434,7 @@ func (h *HatcheryMarathon) listApplications(idPrefix string) ([]string, error) {
 func (h *HatcheryMarathon) WorkersStarted(ctx context.Context) []string {
 	apps, err := h.listApplications(h.Config.MarathonIDPrefix)
 	if err != nil {
-		log.Warning(ctx, "WorkersStarted> error on list applications err:%s", err)
+		log.Warn(ctx, "WorkersStarted> error on list applications err:%s", err)
 		return nil
 	}
 	res := make([]string, len(apps))
@@ -445,24 +443,6 @@ func (h *HatcheryMarathon) WorkersStarted(ctx context.Context) []string {
 		res[i] = strings.TrimPrefix(res[i], "/")
 	}
 	return res
-}
-
-// WorkersStartedByModel returns the number of instances of given model started but
-// not necessarily register on CDS yet
-func (h *HatcheryMarathon) WorkersStartedByModel(ctx context.Context, model *sdk.Model) int {
-	apps, err := h.listApplications(h.Config.MarathonIDPrefix)
-	if err != nil {
-		return 0
-	}
-
-	var x int
-	for _, app := range apps {
-		if strings.Contains(app, strings.ToLower(model.Name)) {
-			x++
-		}
-	}
-
-	return x
 }
 
 // InitHatchery only starts killing routine of worker not registered
@@ -485,12 +465,12 @@ func (h *HatcheryMarathon) routines(ctx context.Context) {
 		case <-ticker.C:
 			h.GoRoutines.Exec(ctx, "marathon-killDisabledWorker", func(ctx context.Context) {
 				if err := h.killDisabledWorkers(); err != nil {
-					log.Warning(context.Background(), "Cannot kill disabled workers: %s", err)
+					log.Warn(context.Background(), "Cannot kill disabled workers: %s", err)
 				}
 			})
 			h.GoRoutines.Exec(ctx, "marathon-killAwolWorkers", func(ctx context.Context) {
 				if err := h.killAwolWorkers(); err != nil {
-					log.Warning(context.Background(), "Cannot kill awol workers: %s", err)
+					log.Warn(context.Background(), "Cannot kill awol workers: %s", err)
 				}
 			})
 			h.GoRoutines.Exec(ctx, "marathon-refreshCDNConfiguration", func(ctx context.Context) {
@@ -531,7 +511,7 @@ func (h *HatcheryMarathon) killDisabledWorkers() error {
 			if strings.HasSuffix(app, w.Name) {
 				log.Info(ctx, "killing disabled worker %s id:%s wk:%d ak:%d", app, w.ID, wk, ak)
 				if _, err := h.marathonClient.DeleteApplication(app, true); err != nil {
-					log.Warning(ctx, "killDisabledWorkers> Error while delete app %s err:%s", app, err)
+					log.Warn(ctx, "killDisabledWorkers> Error while delete app %s err:%s", app, err)
 				}
 				break
 			}
@@ -561,11 +541,11 @@ func (h *HatcheryMarathon) killAwolWorkers() error {
 	var found bool
 	// then for each RUNNING marathon application
 	for _, app := range apps.Apps {
-		log.Debug("killAwolWorkers> check app %s", app.ID)
+		log.Debug(ctx, "killAwolWorkers> check app %s", app.ID)
 
 		t, err := time.Parse(time.RFC3339, app.Version)
 		if err != nil {
-			log.Warning(ctx, "killAwolWorkers> app %s - Cannot parse last update: %s", app.ID, err)
+			log.Warn(ctx, "killAwolWorkers> app %s - Cannot parse last update: %s", app.ID, err)
 			break
 		}
 
@@ -580,18 +560,18 @@ func (h *HatcheryMarathon) killAwolWorkers() error {
 		for _, w := range workers {
 			if strings.HasSuffix(app.ID, w.Name) && w.Status != sdk.StatusDisabled {
 				found = true
-				log.Debug("killAwolWorkers> apps %s is found on workers list with status %s", app.ID, w.Status)
+				log.Debug(ctx, "killAwolWorkers> apps %s is found on workers list with status %s", app.ID, w.Status)
 				break
 			}
 		}
 
 		// then if it's not found, kill it !
 		if !found && time.Since(t) > maxDeploymentDuration {
-			log.Debug("killAwolWorkers> killing awol worker %s", app.ID)
+			log.Debug(ctx, "killAwolWorkers> killing awol worker %s", app.ID)
 			// If its a worker "register", check registration before deleting it
 			if strings.HasPrefix(app.ID, "register-") && app.Env != nil {
 				model := (*app.Env)["CDS_MODEL_PATH"]
-				if err := hatchery.CheckWorkerModelRegister(h, model); err != nil {
+				if err := hatchery.CheckWorkerModelRegister(ctx, h, model); err != nil {
 					var spawnErr = sdk.SpawnErrorForm{
 						Error: err.Error(),
 					}
@@ -602,7 +582,7 @@ func (h *HatcheryMarathon) killAwolWorkers() error {
 				}
 			}
 			if _, err := h.marathonClient.DeleteApplication(app.ID, true); err != nil {
-				log.Warning(ctx, "killAwolWorkers> Error while delete app %s err:%s", app.ID, err)
+				log.Warn(ctx, "killAwolWorkers> Error while delete app %s err:%s", app.ID, err)
 				// continue to next app
 			}
 		}

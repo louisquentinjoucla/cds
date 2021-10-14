@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/pkg/browser"
+	"github.com/rockbears/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/test"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // TestNew needs githubClientID and githubClientSecret
@@ -23,7 +23,7 @@ func TestNewClient(t *testing.T) {
 }
 
 func getNewConsumer(t *testing.T) sdk.VCSServer {
-	log.SetLogger(t)
+	log.Factory = log.NewTestingWrapper(t)
 	cfg := test.LoadTestingConf(t, sdk.TypeAPI)
 	appID := cfg["gitlabClientID"]
 	secret := cfg["gitlabClientSecret"]
@@ -45,7 +45,7 @@ func getNewConsumer(t *testing.T) sdk.VCSServer {
 }
 
 func getNewAuthorizedClient(t *testing.T) sdk.VCSAuthorizedClient {
-	log.SetLogger(t)
+	log.Factory = log.NewTestingWrapper(t)
 	cfg := test.LoadTestingConf(t, sdk.TypeAPI)
 	appID := cfg["gitlabClientID"]
 	secret := cfg["gitlabClientSecret"]
@@ -151,7 +151,7 @@ func TestBranches(t *testing.T) {
 	ghClient := getNewAuthorizedClient(t)
 	assert.NotNil(t, ghClient)
 
-	branches, err := ghClient.Branches(context.Background(), "vaevictis35/proj1")
+	branches, err := ghClient.Branches(context.Background(), "vaevictis35/proj1", sdk.VCSBranchesFilter{})
 	require.NoError(t, err)
 	t.Logf("%+v", branches)
 	assert.NotEmpty(t, branches)
@@ -161,7 +161,7 @@ func TestBranch(t *testing.T) {
 	ghClient := getNewAuthorizedClient(t)
 	assert.NotNil(t, ghClient)
 
-	branch, err := ghClient.Branch(context.Background(), "vaevictis35/proj1", "master")
+	branch, err := ghClient.Branch(context.Background(), "vaevictis35/proj1", sdk.VCSBranchFilters{BranchName: "master"})
 	require.NoError(t, err)
 	t.Logf("%+v", branch)
 	assert.NotNil(t, branch)

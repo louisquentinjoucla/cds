@@ -1,6 +1,15 @@
-import { ChangeDetectionStrategy, ChangeDetectorRef, Component, EventEmitter, Input, OnInit, Output } from '@angular/core';
+import {
+    ChangeDetectionStrategy,
+    ChangeDetectorRef,
+    Component, ElementRef,
+    EventEmitter,
+    Input,
+    OnInit,
+    Output,
+    ViewChild
+} from '@angular/core';
 import { Project } from 'app/model/project.model';
-// tslint:disable-next-line: max-line-length
+// eslint-disable-next-line max-len
 import { notificationOnFailure, notificationOnSuccess, notificationTypes, WNode, WNodeType, Workflow, WorkflowNotification, WorkflowTriggerConditionCache } from 'app/model/workflow.model';
 import { NotificationService } from 'app/service/notification/notification.service';
 import cloneDeep from 'lodash-es/cloneDeep';
@@ -24,10 +33,14 @@ export class WorkflowNotificationFormComponent implements OnInit {
             this.initNotif();
         }
     }
-    get notification() { return this._notification; }
+    get notification() {
+     return this._notification;
+    }
 
     @Input() editMode: boolean;
     @Input() readOnly: boolean;
+
+    @ViewChild('select') nodeSelect: ElementRef;
 
     types: Array<string>;
     notifOnSuccess: Array<string>;
@@ -51,7 +64,9 @@ export class WorkflowNotificationFormComponent implements OnInit {
             this.initNotif();
         }
     }
-    get workflow() { return this._workflow; }
+    get workflow() {
+     return this._workflow;
+    }
 
     @Output() updatedNotification = new EventEmitter<WorkflowNotification>();
     @Output() deleteNotificationEvent = new EventEmitter<WorkflowNotification>();
@@ -81,15 +96,17 @@ export class WorkflowNotificationFormComponent implements OnInit {
 
     initNotif(): void {
         if (this.nodes && this._notification && !this._notification.id) {
-            this._notification.source_node_ref = this.nodes.map(n => {
-                return n.name;
-            });
+            this._notification.source_node_ref = this.nodes.map(n => n.name);
         }
 
         if (this._notification && this._notification.type === 'vcs') {
             this.statusEnabled = !this._notification.settings.template.disable_status;
             this.commentEnabled = !this._notification.settings.template.disable_comment;
             this.alwaysSend = this._notification.settings.on_success === 'always';
+        }
+
+        if (this.nodeSelect) {
+            (<any>this.nodeSelect).writeValue(this._notification.source_node_ref);
         }
     }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/api/environment"
@@ -18,7 +19,6 @@ import (
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -224,6 +224,8 @@ func DeleteByID(db gorp.SqlExecutor, id int64) error {
 
 // LoadProjectByNodeJobRunID return a project from node job run id
 func LoadProjectByNodeJobRunID(ctx context.Context, db gorp.SqlExecutor, store cache.Store, nodeJobRunID int64, opts ...LoadOptionFunc) (*sdk.Project, error) {
+	ctx, end := telemetry.Span(ctx, "project.LoadProjectByNodeJobRunID")
+	defer end()
 	query := `
 		SELECT project.* FROM project
 		JOIN workflow_run ON workflow_run.project_id = project.id
@@ -314,7 +316,7 @@ func unwrap(ctx context.Context, db gorp.SqlExecutor, p *dbProject, opts []LoadO
 		nameSplitted := strings.Split(name, "/")
 		name = nameSplitted[len(nameSplitted)-1]
 		_, end = telemetry.Span(ctx, name)
-		if err := f(db, &proj); err != nil && sdk.Cause(err) != sql.ErrNoRows {
+		if err := f(ctx, db, &proj); err != nil && sdk.Cause(err) != sql.ErrNoRows {
 			end()
 			return nil, err
 		}

@@ -4,8 +4,9 @@ import { TranslateService } from '@ngx-translate/core';
 import { Store } from '@ngxs/store';
 import { AuthenticationState } from 'app/store/authentication.state';
 import { finalize } from 'rxjs/operators';
+import { Project } from 'app/model/project.model';
 import { Group, GroupMember } from '../../../../model/group.model';
-import { AuthentifiedUser } from '../../../../model/user.model';
+import { AuthentifiedUser, AuthSummary } from '../../../../model/user.model';
 import { GroupService } from '../../../../service/group/group.service';
 import { UserService } from '../../../../service/user/user.service';
 import { PathItem } from '../../../../shared/breadcrumb/breadcrumb.component';
@@ -22,13 +23,14 @@ export class GroupEditComponent implements OnInit {
     deleteLoading = false;
     groupName: string;
     group: Group;
-    currentUser: AuthentifiedUser;
+    currentAuthSummary: AuthSummary;
     currentUserIsAdminOnGroup: boolean;
     addUserUsername: string;
     users: Array<AuthentifiedUser>;
-    private groupnamePattern: RegExp = new RegExp('^[a-zA-Z0-9._-]{1,}$');
+    private groupnamePattern = new RegExp('^[a-zA-Z0-9._-]{1,}$');
     groupPatternError = false;
     path: Array<PathItem>;
+    projects: Array<Project>;
 
     constructor(
         private _userService: UserService,
@@ -40,7 +42,7 @@ export class GroupEditComponent implements OnInit {
         private _store: Store,
         private _cd: ChangeDetectorRef
     ) {
-        this.currentUser = this._store.selectSnapshot(AuthenticationState.user);
+        this.currentAuthSummary = this._store.selectSnapshot(AuthenticationState.summary);
     }
 
     ngOnInit() {
@@ -73,12 +75,16 @@ export class GroupEditComponent implements OnInit {
             this.updatePath();
             this._cd.markForCheck();
         });
+        this._groupService.getProjectsInGroup(this.groupName).subscribe(projs => {
+            this.projects = projs;
+            this._cd.markForCheck();
+        })
     }
 
     updateDataFromGroup(): void {
         if (this.group.members) {
             for (let i = 0; i < this.group.members.length; i++) {
-                if (this.currentUser.username === this.group.members[i].username) {
+                if (this.currentAuthSummary.user.username === this.group.members[i].username) {
                     this.currentUserIsAdminOnGroup = this.group.members[i].admin;
                     break;
                 }
@@ -176,7 +182,7 @@ export class GroupEditComponent implements OnInit {
             }))
             .subscribe(g => {
                 this._toast.success('', this._translate.instant('group_remove_user_saved'));
-                if (username === this.currentUser.username) {
+                if (username === this.currentAuthSummary.user.username) {
                     this._router.navigate(['settings', 'group']);
                     return;
                 }

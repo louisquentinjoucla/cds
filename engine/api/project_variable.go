@@ -5,12 +5,46 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/event"
 	"github.com/ovh/cds/engine/api/project"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 )
+
+func (api *API) getListEncryptVariableHandler() service.Handler {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		vars := mux.Vars(r)
+		key := vars[permProjectKey]
+
+		p, err := project.Load(ctx, api.mustDB(), key)
+		if err != nil {
+			return err
+		}
+
+		res, err := project.ListEncryptedData(ctx, api.mustDB(), p.ID)
+		if err != nil {
+			return err
+		}
+
+		for i := range res {
+			decryptedData, err := project.DecryptWithBuiltinKey(ctx, api.mustDB(), p.ID, res[i].Token)
+			if err != nil {
+				log.Error(ctx, "unable to decrypt data %s: %v", res[i].Token, err)
+				res[i].Status = "decryption failed"
+			}
+
+			if decryptedData == sdk.PasswordPlaceholder {
+				res[i].Status = "password placeholder detected"
+			}
+
+			res[i].Status = "OK"
+		}
+
+		return service.WriteJSON(w, res, http.StatusOK)
+	}
+}
 
 func (api *API) postEncryptVariableHandler() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
@@ -28,13 +62,32 @@ func (api *API) postEncryptVariableHandler() service.Handler {
 			return sdk.WrapError(err, "unable to read body")
 		}
 
-		encryptedValue, erre := project.EncryptWithBuiltinKey(api.mustDB(), p.ID, variable.Name, variable.Value)
+		encryptedValue, erre := project.EncryptWithBuiltinKey(ctx, api.mustDB(), p.ID, variable.Name, variable.Value)
 		if erre != nil {
 			return sdk.WrapError(erre, "unable to encrypte content %s", variable.Name)
 		}
 
 		variable.Value = encryptedValue
 		return service.WriteJSON(w, variable, http.StatusOK)
+	}
+}
+
+func (api *API) deleteEncryptVariableHandler() service.Handler {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		vars := mux.Vars(r)
+		key := vars[permProjectKey]
+
+		p, err := project.Load(ctx, api.mustDB(), key)
+		if err != nil {
+			return err
+		}
+
+		secretName := r.FormValue("name")
+		if secretName == "" {
+			return sdk.WithStack(sdk.ErrWrongRequest)
+		}
+
+		return project.DeleteEncryptedVariable(api.mustDB(), p.ID, secretName)
 	}
 }
 

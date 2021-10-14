@@ -2,7 +2,6 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ovh/cds/engine/cache"
-	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/rockbears/log"
 
+	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
+	"github.com/ovh/cds/sdk/cdsclient"
 )
 
 //Github http var
@@ -57,7 +56,7 @@ func (g *githubConsumer) postForm(path string, data url.Values, headers map[stri
 
 	if res.StatusCode > 400 {
 		ghErr := &ghError{}
-		if err := json.Unmarshal(resBody, ghErr); err == nil {
+		if err := sdk.JSONUnmarshal(resBody, ghErr); err == nil {
 			return res.StatusCode, resBody, ghErr
 		}
 	}
@@ -125,7 +124,7 @@ type postOptions struct {
 	asUser             bool
 }
 
-func (c *githubClient) post(path string, bodyType string, body io.Reader, opts *postOptions) (*http.Response, error) {
+func (c *githubClient) post(ctx context.Context, path string, bodyType string, body io.Reader, headers map[string]string, opts *postOptions) (*http.Response, error) {
 	if opts == nil {
 		opts = new(postOptions)
 	}
@@ -143,16 +142,31 @@ func (c *githubClient) post(path string, bodyType string, body io.Reader, opts *
 	req.Header.Add("Accept", "application/json")
 	if opts.asUser && c.token != "" {
 		req.SetBasicAuth(c.username, c.token)
+		log.Debug(ctx, "Github API>> Request URL %s with basicAuth username:%v len:%d", req.URL.String(), c.username, len(c.token))
 	} else {
 		req.Header.Add("Authorization", fmt.Sprintf("token %s", c.OAuthToken))
+		log.Debug(ctx, "Github API>> Request URL %s with Authorization", req.URL.String())
 	}
 
-	log.Debug("Github API>> Request URL %s", req.URL.String())
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	// If body is not *bytes.Buffer, *bytes.Reader or *strings.Reader Content-Length is not set. (
+	// Here we force Content-Length.
+	// cf net/http/request.go  NewRequestWithContext
+	if req.Header.Get("Content-Length") != "" {
+		s, err := strconv.Atoi(req.Header.Get("Content-Length"))
+		if err != nil {
+			return nil, sdk.WithStack(err)
+		}
+		req.ContentLength = int64(s)
+	}
 
 	return httpClient.Do(req)
 }
 
-func (c *githubClient) patch(path string, bodyType string, body io.Reader, opts *postOptions) (*http.Response, error) {
+func (c *githubClient) patch(ctx context.Context, path string, bodyType string, body io.Reader, opts *postOptions) (*http.Response, error) {
 	if opts == nil {
 		opts = new(postOptions)
 	}
@@ -176,12 +190,12 @@ func (c *githubClient) patch(path string, bodyType string, body io.Reader, opts 
 		req.Header.Add("Authorization", fmt.Sprintf("token %s", c.OAuthToken))
 	}
 
-	log.Debug("Github API>> Request URL %s", req.URL.String())
+	log.Debug(ctx, "Github API>> Request URL %s", req.URL.String())
 
 	return httpClient.Do(req)
 }
 
-func (c *githubClient) put(path string, bodyType string, body io.Reader, opts *postOptions) (*http.Response, error) {
+func (c *githubClient) put(ctx context.Context, path string, bodyType string, body io.Reader, opts *postOptions) (*http.Response, error) {
 	if opts == nil {
 		opts = new(postOptions)
 	}
@@ -203,7 +217,7 @@ func (c *githubClient) put(path string, bodyType string, body io.Reader, opts *p
 		req.Header.Add("Authorization", fmt.Sprintf("token %s", c.OAuthToken))
 	}
 
-	log.Debug("Github API>> Request URL %s", req.URL.String())
+	log.Debug(ctx, "Github API>> Request URL %s", req.URL.String())
 
 	return httpClient.Do(req)
 }
@@ -239,7 +253,7 @@ func (c *githubClient) get(ctx context.Context, path string, opts ...getArgFunc)
 		}
 	}
 
-	log.Debug("Github API>> Request GitHubURL %s", req.URL.String())
+	log.Debug(ctx, "Github API>> Request GitHubURL %s", req.URL.String())
 
 	res, err := httpClient.Do(req)
 	if err != nil {
@@ -253,7 +267,7 @@ func (c *githubClient) get(ctx context.Context, path string, opts ...getArgFunc)
 	case http.StatusMovedPermanently, http.StatusTemporaryRedirect, http.StatusFound:
 		location := res.Header.Get("Location")
 		if location != "" {
-			log.Debug("Github API>> Response Follow redirect :%s", location)
+			log.Debug(ctx, "Github API>> Response Follow redirect :%s", location)
 			return c.get(ctx, location)
 		}
 	case http.StatusUnauthorized:
@@ -280,7 +294,7 @@ func (c *githubClient) get(ctx context.Context, path string, opts ...getArgFunc)
 	return res.StatusCode, resBody, res.Header, nil
 }
 
-func (c *githubClient) delete(path string) error {
+func (c *githubClient) delete(ctx context.Context, path string) error {
 	if isRateLimitReached() {
 		return ErrorRateLimit
 	}
@@ -296,7 +310,7 @@ func (c *githubClient) delete(path string) error {
 
 	req.Header.Set("User-Agent", "CDS-gh_client_id="+c.ClientID)
 	req.Header.Add("Authorization", fmt.Sprintf("token %s", c.OAuthToken))
-	log.Debug("Github API>> Request URL %s", req.URL.String())
+	log.Debug(ctx, "Github API>> Request URL %s", req.URL.String())
 
 	res, err := httpClient.Do(req)
 	if err != nil {

@@ -11,8 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ovh/symmecrypt/keyloader"
+
+	"github.com/ovh/cds/engine/cache"
+
 	"github.com/go-gorp/gorp"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/spacemonkeygo/httpsig.v0"
 
@@ -24,8 +29,12 @@ import (
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
 	"github.com/ovh/cds/sdk/jws"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 )
+
+func init() {
+	cdslog.Initialize(context.TODO(), &cdslog.Conf{Level: "debug"})
+}
 
 func newRouter(m *mux.Router, p string) *api.Router {
 	r := &api.Router{
@@ -44,7 +53,7 @@ func newTestService(t *testing.T) (*Service, *test.FakeTransaction) {
 	item.InitDBMapping(m)
 	storage.InitDBMapping(m)
 
-	log.SetLogger(t)
+	log.Factory = log.NewTestingWrapper(t)
 	db, factory, cache, end := test.SetupPGToCancel(t, m, sdk.TypeCDN)
 	t.Cleanup(end)
 
@@ -55,11 +64,11 @@ func newTestService(t *testing.T) (*Service, *test.FakeTransaction) {
 		Cache:               cache,
 		Mapper:              m,
 	}
-	s.GoRoutines = sdk.NewGoRoutines()
+	s.GoRoutines = sdk.NewGoRoutines(context.TODO())
 	if fakeAPIPrivateKey.key == nil {
 		fakeAPIPrivateKey.key, _ = jws.NewRandomRSAKey()
 	}
-	s.Common.GoRoutines = sdk.NewGoRoutines()
+	s.Common.GoRoutines = sdk.NewGoRoutines(context.TODO())
 	s.ParsedAPIPublicKey = &fakeAPIPrivateKey.key.PublicKey
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -103,33 +112,55 @@ var fakeAPIPrivateKey = struct {
 	key *rsa.PrivateKey
 }{}
 
-func newRunningStorageUnits(t *testing.T, m *gorpmapper.Mapper, dbMap *gorp.DbMap, ctx context.Context, maxStepSize int64) *storage.RunningStorageUnits {
+func newRunningStorageUnits(t *testing.T, m *gorpmapper.Mapper, dbMap *gorp.DbMap, ctx context.Context, store cache.Store) *storage.RunningStorageUnits {
 	cfg := test.LoadTestingConf(t, sdk.TypeCDN)
 	tmpDir, err := ioutil.TempDir("", t.Name()+"-cdn-1-*")
+	require.NoError(t, err)
+
+	tmpDirBuf, err := ioutil.TempDir("", t.Name()+"-cdn-1-buf-*")
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	t.Cleanup(cancel)
 
-	cdnUnits, err := storage.Init(ctx, m, dbMap, sdk.NewGoRoutines(), storage.Configuration{
+	cdnUnits, err := storage.Init(ctx, m, store, dbMap, sdk.NewGoRoutines(ctx), storage.Configuration{
+		SyncSeconds:     2,
+		SyncNbElements:  100,
+		PurgeSeconds:    30,
+		PurgeNbElements: 100,
 		HashLocatorSalt: "thisismysalt",
-		Buffer: storage.BufferConfiguration{
-			Name: "redis_buffer",
-			Redis: storage.RedisBufferConfiguration{
-				Host:     cfg["redisHost"],
-				Password: cfg["redisPassword"],
+		Buffers: map[string]storage.BufferConfiguration{
+			"redis_buffer": {
+				Redis: &storage.RedisBufferConfiguration{
+					Host:     cfg["redisHost"],
+					Password: cfg["redisPassword"],
+				},
+				BufferType: storage.CDNBufferTypeLog,
+			},
+			"fs_buffer": {
+				Local: &storage.LocalBufferConfiguration{
+					Path: tmpDirBuf,
+					Encryption: []*keyloader.KeyConfig{
+						{
+							Identifier: "fs-buf-id",
+							Cipher:     "aes-gcm",
+							Key:        "12345678901234567890123456789012",
+						},
+					},
+				},
+				BufferType: storage.CDNBufferTypeFile,
 			},
 		},
-		Storages: []storage.StorageConfiguration{
-			{
-				Name: "local_storage",
+		Storages: map[string]storage.StorageConfiguration{
+			"local_storage": {
+				SyncParallel: 10,
 				Local: &storage.LocalStorageConfiguration{
 					Path: tmpDir,
 				},
 			},
 		},
-	}, storage.LogConfig{NbJobLogsGoroutines: 0, NbServiceLogsGoroutines: 0, StepMaxSize: maxStepSize, ServiceMaxSize: 10000, StepLinesRateLimit: 10000})
+	})
 	require.NoError(t, err)
-	cdnUnits.Start(ctx, sdk.NewGoRoutines())
+	cdnUnits.Start(ctx, sdk.NewGoRoutines(ctx))
 	return cdnUnits
 }

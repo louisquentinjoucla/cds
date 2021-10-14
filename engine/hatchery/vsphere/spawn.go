@@ -3,50 +3,143 @@ package vsphere
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"html/template"
+	"strings"
 	"time"
 
+	"github.com/rockbears/log"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/hatchery"
-	"github.com/ovh/cds/sdk/log"
 )
 
 type annotation struct {
-	HatcheryName            string    `json:"hatchery_name"`
-	WorkerName              string    `json:"worker_name"`
-	RegisterOnly            bool      `json:"register_only"`
-	WorkerModelPath         string    `json:"worker_model_path"`
-	WorkerModelLastModified string    `json:"worker_model_last_modified"`
-	Model                   bool      `json:"model"`
-	ToDelete                bool      `json:"to_delete"`
-	Created                 time.Time `json:"created"`
+	HatcheryName            string    `json:"hatchery_name,omitempty"`
+	WorkerName              string    `json:"worker_name,omitempty"`
+	RegisterOnly            bool      `json:"register_only,omitempty"`
+	Provisioning            bool      `json:"provisioning,omitempty"`
+	WorkerModelPath         string    `json:"worker_model_path,omitempty"`
+	WorkerModelLastModified string    `json:"worker_model_last_modified,omitempty"`
+	Model                   bool      `json:"model,omitempty"`
+	Created                 time.Time `json:"created,omitempty"`
+	JobID                   int64     `json:"job_id,omitempty"`
+	IPAddress               string    `json:"ip_address,omitempty"`
 }
 
 // SpawnWorker creates a new vm instance
-func (h *HatcheryVSphere) SpawnWorker(ctx context.Context, spawnArgs hatchery.SpawnArguments) error {
+func (h *HatcheryVSphere) SpawnWorker(ctx context.Context, spawnArgs hatchery.SpawnArguments) (err error) {
+	log.Info(ctx, "SpawnWorker %q", spawnArgs.WorkerName)
+	defer func() {
+		if err != nil {
+			ctx = sdk.ContextWithStacktrace(ctx, err)
+			log.Error(ctx, "HatcheryVSphere> SpawnWorker %q from model %q: ERROR: %v", spawnArgs.WorkerName, spawnArgs.ModelName(), err)
+
+			h.cachePendingJobID.mu.Lock()
+			h.cachePendingJobID.list = sdk.DeleteFromInt64Array(h.cachePendingJobID.list, spawnArgs.JobID)
+			h.cachePendingJobID.mu.Unlock()
+		} else {
+			log.Info(ctx, "HatcheryVSphere> SpawnWorker %q from model %q: DONE", spawnArgs.WorkerName, spawnArgs.ModelName())
+		}
+	}()
+
 	if spawnArgs.JobID == 0 && !spawnArgs.RegisterOnly {
 		return sdk.WithStack(fmt.Errorf("no job ID and no register"))
 	}
 
-	var vm *object.VirtualMachine
-	var errV error
-	_, errM := h.getModelByName(ctx, spawnArgs.Model.Name)
+	if spawnArgs.JobID != 0 {
+		h.cachePendingJobID.mu.Lock()
+		h.cachePendingJobID.list = append(h.cachePendingJobID.list, spawnArgs.JobID)
+		defer h.cachePendingJobID.mu.Unlock()
 
-	if errM != nil || spawnArgs.Model.NeedRegistration {
-		// Generate worker model vm
-		vm, errV = h.createVMModel(*spawnArgs.Model)
+		go func() {
+			time.Sleep(3 * time.Minute)
+			h.cachePendingJobID.mu.Lock()
+			h.cachePendingJobID.list = sdk.DeleteFromInt64Array(h.cachePendingJobID.list, spawnArgs.JobID)
+			h.cachePendingJobID.mu.Unlock()
+		}()
 	}
 
-	if vm == nil || errV != nil {
-		spawnArgs.Model.NeedRegistration = errV != nil // if we haven't registered
-		if vm, errV = h.finder.VirtualMachine(ctx, spawnArgs.Model.Name); errV != nil {
-			return sdk.WrapError(errV, "cannot find virtual machine with this model")
+	var vmTemplate *object.VirtualMachine
+
+	if _, err := h.getVirtualMachineTemplateByName(ctx, spawnArgs.Model.Name); err != nil || spawnArgs.Model.NeedRegistration {
+		// Generate worker model vm
+		log.Info(ctx, "creating virtual machine model %q", spawnArgs.Model.Name)
+		vmTemplate, err = h.createVirtualMachineTemplate(ctx, *spawnArgs.Model, spawnArgs.WorkerName)
+		if err != nil {
+			log.Error(ctx, "Unable to create VM Model: %v", err)
+			return err
 		}
+	}
+
+	if vmTemplate == nil {
+		var err error
+		log.Info(ctx, "loading virtual machine template %q", spawnArgs.Model.Name)
+		if vmTemplate, err = h.vSphereClient.LoadVirtualMachine(ctx, spawnArgs.Model.Name); err != nil {
+			return sdk.WrapError(err, "cannot find virtual machine template with this model")
+		}
+	}
+
+	// Try to find a provisionned worker
+	if !spawnArgs.RegisterOnly {
+		provisionnedVMWorker, err := h.FindProvisionnedWorker(ctx, *spawnArgs.Model)
+		if err != nil {
+			return err
+		}
+
+		if provisionnedVMWorker != nil {
+			log.Info(ctx, "starting worker %q with provisionned machine %q", spawnArgs.Model.Name, provisionnedVMWorker.Name())
+
+			if err := h.vSphereClient.RenameVirtualMachine(ctx, provisionnedVMWorker, spawnArgs.WorkerName); err != nil {
+				return sdk.WrapError(err, "unable to rename VM %q", provisionnedVMWorker.Name())
+			}
+
+			// Before restart it, keep it in the cache for a few minutes to avoid the "killAwolServer" to delete it
+			h.cacheProvisioning.mu.Lock()
+			h.cacheProvisioning.restarting = append(h.cacheProvisioning.restarting, spawnArgs.WorkerName)
+			h.cacheProvisioning.mu.Unlock()
+
+			time.Sleep(2 * time.Second)
+
+			if err := h.vSphereClient.StartVirtualMachine(ctx, provisionnedVMWorker); err != nil {
+				h.cacheProvisioning.mu.Lock()
+				h.cacheProvisioning.restarting = sdk.DeleteFromArray(h.cacheProvisioning.restarting, spawnArgs.WorkerName)
+				h.cacheProvisioning.mu.Unlock()
+
+				_ = h.vSphereClient.ShutdownVirtualMachine(ctx, provisionnedVMWorker)
+				h.markToDelete(ctx, provisionnedVMWorker)
+				return sdk.WrapError(err, "unable to start VM %q", spawnArgs.WorkerName)
+			}
+
+			// wait for the right IP, probably keep track of the IP address in the server annotations
+			// to avoid having two provisionned VM with the same IP address
+			// so we if to peek a random IP address by considering already provisionned IP addresses
+			moProvisionnedVMWorker, err := h.getVirtualMachineByName(ctx, provisionnedVMWorker.Name())
+			if err != nil {
+				return sdk.WrapError(err, "unable to find VM %q", spawnArgs.WorkerName)
+			}
+			var annot = getVirtualMachineCDSAnnotation(ctx, *moProvisionnedVMWorker)
+
+			if err := h.vSphereClient.WaitForVirtualMachineIP(ctx, provisionnedVMWorker, &annot.IPAddress); err != nil {
+				h.cacheProvisioning.mu.Lock()
+				h.cacheProvisioning.restarting = sdk.DeleteFromArray(h.cacheProvisioning.restarting, spawnArgs.WorkerName)
+				h.cacheProvisioning.mu.Unlock()
+
+				_ = h.vSphereClient.ShutdownVirtualMachine(ctx, provisionnedVMWorker)
+				h.markToDelete(ctx, provisionnedVMWorker)
+				return sdk.WrapError(err, "unable to get VM %q IP Address", spawnArgs.WorkerName)
+			}
+
+			h.cacheProvisioning.mu.Lock()
+			h.cacheProvisioning.restarting = sdk.DeleteFromArray(h.cacheProvisioning.restarting, spawnArgs.WorkerName)
+			h.cacheProvisioning.mu.Unlock()
+
+			return h.launchScriptWorker(ctx, spawnArgs.WorkerName, spawnArgs.JobID, spawnArgs.WorkerToken, *spawnArgs.Model, false, provisionnedVMWorker)
+		}
+
 	}
 
 	annot := annotation{
@@ -56,37 +149,56 @@ func (h *HatcheryVSphere) SpawnWorker(ctx context.Context, spawnArgs hatchery.Sp
 		WorkerModelLastModified: fmt.Sprintf("%d", spawnArgs.Model.UserLastModified.Unix()),
 		WorkerModelPath:         spawnArgs.ModelName(),
 		Created:                 time.Now(),
+		JobID:                   spawnArgs.JobID,
 	}
 
-	cloneSpec, folder, errCfg := h.createVMConfig(vm, annot)
-	if errCfg != nil {
-		return sdk.WrapError(errCfg, "cannot create VM configuration")
+	cloneSpec, err := h.prepareCloneSpec(ctx, vmTemplate, &annot, spawnArgs.WorkerName)
+	if err != nil {
+		return err
 	}
 
-	log.Info(ctx, "Create vm to exec worker %s", spawnArgs.WorkerName)
+	folder, err := h.vSphereClient.LoadFolder(ctx)
+	if err != nil {
+		return err
+	}
+
+	log.Info(ctx, "Create vm to execute worker %q, cloneSpec: %+v", spawnArgs.WorkerName, *cloneSpec)
 	defer log.Info(ctx, "Terminate to create vm for worker %s", spawnArgs.WorkerName)
-	task, errC := vm.Clone(ctx, folder, spawnArgs.WorkerName, *cloneSpec)
-	if errC != nil {
-		return sdk.WrapError(errC, "cannot clone VM")
+
+	cloneRef, err := h.vSphereClient.CloneVirtualMachine(ctx, vmTemplate, folder, spawnArgs.WorkerName, cloneSpec)
+	if err != nil {
+		return err
 	}
 
-	info, errW := task.WaitForResult(ctx, nil)
-	if errW != nil || info.State == types.TaskInfoStateError {
-		return sdk.WrapError(errW, "state in error")
+	vmWorker, err := h.vSphereClient.NewVirtualMachine(ctx, cloneSpec, cloneRef)
+	if err != nil {
+		return err
 	}
 
-	return h.launchScriptWorker(spawnArgs.WorkerName, spawnArgs.JobID, spawnArgs.WorkerToken, *spawnArgs.Model, spawnArgs.RegisterOnly, info.Result.(types.ManagedObjectReference))
+	return h.launchScriptWorker(ctx, spawnArgs.WorkerName, spawnArgs.JobID, spawnArgs.WorkerToken, *spawnArgs.Model, spawnArgs.RegisterOnly, vmWorker)
 }
 
-// createVMModel create a model for a specific worker model
-func (h *HatcheryVSphere) createVMModel(model sdk.Model) (*object.VirtualMachine, error) {
-	ctx := context.Background()
-	log.Info(ctx, "Create vm model %s", model.Name)
+// createVirtualMachineTemplate create a model for a specific worker model
+func (h *HatcheryVSphere) createVirtualMachineTemplate(ctx context.Context, model sdk.Model, workerName string) (vm *object.VirtualMachine, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
 
-	vm, errV := h.finder.VirtualMachine(ctx, model.ModelVirtualMachine.Image)
-	if errV != nil {
-		return vm, sdk.WrapError(errV, "createVMModel> Cannot find virtual machine")
+	log.Info(ctx, "Create vm model %q from %q", model.Name, model.ModelVirtualMachine.Image)
+	defer func() {
+		if err != nil {
+			ctx = sdk.ContextWithStacktrace(ctx, err)
+			log.Error(ctx, "Create vm model %q from %q ERROR: %v", model.Name, model.ModelVirtualMachine.Image, err)
+		} else {
+			log.Info(ctx, "Create vm model %q from %q DONE", model.Name, model.ModelVirtualMachine.Image)
+		}
+	}()
+
+	vm, err = h.vSphereClient.LoadVirtualMachine(ctx, model.ModelVirtualMachine.Image)
+	if err != nil {
+		return vm, sdk.WrapError(err, "unable to find virtual machine %q", model.ModelVirtualMachine.Image)
 	}
+
+	log.Debug(ctx, "found virtual machine image %q: %+v", model.ModelVirtualMachine.Image, vm)
 
 	annot := annotation{
 		HatcheryName:            h.Name(),
@@ -96,110 +208,132 @@ func (h *HatcheryVSphere) createVMModel(model sdk.Model) (*object.VirtualMachine
 		Created:                 time.Now(),
 	}
 
-	cloneSpec, folder, errCfg := h.createVMConfig(vm, annot)
-	if errCfg != nil {
-		return vm, sdk.WrapError(errCfg, "createVMModel> cannot create VM configuration")
+	cloneSpec, err := h.prepareCloneSpec(ctx, vm, &annot, workerName)
+	if err != nil {
+		return nil, sdk.WrapError(err, "createVMModel> cannot create VM configuration")
 	}
 
-	task, errC := vm.Clone(ctx, folder, model.Name+"-tmp", *cloneSpec)
-	if errC != nil {
-		return vm, sdk.WrapError(errC, "createVMModel> cannot clone VM")
+	name := model.Name + "-tmp"
+	log.Info(ctx, "creating worker %q by cloning vm to %q ", workerName, name)
+
+	folder, err := h.vSphereClient.LoadFolder(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	info, errWr := task.WaitForResult(ctx, nil)
-	if errWr != nil || info.State == types.TaskInfoStateError {
-		return vm, sdk.WrapError(errWr, "createVMModel> state in error")
+	cloneRef, err := h.vSphereClient.CloneVirtualMachine(ctx, vm, folder, name, cloneSpec)
+	if err != nil {
+		return nil, err
 	}
 
-	vm = object.NewVirtualMachine(h.vclient.Client, info.Result.(types.ManagedObjectReference))
-
-	if _, errW := vm.WaitForIP(ctx); errW != nil {
-		return vm, sdk.WrapError(errW, "createVMModel> cannot get an ip")
+	clonedVM, err := h.vSphereClient.NewVirtualMachine(ctx, cloneSpec, cloneRef)
+	if err != nil {
+		return nil, err
 	}
 
-	if _, errS := h.launchClientOp(vm, model.ModelVirtualMachine.PreCmd+"; \n"+model.ModelVirtualMachine.Cmd+"; \n"+model.ModelVirtualMachine.PostCmd, nil); errS != nil {
-		log.Warning(ctx, "createVMModel> cannot start program %s", errS)
-		annot := annotation{ToDelete: true}
-		if annotStr, err := json.Marshal(annot); err == nil {
-			vm.Reconfigure(ctx, types.VirtualMachineConfigSpec{
-				Annotation: string(annotStr),
-			})
+	if err := h.checkVirtualMachineIsReady(ctx, model, clonedVM); err != nil {
+		log.Error(ctx, "virtual machine %q is not ready: %v", clonedVM.Name(), err)
+		log.Warn(ctx, "shutdown virtual machine %q", clonedVM.Name())
+		if err := h.vSphereClient.ShutdownVirtualMachine(ctx, clonedVM); err != nil {
+			ctx = sdk.ContextWithStacktrace(ctx, err)
+			log.Error(ctx, "createVMModel> unable to shutdown vm %q: %v", model.Name, err)
+		}
+		h.markToDelete(ctx, clonedVM)
+		return nil, err
+	}
+
+	if _, err := h.launchClientOp(ctx, clonedVM, model.ModelVirtualMachine, model.ModelVirtualMachine.PostCmd, nil); err != nil {
+		log.Error(ctx, "cannot start program on virtual machine %q: %v", clonedVM.Name(), err)
+		log.Warn(ctx, "shutdown virtual machine %q", clonedVM.Name())
+		if err := h.vSphereClient.ShutdownVirtualMachine(ctx, clonedVM); err != nil {
+			ctx = sdk.ContextWithStacktrace(ctx, err)
+			log.Error(ctx, "createVMModel> unable to shutdown vm %q: %v", model.Name, err)
+		}
+		h.markToDelete(ctx, clonedVM)
+		return nil, err
+	}
+
+	if err := h.vSphereClient.WaitForVirtualMachineShutdown(ctx, clonedVM); err != nil {
+		return nil, err
+	}
+
+	modelFound, err := h.getVirtualMachineTemplateByName(ctx, model.Name)
+	if err == nil {
+		if err := h.deleteServer(ctx, modelFound); err != nil {
+			log.Warn(ctx, "createVMModel> Cannot delete previous model %s : %s", model.Name, err)
 		}
 	}
 
-	ctxTo, cancel := context.WithTimeout(ctx, 4*time.Minute)
-	defer cancel()
-	if err := vm.WaitForPowerState(ctxTo, types.VirtualMachinePowerStatePoweredOff); err != nil {
-		return nil, sdk.WrapError(err, "cannot wait for power state result")
+	if err := h.vSphereClient.RenameVirtualMachine(ctx, clonedVM, model.Name); err != nil {
+		return nil, err
 	}
-	log.Info(ctx, "createVMModel> model %s is build", model.Name)
+	log.Debug(ctx, "renaming virtual machine %q to %q: DONE", clonedVM.String(), model.Name)
 
-	modelFound, errM := h.getModelByName(ctx, model.Name)
-	if errM == nil {
-		if errD := h.deleteServer(modelFound); errD != nil {
-			log.Warning(ctx, "createVMModel> Cannot delete previous model %s : %s", model.Name, errD)
-		}
-	}
-
-	ctxTo, cancel = context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	task, errR := vm.Rename(ctxTo, model.Name)
-	if errR != nil {
-		return vm, sdk.WrapError(errR, "createVMModel> Cannot rename model %s", model.Name)
-	}
-
-	ctxTo, cancel = context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if _, err := task.WaitForResult(ctxTo, nil); err != nil {
-		return vm, sdk.WrapError(err, "error on waiting result for vm renaming %s", model.Name)
+	log.Info(ctx, "mark virtual machine %q as template %q", name, model.Name)
+	if err := h.vSphereClient.MarkVirtualMachineAsTemplate(ctx, clonedVM); err != nil {
+		return nil, err
 	}
 
 	return vm, nil
 }
 
-// launchScriptWorker launch a script on the worker
-func (h *HatcheryVSphere) launchScriptWorker(name string, jobID int64, token string, model sdk.Model, registerOnly bool, vmInfo types.ManagedObjectReference) error {
-	ctx := context.Background()
-	// Retrieve the new VM
-	vm := object.NewVirtualMachine(h.vclient.Client, vmInfo)
-
-	ctxTo, cancel := context.WithTimeout(ctx, 2*time.Minute)
+func (h *HatcheryVSphere) checkVirtualMachineIsReady(ctx context.Context, model sdk.Model, vm *object.VirtualMachine) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
-	if _, errW := vm.WaitForIP(ctxTo); errW != nil {
-		return sdk.WrapError(errW, "createVMModel> error on waiting ip")
+	var latestError error
+	for {
+		if ctx.Err() != nil {
+			return sdk.WithStack(fmt.Errorf("vm %q is not ready: %v - %v", vm.Name(), latestError, ctx.Err()))
+		}
+		// Try to run a script
+		_, err := h.launchClientOp(ctx, vm, model.ModelVirtualMachine, "env", nil)
+		if err != nil {
+			log.Warn(ctx, "virtual machine %q is not ready: %v", vm.Name(), err)
+			latestError = err
+			time.Sleep(time.Second)
+			continue // If it failing, wait and retry
+		}
+		break // else it means that it is ready
+	}
+
+	return nil
+}
+
+// launchScriptWorker launch a script on the worker
+func (h *HatcheryVSphere) launchScriptWorker(ctx context.Context, name string, jobID int64, token string, model sdk.Model, registerOnly bool, vm *object.VirtualMachine) error {
+	if err := h.vSphereClient.WaitForVirtualMachineIP(ctx, vm, nil); err != nil {
+		return err
 	}
 
 	env := []string{
 		"CDS_FROM_WORKER_IMAGE=true",
 	}
 
-	env = append(env, h.getGraylogGrpcEnv(model)...)
-
+	env = append(env, h.getGraylogEnv(model)...)
 	udata := model.ModelVirtualMachine.PreCmd + "\n" + model.ModelVirtualMachine.Cmd
 
 	if registerOnly {
 		udata += " register"
 	}
-	udata += ("\n" + model.ModelVirtualMachine.PostCmd)
+	udata += "\n" + model.ModelVirtualMachine.PostCmd
 
 	tmpl, errt := template.New("udata").Parse(udata)
 	if errt != nil {
 		return errt
 	}
-	udataParam := sdk.WorkerArgs{
-		API:               h.Configuration().API.HTTP.URL,
-		Name:              name,
-		Token:             token,
-		Model:             model.Group.Name + "/" + model.Name,
-		HatcheryName:      h.Name(),
-		TTL:               h.Config.WorkerTTL,
-		FromWorkerImage:   true,
-		GraylogHost:       h.Configuration().Provision.WorkerLogsOptions.Graylog.Host,
-		GraylogPort:       h.Configuration().Provision.WorkerLogsOptions.Graylog.Port,
-		GraylogExtraKey:   h.Configuration().Provision.WorkerLogsOptions.Graylog.ExtraKey,
-		GraylogExtraValue: h.Configuration().Provision.WorkerLogsOptions.Graylog.ExtraValue,
-		WorkflowJobID:     jobID,
+
+	udataParam := h.GenerateWorkerArgs(ctx, h, hatchery.SpawnArguments{
+		WorkerToken: token,
+		WorkerName:  name,
+		Model:       &model,
+	})
+	udataParam.TTL = h.Config.WorkerTTL
+	udataParam.FromWorkerImage = true
+	udataParam.WorkflowJobID = jobID
+
+	for k, v := range udataParam.InjectEnvVars {
+		env = append(env, k+"="+v)
 	}
 
 	var buffer bytes.Buffer
@@ -207,19 +341,175 @@ func (h *HatcheryVSphere) launchScriptWorker(name string, jobID int64, token str
 		return err
 	}
 
-	if _, errS := h.launchClientOp(vm, buffer.String(), env); errS != nil {
-		log.Warning(ctx, "launchScript> cannot start program %s", errS)
-
-		// tag vm to delete
-		annot := annotation{ToDelete: true}
-		if annotStr, err := json.Marshal(annot); err == nil {
-			vm.Reconfigure(ctx, types.VirtualMachineConfigSpec{
-				Annotation: string(annotStr),
-			})
+	if err := h.checkVirtualMachineIsReady(ctx, model, vm); err != nil {
+		log.Error(ctx, "virtual machine %q is not ready: %v", vm.Name(), err)
+		log.Warn(ctx, "shutdown virtual machine %q", vm.Name())
+		if err := h.vSphereClient.ShutdownVirtualMachine(ctx, vm); err != nil {
+			ctx = sdk.ContextWithStacktrace(ctx, err)
+			log.Error(ctx, "createVMModel> unable to shutdown vm %q: %v", model, err)
 		}
+		h.markToDelete(ctx, vm)
+		return err
+	}
 
-		return errS
+	if _, err := h.launchClientOp(ctx, vm, model.ModelVirtualMachine, buffer.String(), env); err != nil {
+		log.Warn(ctx, "launchScript> cannot start program %s", err)
+		log.Error(ctx, "cannot start program on virtual machine %q: %v", vm.Name(), err)
+		log.Warn(ctx, "shutdown virtual machine %q", vm.Name())
+		if err := h.vSphereClient.ShutdownVirtualMachine(ctx, vm); err != nil {
+			ctx = sdk.ContextWithStacktrace(ctx, err)
+			log.Error(ctx, "createVMModel> unable to shutdown vm %q: %v", model.Name, err)
+		}
+		h.markToDelete(ctx, vm)
+		return err
 	}
 
 	return nil
+}
+
+func (h *HatcheryVSphere) markToDelete(ctx context.Context, vm *object.VirtualMachine) {
+	h.cacheToDelete.mu.Lock()
+	defer h.cacheToDelete.mu.Unlock()
+
+	// Reload the vm ref to get the annotation
+	allVMRef, err := h.vSphereClient.ListVirtualMachines(ctx)
+	if err != nil {
+		log.Error(ctx, "unable to get virtual machines: %v", err)
+		return
+	}
+
+	var vmRef *mo.VirtualMachine
+	for i := range allVMRef {
+		if allVMRef[i].Name == vm.Name() {
+			vmRef = &allVMRef[i]
+			break
+		}
+	}
+
+	if vmRef == nil {
+		err := sdk.WithStack(fmt.Errorf("virtual machine ref %q not found", vm.Name()))
+		ctx = sdk.ContextWithStacktrace(ctx, err)
+		log.Error(ctx, "unable to get virtual machines: %v", err)
+		return
+	}
+
+	var annot = getVirtualMachineCDSAnnotation(ctx, *vmRef)
+	if annot == nil {
+		return
+	}
+
+	h.cacheToDelete.list = append(h.cacheToDelete.list, vmRef.Name)
+}
+
+const maxLength = 63
+
+func (h *HatcheryVSphere) ProvisionWorker(ctx context.Context, m sdk.Model, workerName string) (err error) {
+	vmTemplate, err := h.vSphereClient.LoadVirtualMachine(ctx, m.Name)
+	if err != nil {
+		return sdk.WrapError(err, "cannot find virtual machine template with this model")
+	}
+
+	annot := annotation{
+		HatcheryName:            h.Name(),
+		WorkerName:              workerName,
+		RegisterOnly:            false,
+		Provisioning:            true,
+		WorkerModelLastModified: fmt.Sprintf("%d", m.UserLastModified.Unix()),
+		WorkerModelPath:         m.Group.Name + "/" + m.Name,
+		Created:                 time.Now(),
+	}
+
+	cloneSpec, err := h.prepareCloneSpec(ctx, vmTemplate, &annot, workerName)
+	if err != nil {
+		return err
+	}
+
+	folder, err := h.vSphereClient.LoadFolder(ctx)
+	if err != nil {
+		return err
+	}
+
+	log.Info(ctx, "provisioning %q by cloning %q", workerName, vmTemplate.Name())
+
+	cloneRef, err := h.vSphereClient.CloneVirtualMachine(ctx, vmTemplate, folder, workerName, cloneSpec)
+	if err != nil {
+		return err
+	}
+
+	clonedVM, err := h.vSphereClient.NewVirtualMachine(ctx, cloneSpec, cloneRef)
+	if err != nil {
+		return err
+	}
+
+	if err := h.vSphereClient.WaitForVirtualMachineIP(ctx, clonedVM, &annot.IPAddress); err != nil {
+		return err
+	}
+
+	// the provisionned workers are shutdown when they are created
+	if err := h.vSphereClient.ShutdownVirtualMachine(ctx, clonedVM); err != nil {
+		return err
+	}
+
+	log.Info(ctx, "vm %q has been provisionned", workerName)
+
+	return nil
+}
+
+func (h *HatcheryVSphere) FindProvisionnedWorker(ctx context.Context, m sdk.Model) (*object.VirtualMachine, error) {
+	var expectedModelPath = m.Group.Name + "/" + m.Name
+
+	log.Debug(ctx, "searching for provisionned VM for model %q", expectedModelPath)
+
+	machines := h.getVirtualMachines(ctx)
+	for _, machine := range machines {
+		if !strings.HasPrefix(machine.Name, "provision-") {
+			continue
+		}
+
+		annot := getVirtualMachineCDSAnnotation(ctx, machine)
+		if annot == nil {
+			continue
+		}
+
+		h.cacheProvisioning.mu.Lock()
+		if sdk.IsInArray(machine.Name, h.cacheProvisioning.pending) {
+			h.cacheProvisioning.mu.Unlock()
+			continue
+		}
+
+		if sdk.IsInArray(machine.Name, h.cacheProvisioning.restarting) {
+			h.cacheProvisioning.mu.Unlock()
+			continue
+		}
+
+		h.cacheProvisioning.mu.Unlock()
+
+		h.cacheToDelete.mu.Lock()
+		if sdk.IsInArray(machine.Name, h.cacheToDelete.list) {
+			h.cacheToDelete.mu.Unlock()
+			continue
+		}
+		h.cacheToDelete.mu.Unlock()
+
+		vm, err := h.vSphereClient.LoadVirtualMachine(ctx, machine.Name)
+		if err != nil {
+			return nil, sdk.WrapError(err, "unable to load vm %q", machine.Name)
+		}
+
+		powerstate, err := h.vSphereClient.GetVirtualMachinePowerState(ctx, vm)
+		if err != nil {
+			return nil, sdk.WrapError(err, "unable to get vm %q powerstate", machine.Name)
+		}
+
+		// Provisionned machines are powered off
+		if annot.Provisioning &&
+			machine.Runtime.PowerState != types.VirtualMachinePowerStatePoweredOn &&
+			powerstate != types.VirtualMachinePowerStatePoweredOn &&
+			expectedModelPath == annot.WorkerModelPath {
+			return vm, nil
+		}
+	}
+
+	log.Debug(ctx, "unable to find  provisionned VM for model %q", expectedModelPath)
+	return nil, nil
 }

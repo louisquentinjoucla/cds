@@ -49,3 +49,18 @@ func (c *client) VariableEncrypt(projectKey string, varName string, content stri
 	}
 	return variable, nil
 }
+
+func (c *client) VariableListEncrypt(projectKey string) ([]sdk.Secret, error) {
+	secrets := []sdk.Secret{}
+	if _, err := c.GetJSON(context.Background(), "/project/"+projectKey+"/encrypt/list", &secrets, nil); err != nil {
+		return nil, err
+	}
+	return secrets, nil
+}
+
+func (c *client) VariableEncryptDelete(projectKey, name string) error {
+	if _, err := c.DeleteJSON(context.Background(), "/project/"+projectKey+"/encrypt?name="+url.QueryEscape(name), nil, nil); err != nil {
+		return err
+	}
+	return nil
+}

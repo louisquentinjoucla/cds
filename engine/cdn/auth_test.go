@@ -29,7 +29,7 @@ func Test_itemAccessMiddleware(t *testing.T) {
 	myItem := sdk.CDNItem{
 		ID:   sdk.UUID(),
 		Type: sdk.CDNTypeItemStepLog,
-		APIRef: sdk.CDNLogAPIRef{
+		APIRef: &sdk.CDNLogAPIRef{
 			RunID:      1,
 			WorkflowID: 1,
 		},
@@ -44,8 +44,10 @@ func Test_itemAccessMiddleware(t *testing.T) {
 
 	sessionID := sdk.UUID()
 	mockClient.EXPECT().
-		WorkflowLogAccess(gomock.Any(), gomock.Any(), gomock.Any(), sessionID).
-		DoAndReturn(func(ctx context.Context, projectKey, workflowName, sessionID string) error { return nil }).
+		WorkflowAccess(gomock.Any(), gomock.Any(), gomock.Any(), sessionID, gomock.Any()).
+		DoAndReturn(func(ctx context.Context, projectKey string, workflowName int64, sessionID string, itemItem sdk.CDNItemType) error {
+			return nil
+		}).
 		Times(1)
 
 	signer, err := authentication.NewSigner("cdn-test", test.SigningKey)

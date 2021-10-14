@@ -1,6 +1,6 @@
 import { HttpRequest } from '@angular/common/http';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
-import { async, TestBed } from '@angular/core/testing';
+import { TestBed, waitForAsync } from '@angular/core/testing';
 import { NgxsModule, Store } from '@ngxs/store';
 import { Action } from 'app/model/action.model';
 import { Job } from 'app/model/job.model';
@@ -13,23 +13,23 @@ import { ProjectService } from 'app/service/project/project.service';
 import { ProjectStore } from 'app/service/project/project.store';
 import { WorkflowRunService } from 'app/service/workflow/run/workflow.run.service';
 import { WorkflowService } from 'app/service/workflow/workflow.service';
+import { PipelineService } from 'app/service/pipeline/pipeline.service';
+import { EnvironmentService } from 'app/service/environment/environment.service';
+import { ApplicationService } from 'app/service/application/application.service';
+import { RouterService } from 'app/service/router/router.service';
+import { RouterTestingModule } from '@angular/router/testing';
 import { ApplicationsState } from './applications.state';
 import * as pipelinesActions from './pipelines.action';
 import { PipelinesState, PipelinesStateModel } from './pipelines.state';
 import { AddProject } from './project.action';
 import { ProjectState, ProjectStateModel } from './project.state';
 import { WorkflowState } from './workflow.state';
-import { PipelineService } from 'app/service/pipeline/pipeline.service';
-import { EnvironmentService } from 'app/service/environment/environment.service';
-import { ApplicationService } from 'app/service/application/application.service';
-import { RouterService } from 'app/service/router/router.service';
-import { RouterTestingModule } from '@angular/router/testing';
 
 describe('Pipelines', () => {
     let store: Store;
     let testProjectKey = 'test1';
 
-    beforeEach(async(() => {
+    beforeEach(waitForAsync(() => {
         TestBed.configureTestingModule({
             providers: [NavbarService, WorkflowRunService, WorkflowService, ProjectStore, RouterService,
                 ProjectService, PipelineService, EnvironmentService, ApplicationService],
@@ -45,9 +45,7 @@ describe('Pipelines', () => {
         project.name = testProjectKey;
         store.dispatch(new AddProject(project));
         const http = TestBed.get(HttpTestingController);
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project')).flush(<Project>{
             name: testProjectKey,
             key: testProjectKey,
         });
@@ -57,15 +55,13 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('fetch pipeline', async(() => {
+    it('fetch pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         store.dispatch(new pipelinesActions.FetchPipeline({
             projectKey: testProjectKey,
             pipelineName: 'pip1'
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey
         });
@@ -76,7 +72,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('add pipeline', async(() => {
+    it('add pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -85,9 +81,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -118,7 +112,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('update a pipeline', async(() => {
+    it('update a pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -127,9 +121,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -145,9 +137,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             changes: pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -165,7 +155,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('delete a pipeline', async(() => {
+    it('delete a pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -174,9 +164,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState.getCurrent()).subscribe((pip: PipelinesStateModel) => {
             expect(pip).toBeTruthy();
             expect(pip.pipeline.name).toEqual('pip1');
@@ -187,9 +175,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipelineName: 'pip1'
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1';
-        })).flush(null);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1')).flush(null);
         store.selectOnce(PipelinesState.getCurrent()).subscribe(state => {
             expect(state.pipeline).toBeFalsy();
         });
@@ -201,7 +187,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('fetch audits pipeline', async(() => {
+    it('fetch audits pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -210,9 +196,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -229,9 +213,7 @@ describe('Pipelines', () => {
         let audit = new PipelineAudit();
         audit.action = 'update';
         audit.pipeline = new Pipeline();
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/audits';
-        })).flush([audit]);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/audits')).flush([audit]);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -246,7 +228,7 @@ describe('Pipelines', () => {
     }));
 
     //  ------- Parameters --------- //
-    it('add a parameter on pipeline', async(() => {
+    it('add a parameter on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -255,9 +237,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy(1);
         });
@@ -277,9 +257,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             parameter
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/parameter/testvar';
-        })).flush(parameter);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/parameter/testvar')).flush(parameter);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -293,7 +271,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('update a parameter on pipeline', async(() => {
+    it('update a parameter on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -302,9 +280,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
 
         let parameter = new Parameter();
         parameter.name = 'testvar';
@@ -316,9 +292,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             parameter
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/parameter/testvar';
-        })).flush(parameter);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/parameter/testvar')).flush(parameter);
 
         parameter.name = 'testvarrenamed';
         store.dispatch(new pipelinesActions.UpdatePipelineParameter({
@@ -340,7 +314,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('delete a parameter on pipeline', async(() => {
+    it('delete a parameter on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -349,9 +323,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
 
         let parameter = new Parameter();
         parameter.name = 'testvar';
@@ -363,18 +335,14 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             parameter
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/parameter/testvar';
-        })).flush(parameter);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/parameter/testvar')).flush(parameter);
 
         store.dispatch(new pipelinesActions.DeletePipelineParameter({
             projectKey: testProjectKey,
             pipelineName: 'pip1',
             parameter
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/parameter/testvar';
-        })).flush(parameter);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/parameter/testvar')).flush(parameter);
         store.selectOnce(PipelinesState).subscribe((state: PipelinesStateModel) => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -389,7 +357,7 @@ describe('Pipelines', () => {
 
 
     //  ------- Workflow --------- //
-    it('add a stage on pipeline', async(() => {
+    it('add a stage on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -398,9 +366,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -419,9 +385,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             stage
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [stage],
@@ -439,7 +403,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('update a stage on pipeline', async(() => {
+    it('update a stage on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -448,9 +412,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
 
         let stage = new Stage();
         stage.id = 1;
@@ -461,9 +423,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             stage
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [stage],
@@ -475,9 +435,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             changes: stage
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage/1';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage/1')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [stage],
@@ -495,7 +453,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('delete a stage on pipeline', async(() => {
+    it('delete a stage on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -504,9 +462,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -525,9 +481,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             stage
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [stage],
@@ -549,9 +503,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             stage
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage/1';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage/1')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [],
@@ -567,7 +519,7 @@ describe('Pipelines', () => {
 
 
 
-    it('add a job on pipeline', async(() => {
+    it('add a job on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -576,9 +528,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -601,9 +551,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             stage
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [stage],
@@ -611,12 +559,10 @@ describe('Pipelines', () => {
         store.dispatch(new pipelinesActions.AddPipelineJob({
             projectKey: testProjectKey,
             pipelineName: 'pip1',
-            stage: stage,
+            stage,
             job
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage/1/job';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage/1/job')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [Object.assign({}, stage, <Stage>{ jobs: [job] })],
@@ -640,7 +586,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('update a job on pipeline', async(() => {
+    it('update a job on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -649,9 +595,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -674,9 +618,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             stage
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [stage],
@@ -684,12 +626,10 @@ describe('Pipelines', () => {
         store.dispatch(new pipelinesActions.AddPipelineJob({
             projectKey: testProjectKey,
             pipelineName: 'pip1',
-            stage: stage,
+            stage,
             job
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage/1/job';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage/1/job')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [Object.assign({}, stage, <Stage>{ jobs: [job] })],
@@ -699,12 +639,10 @@ describe('Pipelines', () => {
         store.dispatch(new pipelinesActions.UpdatePipelineJob({
             projectKey: testProjectKey,
             pipelineName: 'pip1',
-            stage: stage,
+            stage,
             changes: job
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage/1/job/2';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage/1/job/2')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [Object.assign({}, stage, <Stage>{ jobs: [job] })],
@@ -727,7 +665,7 @@ describe('Pipelines', () => {
         });
     }));
 
-    it('delete a job on pipeline', async(() => {
+    it('delete a job on pipeline', waitForAsync(() => {
         const http = TestBed.get(HttpTestingController);
         let pipeline = new Pipeline();
         pipeline.name = 'pip1';
@@ -736,9 +674,7 @@ describe('Pipelines', () => {
             projectKey: testProjectKey,
             pipeline
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline';
-        })).flush(pipeline);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline')).flush(pipeline);
         store.selectOnce(PipelinesState).subscribe(state => {
             expect(state.pipeline).toBeTruthy();
         });
@@ -761,9 +697,7 @@ describe('Pipelines', () => {
             pipelineName: 'pip1',
             stage
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [stage],
@@ -771,12 +705,10 @@ describe('Pipelines', () => {
         store.dispatch(new pipelinesActions.AddPipelineJob({
             projectKey: testProjectKey,
             pipelineName: 'pip1',
-            stage: stage,
+            stage,
             job
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage/1/job';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage/1/job')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [Object.assign({}, stage, <Stage>{ jobs: [job] })],
@@ -785,12 +717,10 @@ describe('Pipelines', () => {
         store.dispatch(new pipelinesActions.DeletePipelineJob({
             projectKey: testProjectKey,
             pipelineName: 'pip1',
-            stage: stage,
+            stage,
             job
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/pipeline/pip1/stage/1/job/2';
-        })).flush(<Pipeline>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/pipeline/pip1/stage/1/job/2')).flush(<Pipeline>{
             name: 'pip1',
             projectKey: testProjectKey,
             stages: [Object.assign({}, stage, <Stage>{ jobs: [] })],

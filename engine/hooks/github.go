@@ -2,19 +2,14 @@ package hooks
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (s *Service) generatePayloadFromGithubRequest(ctx context.Context, t *sdk.TaskExecution, event string) (map[string]interface{}, error) {
-	projectKey := t.Config["project"].Value
-	workflowName := t.Config["workflow"].Value
-
 	var request GithubWebHookEvent
-	if err := json.Unmarshal(t.WebHook.RequestBody, &request); err != nil {
+	if err := sdk.JSONUnmarshal(t.WebHook.RequestBody, &request); err != nil {
 		return nil, sdk.WrapError(err, "unable ro read github request: %s", string(t.WebHook.RequestBody))
 	}
 
@@ -22,15 +17,11 @@ func (s *Service) generatePayloadFromGithubRequest(ctx context.Context, t *sdk.T
 	payload[GIT_EVENT] = event
 
 	if request.Ref != "" {
-		branch := strings.TrimPrefix(request.Ref, "refs/heads/")
 		if request.Deleted {
-			err := s.enqueueBranchDeletion(projectKey, workflowName, branch)
-			return nil, sdk.WrapError(err, "cannot enqueue branch deletion")
-		}
-		if err := s.stopBranchDeletionTask(ctx, branch); err != nil {
-			log.Error(ctx, "cannot stop branch deletion task for branch %s : %v", branch, err)
+			return nil, nil
 		}
 
+		branch := strings.TrimPrefix(request.Ref, "refs/heads/")
 		if !strings.HasPrefix(request.Ref, "refs/tags/") {
 			payload[GIT_BRANCH] = branch
 		} else {

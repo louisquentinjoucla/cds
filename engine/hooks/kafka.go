@@ -2,16 +2,16 @@ package hooks
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Shopify/sarama"
 	"github.com/fsamin/go-dump"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 var nbKafkaConsumers int64
@@ -78,7 +78,7 @@ func (s *Service) startKafkaHook(ctx context.Context, t *sdk.Task) error {
 	}
 
 	var group = fmt.Sprintf("%s.%s", config.Net.SASL.User, t.UUID)
-	consumerGroup, err := sarama.NewConsumerGroup([]string{pf.Config["broker url"].Value}, group, config)
+	consumerGroup, err := sarama.NewConsumerGroup(strings.Split(pf.Config["broker url"].Value, ","), group, config)
 	if err != nil {
 		_ = s.stopTask(ctx, t)
 		return fmt.Errorf("startKafkaHook>Error creating consumer: (%s %s %s %s): %v", pf.Config["broker url"].Value, consumerGroup, topic, config.Net.SASL.User, err)
@@ -143,7 +143,7 @@ func (h *handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama
 }
 
 func (s *Service) doKafkaTaskExecution(t *sdk.TaskExecution) (*sdk.WorkflowNodeRunHookEvent, error) {
-	log.Debug("Hooks> Processing kafka %s %s", t.UUID, t.Type)
+	log.Debug(context.TODO(), "Hooks> Processing kafka %s %s", t.UUID, t.Type)
 
 	// Prepare a struct to send to CDS API
 	h := sdk.WorkflowNodeRunHookEvent{
@@ -155,10 +155,10 @@ func (s *Service) doKafkaTaskExecution(t *sdk.TaskExecution) (*sdk.WorkflowNodeR
 
 	//Try to parse the body as an array
 	bodyJSONArray := []interface{}{}
-	if err := json.Unmarshal(t.Kafka.Message, &bodyJSONArray); err != nil {
+	if err := sdk.JSONUnmarshal(t.Kafka.Message, &bodyJSONArray); err != nil {
 		//Try to parse the body as a map
 		bodyJSONMap := map[string]interface{}{}
-		if err2 := json.Unmarshal(t.Kafka.Message, &bodyJSONMap); err2 == nil {
+		if err2 := sdk.JSONUnmarshal(t.Kafka.Message, &bodyJSONMap); err2 == nil {
 			bodyJSON = bodyJSONMap
 		}
 	} else {

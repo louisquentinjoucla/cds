@@ -26,7 +26,7 @@ import { finalize } from 'rxjs/operators';
 })
 export class VariableComponent extends Table<Variable> {
 
-    @Input('variables')
+    @Input()
     set variables(data: Variable[]) {
         this._variables = data;
         this.goTopage(1);
@@ -34,7 +34,7 @@ export class VariableComponent extends Table<Variable> {
     get variables() {
         return this._variables;
     }
-    @Input('maxPerPage')
+    @Input()
     set maxPerPage(data: number) {
         this.nbElementsByPage = data;
     }
@@ -84,6 +84,7 @@ export class VariableComponent extends Table<Variable> {
 
     /**
      * Send Event to parent component.
+     *
      * @param type Type of event (update, delete)
      * @param variable Variable data
      */
@@ -102,6 +103,7 @@ export class VariableComponent extends Table<Variable> {
                 case 'project':
                     this._projAudit.getVariableAudit(this.project.key, v.name).subscribe(audits => {
                         this.currentVariableAudits = audits;
+                        this._cd.markForCheck();
                         setTimeout(() => {
                             this.auditModal.show({ observeChanges: true });
                         }, 100);
@@ -110,6 +112,7 @@ export class VariableComponent extends Table<Variable> {
                 case 'environment':
                     this._envAudit.getVariableAudit(this.project.key, this.environmentName, v.name).subscribe(audits => {
                         this.currentVariableAudits = audits;
+                        this._cd.markForCheck();
                         setTimeout(() => {
                             this.auditModal.show({ observeChanges: true });
                         }, 100);
@@ -118,6 +121,7 @@ export class VariableComponent extends Table<Variable> {
                 case 'application':
                     this._appAudit.getVariableAudit(this.project.key, this.applicationName, v.name).subscribe(audits => {
                         this.currentVariableAudits = audits;
+                        this._cd.markForCheck();
                         setTimeout(() => {
                             this.auditModal.show({ observeChanges: true });
                         }, 100);

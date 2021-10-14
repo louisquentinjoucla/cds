@@ -7,10 +7,12 @@ import (
 
 	"github.com/dgrijalva/jwt-go"
 	types "github.com/docker/docker/api/types"
+	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
+	"github.com/ovh/cds/engine/api"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // Init initializes the swarm hatchery
@@ -20,7 +22,10 @@ func (h *HatcherySwarm) Init(config interface{}) (cdsclient.ServiceConfig, error
 	if !ok {
 		return cfg, sdk.WithStack(fmt.Errorf("invalid swarm hatchery configuration"))
 	}
-
+	h.Router = &api.Router{
+		Mux:    mux.NewRouter(),
+		Config: sConfig.HTTP,
+	}
 	cfg.Host = sConfig.API.HTTP.URL
 	cfg.Token = sConfig.API.Token
 	cfg.InsecureSkipVerifyTLS = sConfig.API.HTTP.Insecure
@@ -65,7 +70,7 @@ func (h *HatcherySwarm) Status(ctx context.Context) *sdk.MonitoringStatus {
 		defer cancelList()
 		images, err := dockerClient.ImageList(ctxList, types.ImageListOptions{All: true})
 		if err != nil {
-			log.Warning(ctx, "hatchery> swarm> %s> Status> Unable to list images on %s: %s", h.Name(), dockerName, err)
+			log.Warn(ctx, "hatchery> swarm> %s> Status> Unable to list images on %s: %s", h.Name(), dockerName, err)
 			status = sdk.MonitoringStatusWarn
 			nbErrorImageList++
 		}
@@ -74,7 +79,7 @@ func (h *HatcherySwarm) Status(ctx context.Context) *sdk.MonitoringStatus {
 		status = sdk.MonitoringStatusOK
 		cs, err := h.getContainers(dockerClient, types.ContainerListOptions{All: true})
 		if err != nil {
-			log.Warning(ctx, "hatchery> swarm> %s> Status> Unable to list containers on %s: %s", h.Name(), dockerName, err)
+			log.Warn(ctx, "hatchery> swarm> %s> Status> Unable to list containers on %s: %s", h.Name(), dockerName, err)
 			status = sdk.MonitoringStatusWarn
 			nbErrorGetContainers++
 		}

@@ -1,17 +1,17 @@
 package workflow
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -66,7 +66,7 @@ func (r *ProcessorReport) Add(ctx context.Context, i ...interface{}) {
 		case *sdk.WorkflowRun:
 			r.workflows = append(r.workflows, *x)
 		default:
-			log.Warning(ctx, "ProcessorReport> unknown type %T", w)
+			log.Warn(ctx, "ProcessorReport> unknown type %T", w)
 		}
 	}
 }
@@ -117,8 +117,7 @@ func (r *ProcessorReport) Errors() []error {
 
 // UpdateNodeJobRunStatus Update status of an workflow_node_run_job.
 func UpdateNodeJobRunStatus(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.Store, proj sdk.Project, job *sdk.WorkflowNodeJobRun, status string) (*ProcessorReport, error) {
-	var end func()
-	ctx, end = telemetry.Span(ctx, "workflow.UpdateNodeJobRunStatus",
+	ctx, end := telemetry.Span(ctx, "workflow.UpdateNodeJobRunStatus",
 		telemetry.Tag(telemetry.TagWorkflowNodeJobRun, job.ID),
 		telemetry.Tag("workflow_node_run_job_status", status),
 	)
@@ -127,10 +126,10 @@ func UpdateNodeJobRunStatus(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 	report := new(ProcessorReport)
 
 	_, next := telemetry.Span(ctx, "workflow.LoadRunByID")
-	nodeRun, errLoad := LoadNodeRunByID(db, job.WorkflowNodeRunID, LoadRunOptions{})
+	nodeRun, err := LoadNodeRunByID(ctx, db, job.WorkflowNodeRunID, LoadRunOptions{})
 	next()
-	if errLoad != nil {
-		return nil, sdk.WrapError(errLoad, "Unable to load node run id %d", job.WorkflowNodeRunID)
+	if err != nil {
+		return nil, sdk.WrapError(err, "Unable to load node run id %d", job.WorkflowNodeRunID)
 	}
 
 	query := `SELECT status FROM workflow_node_run_job WHERE id = $1`
@@ -138,6 +137,8 @@ func UpdateNodeJobRunStatus(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 	if err := db.QueryRow(query, job.ID).Scan(&currentStatus); err != nil {
 		return nil, sdk.WrapError(err, "Cannot select status from workflow_node_run_job node job run %d", job.ID)
 	}
+
+	log.Info(ctx, "job %d current status %q, new status %q", job.ID, status, currentStatus)
 
 	switch status {
 	case sdk.StatusBuilding:
@@ -150,20 +151,18 @@ func UpdateNodeJobRunStatus(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 
 	case sdk.StatusFail, sdk.StatusSuccess, sdk.StatusDisabled, sdk.StatusSkipped, sdk.StatusStopped:
 		if currentStatus != sdk.StatusWaiting && currentStatus != sdk.StatusBuilding && status != sdk.StatusDisabled && status != sdk.StatusSkipped {
-			log.Debug("workflow.UpdateNodeJobRunStatus> Status is %s, cannot update %d to %s", currentStatus, job.ID, status)
+			log.Debug(ctx, "workflow.UpdateNodeJobRunStatus> Status is %s, cannot update %d to %s", currentStatus, job.ID, status)
 			// too late, Nate
 			return nil, nil
 		}
 		job.Done = time.Now()
 		job.Status = status
 
-		_, next := telemetry.Span(ctx, "workflow.LoadRunByID")
-		wf, errLoadWf := LoadRunByID(db, nodeRun.WorkflowRunID, LoadRunOptions{
+		wf, err := LoadRunByID(ctx, db, nodeRun.WorkflowRunID, LoadRunOptions{
 			WithDeleted: true,
 		})
-		next()
-		if errLoadWf != nil {
-			return nil, sdk.WrapError(errLoadWf, "workflow.UpdateNodeJobRunStatus> Unable to load run id %d", nodeRun.WorkflowRunID)
+		if err != nil {
+			return nil, sdk.WrapError(err, "workflow.UpdateNodeJobRunStatus> Unable to load run id %d", nodeRun.WorkflowRunID)
 		}
 
 		wf.LastExecution = time.Now()
@@ -174,23 +173,14 @@ func UpdateNodeJobRunStatus(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 		return nil, sdk.WithStack(fmt.Errorf("cannot update WorkflowNodeJobRun %d to status %v", job.ID, status))
 	}
 
-	//If the job has been set to building, set the stage to building
-	var stageIndex int
-	for i := range nodeRun.Stages {
-		s := &nodeRun.Stages[i]
-		for _, j := range s.Jobs {
-			if j.Action.ID == job.Job.Job.Action.ID {
-				stageIndex = i
-			}
-		}
-	}
-
 	if err := UpdateNodeJobRun(ctx, db, job); err != nil {
 		return nil, sdk.WrapError(err, "Cannot update WorkflowNodeJobRun %d", job.ID)
 	}
 
 	report.Add(ctx, *job)
 
+	//If the job has been set to building, set the stage to building
+	var stageIndex = nodeRun.GetStageIndex(job)
 	if status == sdk.StatusBuilding {
 		// Sync job status in noderun
 		r, err := syncTakeJobInNodeRun(ctx, db, nodeRun, job, stageIndex)
@@ -198,7 +188,7 @@ func UpdateNodeJobRunStatus(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 		return report, err
 	}
 
-	spawnInfos, err := LoadNodeRunJobInfo(ctx, db, job.ID)
+	spawnInfos, err := LoadNodeRunJobInfo(ctx, db, nodeRun.ID, job.ID)
 	if err != nil {
 		return report, sdk.WrapError(err, "unable to load spawn infos for runJob: %d", job.ID)
 	}
@@ -314,14 +304,23 @@ func checkStatusWaiting(ctx context.Context, store cache.Store, jobID int64, sta
 	return nil
 }
 
-// LoadSecrets loads all secrets for a job run
+// LoadDecryptSecrets loads all secrets for a job run
 func LoadDecryptSecrets(ctx context.Context, db gorp.SqlExecutor, wr *sdk.WorkflowRun, nodeRun *sdk.WorkflowNodeRun) ([]sdk.Variable, error) {
 	entities := []string{SecretProjContext}
+
+	for _, integ := range wr.Workflow.Integrations {
+		if integ.ProjectIntegration.Model.Event {
+			continue
+		}
+		entities = append(entities, fmt.Sprintf(SecretProjIntegrationContext, integ.ProjectIntegrationID))
+	}
+
 	if nodeRun != nil {
 		node := wr.Workflow.WorkflowData.NodeByID(nodeRun.WorkflowNodeID)
 		if node == nil {
 			return nil, sdk.WrapError(sdk.ErrWorkflowNodeNotFound, "unable to find node %d in worflow run", nodeRun.WorkflowNodeID)
 		}
+
 		if node.Context != nil {
 			if node.Context.ApplicationID != 0 {
 				entities = append(entities, fmt.Sprintf(SecretAppContext, node.Context.ApplicationID))
@@ -386,63 +385,6 @@ func FreeNodeJobRun(ctx context.Context, store cache.Store, id int64) error {
 	return sdk.WrapError(sdk.ErrJobNotBooked, "BookNodeJobRun> job %d already released", id)
 }
 
-func AppendLog(db gorp.SqlExecutor, jobID, nodeRunID, stepOrder int64, val string, maxLogSize int64) error {
-	// check if log exists without loading data but with log size
-	exists, size, err := ExistsStepLog(db, jobID, stepOrder)
-	if err != nil {
-		return sdk.WrapError(err, "cannot check if log exists")
-	}
-
-	logs := &sdk.Log{
-		JobID:     jobID,
-		NodeRunID: nodeRunID,
-		StepOrder: stepOrder,
-		Val:       val,
-	}
-
-	// ignore the log if max size already reached
-	if maxReached := truncateLogs(maxLogSize, size, logs); maxReached {
-		log.Debug("truncated logs")
-		return nil
-	}
-
-	if !exists {
-		return sdk.WrapError(insertLog(db, logs), "cannot insert log")
-	}
-
-	return sdk.WrapError(updateLog(db, logs), "cannot update log")
-}
-
-//AddServiceLog adds a service log
-func AddServiceLog(db gorp.SqlExecutor, logs *sdk.ServiceLog, maxLogSize int64) error {
-	// check if log exists without loading data but with log size
-	exists, size, err := ExistsServiceLog(db, logs.WorkflowNodeJobRunID, logs.ServiceRequirementName)
-	if err != nil {
-		return sdk.WrapError(err, "cannot check if log exists")
-	}
-
-	// ignore the log if max size already reached
-	if maxReached := truncateServiceLogs(maxLogSize, size, logs); maxReached {
-		return nil
-	}
-
-	if !exists {
-		return sdk.WrapError(insertServiceLog(db, logs), "Cannot insert log")
-	}
-
-	existingLogs, err := LoadServiceLog(db, logs.WorkflowNodeJobRunID, logs.ServiceRequirementName)
-	if err != nil {
-		return sdk.WrapError(err, "cannot load existing logs")
-	}
-
-	logbuf := bytes.NewBufferString(existingLogs.Val)
-	logbuf.WriteString(logs.Val)
-	existingLogs.Val = logbuf.String()
-	existingLogs.LastModified = logs.LastModified
-
-	return sdk.WrapError(updateServiceLog(db, existingLogs), "Cannot update log")
-}
-
 // RestartWorkflowNodeJob restart all workflow node job and update logs to indicate restart
 func RestartWorkflowNodeJob(ctx context.Context, db gorp.SqlExecutor, wNodeJob sdk.WorkflowNodeJobRun, maxLogSize int64) error {
 	var end func()
@@ -457,13 +399,6 @@ func RestartWorkflowNodeJob(ctx context.Context, db gorp.SqlExecutor, wNodeJob s
 		wNodeJob.Job.Reason = "Killed (Reason: Timeout)\n"
 		step.Status = sdk.StatusWaiting
 		step.Done = time.Time{}
-		if err := AppendLog(
-			db, wNodeJob.ID, wNodeJob.WorkflowNodeRunID, int64(step.StepOrder),
-			"\n\n\n-=-=-=-=-=- Worker timeout: job replaced in queue -=-=-=-=-=-\n\n\n",
-			maxLogSize,
-		); err != nil {
-			return err
-		}
 	}
 
 	nodeRun, err := LoadAndLockNodeRunByID(ctx, db, wNodeJob.WorkflowNodeRunID)
@@ -477,7 +412,7 @@ func RestartWorkflowNodeJob(ctx context.Context, db gorp.SqlExecutor, wNodeJob s
 		return sdk.WrapError(err, "error on sync nodeJobRun")
 	}
 	if !sync {
-		log.Warning(ctx, "sync doesn't find a nodeJobRun")
+		log.Warn(ctx, "sync doesn't find a nodeJobRun")
 	}
 
 	if err := UpdateNodeRun(db, nodeRun); err != nil {

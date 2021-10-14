@@ -6,13 +6,13 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/environment"
 	"github.com/ovh/cds/engine/api/project"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // postEnvironmentImportHandler import an environment yml file
@@ -58,14 +58,14 @@ func (api *API) postEnvironmentImportHandler() service.Handler {
 		}
 		defer tx.Rollback() // nolint
 
-		_, _, msgList, globalError := environment.ParseAndImport(tx, *proj, data, environment.ImportOptions{Force: force}, project.DecryptWithBuiltinKey, getAPIConsumer(ctx))
-		msgListString := translate(r, msgList)
+		_, _, msgList, globalError := environment.ParseAndImport(ctx, tx, *proj, data, environment.ImportOptions{Force: force}, project.DecryptWithBuiltinKey, getAPIConsumer(ctx))
+		msgListString := translate(msgList)
 		if globalError != nil {
 			globalError = sdk.WrapError(globalError, "Unable to import environment %s", data.Name)
 			if sdk.ErrorIsUnknown(globalError) {
 				return globalError
 			}
-			sdkErr := sdk.ExtractHTTPError(globalError, r.Header.Get("Accept-Language"))
+			sdkErr := sdk.ExtractHTTPError(globalError)
 			return service.WriteJSON(w, append(msgListString, sdkErr.Message), sdkErr.Status)
 		}
 
@@ -115,7 +115,7 @@ func (api *API) importNewEnvironmentHandler() service.Handler {
 		go func() {
 			for {
 				msg, ok := <-msgChan
-				log.Debug("importNewEnvironmentHandler >>> %v", msg)
+				log.Debug(ctx, "importNewEnvironmentHandler >>> %v", msg)
 				allMsg = append(allMsg, msg)
 				if !ok {
 					done <- true
@@ -136,7 +136,7 @@ func (api *API) importNewEnvironmentHandler() service.Handler {
 		close(msgChan)
 		<-done
 
-		msgListString := translate(r, allMsg)
+		msgListString := translate(allMsg)
 
 		if err := tx.Commit(); err != nil {
 			return sdk.WithStack(err)
@@ -194,7 +194,7 @@ func (api *API) importIntoEnvironmentHandler() service.Handler {
 		go func() {
 			for {
 				msg, ok := <-msgChan
-				log.Debug("importIntoEnvironmentHandler >>> %v", msg)
+				log.Debug(ctx, "importIntoEnvironmentHandler >>> %v", msg)
 				allMsg = append(allMsg, msg)
 				if !ok {
 					done <- true
@@ -202,14 +202,14 @@ func (api *API) importIntoEnvironmentHandler() service.Handler {
 			}
 		}()
 
-		if err := environment.ImportInto(tx, newEnv, env, msgChan, getAPIConsumer(ctx)); err != nil {
+		if err := environment.ImportInto(ctx, tx, newEnv, env, msgChan, getAPIConsumer(ctx)); err != nil {
 			return sdk.WithStack(err)
 		}
 
 		close(msgChan)
 		<-done
 
-		msgListString := translate(r, allMsg)
+		msgListString := translate(allMsg)
 
 		if err := tx.Commit(); err != nil {
 			return sdk.WithStack(err)

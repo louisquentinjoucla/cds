@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { Action, Selector, State, StateContext } from '@ngxs/store';
-import { AuthConsumer, AuthCurrentConsumerResponse, AuthSession } from 'app/model/authentication.model';
-import { AuthentifiedUser } from 'app/model/user.model';
+import { AuthCurrentConsumerResponse } from 'app/model/authentication.model';
+import { AuthentifiedUser, AuthSummary } from 'app/model/user.model';
 import { AuthenticationService } from 'app/service/authentication/authentication.service';
 import { UserService } from 'app/service/user/user.service';
 import { throwError } from 'rxjs';
@@ -10,8 +10,7 @@ import * as ActionAuthentication from './authentication.action';
 
 export class AuthenticationStateModel {
     public error: any;
-    public consumer: AuthConsumer;
-    public session: AuthSession;
+    public summary: AuthSummary;
     public user: AuthentifiedUser;
     public loading: boolean;
 }
@@ -33,46 +32,17 @@ export class AuthenticationState {
     ) { }
 
     @Selector()
-    static user(state: AuthenticationStateModel) {
-        return state.user;
-    }
-
-    @Selector()
     static error(state: AuthenticationStateModel) {
         return state.error;
     }
 
     @Selector()
-    static consumer(state: AuthenticationStateModel) {
-        return state.consumer;
-    }
-
-    @Action(ActionAuthentication.FetchCurrentUser)
-    fetchCurrentUser(ctx: StateContext<AuthenticationStateModel>, action: ActionAuthentication.FetchCurrentUser) {
-        ctx.patchState({ loading: true });
-
-        return this._userService.getMe().pipe(
-            finalize(() => {
-                ctx.patchState({ loading: false });
-            }),
-            tap((me: AuthentifiedUser) => {
-                ctx.patchState({
-                    user: me,
-                    error: null
-                });
-            }),
-            catchError(err => {
-                ctx.patchState({
-                    user: null,
-                    error: err
-                })
-                return throwError(err);
-            })
-        );
+    static summary(state: AuthenticationStateModel) {
+        return state.summary;
     }
 
     @Action(ActionAuthentication.FetchCurrentAuth)
-    fetchCurrentAuth(ctx: StateContext<AuthenticationStateModel>, action: ActionAuthentication.FetchCurrentAuth) {
+    fetchCurrentAuth(ctx: StateContext<AuthenticationStateModel>) {
         ctx.patchState({ loading: true });
 
         return this._authenticationService.getMe().pipe(
@@ -80,16 +50,19 @@ export class AuthenticationState {
                 ctx.patchState({ loading: false });
             }),
             tap((res: AuthCurrentConsumerResponse) => {
+                let s = new AuthSummary();
+                s.user = res.user;
+                s.consumer = res.consumer;
+                s.session = res.session;
+                s.driverManifest = res.driver_manifest;
                 ctx.patchState({
-                    consumer: res.consumer,
-                    session: res.session,
+                    summary: s,
                     error: null
                 });
             }),
             catchError(err => {
                 ctx.patchState({
-                    consumer: null,
-                    session: null,
+                    summary: null,
                     error: err
                 })
                 return throwError(err);
@@ -98,7 +71,7 @@ export class AuthenticationState {
     }
 
     @Action(ActionAuthentication.SignoutCurrentUser)
-    signoutCurrentUser(ctx: StateContext<AuthenticationStateModel>, action: ActionAuthentication.FetchCurrentUser) {
+    signoutCurrentUser(ctx: StateContext<AuthenticationStateModel>) {
         ctx.patchState({ loading: true });
 
         return this._authenticationService.signout().pipe(
@@ -108,12 +81,14 @@ export class AuthenticationState {
             tap(_ => {
                 ctx.patchState({
                     user: null,
+                    summary: null,
                     error: null
                 });
             }),
             catchError(err => {
                 ctx.patchState({
                     user: null,
+                    summary: null,
                     error: err
                 })
                 return throwError(err);

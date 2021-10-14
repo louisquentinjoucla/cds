@@ -641,7 +641,7 @@ func Test_postApplicationImportHandler_ExistingAppWithDeploymentStrategy(t *test
 	pf := sdk.IntegrationModel{
 		Name:       pfname,
 		Deployment: true,
-		DeploymentDefaultConfig: sdk.IntegrationConfig{
+		AdditionalDefaultConfig: sdk.IntegrationConfig{
 			"token": sdk.IntegrationConfigValue{
 				Type:  sdk.IntegrationConfigTypePassword,
 				Value: "my-secret-token",
@@ -653,7 +653,7 @@ func Test_postApplicationImportHandler_ExistingAppWithDeploymentStrategy(t *test
 		},
 	}
 	require.NoError(t, integration.InsertModel(db, &pf))
-	defer func() { _ = integration.DeleteModel(db, pf.ID) }()
+	defer func() { _ = integration.DeleteModel(context.TODO(), db, pf.ID) }()
 
 	pp := sdk.ProjectIntegration{
 		Model:              pf,
@@ -752,7 +752,7 @@ func Test_postApplicationImportHandler_DontOverrideDeploymentPasswordIfNotGiven(
 	pf := sdk.IntegrationModel{
 		Name:       pfname,
 		Deployment: true,
-		DeploymentDefaultConfig: sdk.IntegrationConfig{
+		AdditionalDefaultConfig: sdk.IntegrationConfig{
 			"token": sdk.IntegrationConfigValue{
 				Type:  sdk.IntegrationConfigTypePassword,
 				Value: "my-secret-token",
@@ -764,7 +764,7 @@ func Test_postApplicationImportHandler_DontOverrideDeploymentPasswordIfNotGiven(
 		},
 	}
 	require.NoError(t, integration.InsertModel(db, &pf))
-	defer func() { _ = integration.DeleteModel(db, pf.ID) }()
+	defer func() { _ = integration.DeleteModel(context.TODO(), db, pf.ID) }()
 
 	pp := sdk.ProjectIntegration{
 		Model:              pf,

@@ -10,15 +10,16 @@ import {
 import { TranslateService } from '@ngx-translate/core';
 import { Store } from '@ngxs/store';
 import { ModalTemplate, SuiActiveModal, SuiModalService, TemplateModalConfig } from '@richardlt/ng2-semantic-ui';
-import { AuthConsumer, AuthSession } from 'app/model/authentication.model';
+import { AuthConsumer, AuthConsumerValidityPeriod, AuthSession } from 'app/model/authentication.model';
 import { Group } from 'app/model/group.model';
-import { AuthentifiedUser } from 'app/model/user.model';
+import { AuthentifiedUser, AuthSummary } from 'app/model/user.model';
 import { AuthenticationService } from 'app/service/authentication/authentication.service';
 import { UserService } from 'app/service/user/user.service';
 import { Item } from 'app/shared/menu/menu.component';
 import { Column, ColumnType, Filter } from 'app/shared/table/data-table.component';
 import { ToastService } from 'app/shared/toast/ToastService';
 import { AuthenticationState } from 'app/store/authentication.state';
+import * as moment from 'moment';
 
 export enum CloseEventType {
     CHILD_DETAILS = 'CHILD_DETAILS',
@@ -53,7 +54,8 @@ export class ConsumerDetailsModalComponent {
     @Input() consumer: AuthConsumer;
     @Output() close = new EventEmitter<CloseEvent>();
 
-    currentUser: AuthentifiedUser;
+    loading: boolean;
+    currentAuthSummary: AuthSummary;
     scopes: string;
     groups: string;
     columnsConsumers: Array<Column<AuthConsumer>>;
@@ -66,6 +68,7 @@ export class ConsumerDetailsModalComponent {
     consumerDeletedOrDetached: boolean;
     regenConsumerSigninToken: string;
     warningText: string;
+    columnsValidityPeriods: Array<Column<AuthConsumerValidityPeriod>>;
 
     constructor(
         private _modalService: SuiModalService,
@@ -76,20 +79,18 @@ export class ConsumerDetailsModalComponent {
         private _store: Store,
         private _translate: TranslateService
     ) {
-        this.currentUser = this._store.selectSnapshot(AuthenticationState.user);
+        this.currentAuthSummary = this._store.selectSnapshot(AuthenticationState.summary);
 
         this.menuItems = [].concat(defaultMenuItems);
 
         this.filterChildren = f => {
             const lowerFilter = f.toLowerCase();
-            return (c: AuthConsumer) => {
-                return c.name.toLowerCase().indexOf(lowerFilter) !== -1 ||
+            return (c: AuthConsumer) => c.name.toLowerCase().indexOf(lowerFilter) !== -1 ||
                     c.description.toLowerCase().indexOf(lowerFilter) !== -1 ||
                     c.id.toLowerCase().indexOf(lowerFilter) !== -1 ||
                     c.scope_details.map(s => s.scope).join(' ').toLowerCase().indexOf(lowerFilter) !== -1 ||
                     (c.groups && c.groups.map(g => g.name).join(' ').toLowerCase().indexOf(lowerFilter) !== -1) ||
-                    (!c.groups && lowerFilter === '*');
-            }
+                    (!c.groups && lowerFilter === '*')
         };
 
         this.columnsConsumers = [
@@ -121,24 +122,20 @@ export class ConsumerDetailsModalComponent {
                 type: ColumnType.BUTTON,
                 name: 'common_action',
                 class: 'two right aligned',
-                selector: (c: AuthConsumer) => {
-                    return {
+                selector: (c: AuthConsumer) => ({
                         title: 'common_details',
-                        click: () => { this.clickConsumerDetails(c) }
-                    };
-                }
+                        click: () => this.clickConsumerDetails(c)
+                    })
             }
         ];
 
         this.filterSessions = f => {
             const lowerFilter = f.toLowerCase();
-            return (s: AuthSession) => {
-                return s.consumer.name.toLowerCase().indexOf(lowerFilter) !== -1 ||
+            return (s: AuthSession) => s.consumer.name.toLowerCase().indexOf(lowerFilter) !== -1 ||
                     s.id.toLowerCase().indexOf(lowerFilter) !== -1 ||
                     s.consumer_id.toLowerCase().indexOf(lowerFilter) !== -1 ||
                     s.created.toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    s.expire_at.toLowerCase().indexOf(lowerFilter) !== -1;
-            }
+                    s.expire_at.toLowerCase().indexOf(lowerFilter) !== -1
         };
 
         this.columnsSessions = [
@@ -169,6 +166,35 @@ export class ConsumerDetailsModalComponent {
                 selector: (s: AuthSession) => s.expire_at
             }
         ];
+
+        this.columnsValidityPeriods = [
+            <Column<AuthConsumerValidityPeriod>>{
+                type: ColumnType.DATE,
+                name: 'Issued at',
+                selector: (s: AuthConsumerValidityPeriod) => moment(s.issued_at).format()
+            },
+            <Column<AuthConsumerValidityPeriod>>{
+                type: ColumnType.TEXT_LABELS,
+                name: 'Duration',
+                selector: (s: AuthConsumerValidityPeriod) => {
+                    let labels = [];
+                    if (s.duration === 0) {
+                        return {value: '-', labels};
+                    }
+
+                    let ms = (s.duration / 1000000);
+                    let days = Math.floor(ms / (1000 * 60 * 60 * 24));
+                    let unit = ' days';
+                    if (days <= 1) {
+                        unit = ' day';
+                    }
+                    return {
+                        value: days + unit,
+                        labels
+                    };
+                }
+            }
+        ];
     }
 
     show() {
@@ -181,8 +207,12 @@ export class ConsumerDetailsModalComponent {
         const config = new TemplateModalConfig<boolean, boolean, void>(this.consumerDetailsModal);
         config.mustScroll = true;
         this.modal = this._modalService.open(config);
-        this.modal.onApprove(_ => { this.closeCallback() });
-        this.modal.onDeny(_ => { this.closeCallback() });
+        this.modal.onApprove(_ => {
+ this.closeCallback()
+});
+        this.modal.onDeny(_ => {
+ this.closeCallback()
+});
 
         this.init();
     }
@@ -256,6 +286,12 @@ export class ConsumerDetailsModalComponent {
                 key: 'children'
             });
         }
+        if (this.consumer.validity_periods.length > 0) {
+            this.menuItems.push(<Item>{
+                translate: 'validity_periods',
+                key: 'validity_periods'
+            });
+        }
         this._cd.markForCheck();
     }
 
@@ -284,8 +320,10 @@ export class ConsumerDetailsModalComponent {
     }
 
     clickDetach(): void {
+        this.loading = true;
         this._authenticationService.detach(this.consumer.type).subscribe(() => {
             this.consumerDeletedOrDetached = true;
+            this.loading = false;
             this.modal.approve(true);
         });
     }

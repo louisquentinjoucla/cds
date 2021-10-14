@@ -1,11 +1,11 @@
 UNAME := $(shell uname)
 SHA512 := $(if ifeq ${UNAME} "Darwin",shasum -a 512,sha512sum)
-VERSION := $(if ${CDS_SEMVER},${CDS_SEMVER},snapshot)
+VERSION := $(if ${CDS_VERSION},${CDS_VERSION},snapshot)
 
 clean:
 	@rm -rf dist
 	@rm -rf node_modules
-	@rm -rf semantic
+	@find semantic -name "*" -not -path "*/site/globals/site.variables" -delete
 	@rm -rf semantic\\
 	@rm -f package-lock.json
 

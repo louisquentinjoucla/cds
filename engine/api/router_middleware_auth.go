@@ -7,6 +7,7 @@ import (
 
 	jwt "github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/authentication"
 	"github.com/ovh/cds/engine/api/services"
@@ -14,7 +15,7 @@ import (
 	"github.com/ovh/cds/engine/api/worker"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -39,8 +40,27 @@ func (api *API) authAdminMiddleware(ctx context.Context, w http.ResponseWriter, 
 		return ctx, err
 	}
 
-	// Excluse consumers not admin or admin that are used for services
+	// Exclude consumers not admin or admin that are used for services
 	if !isAdmin(ctx) || isService(ctx) {
+		return ctx, sdk.WithStack(sdk.ErrForbidden)
+	}
+
+	trackSudo(ctx, w)
+
+	return ctx, nil
+}
+
+func (api *API) authMaintainerMiddleware(ctx context.Context, w http.ResponseWriter, req *http.Request, rc *service.HandlerConfig) (context.Context, error) {
+	ctx, end := telemetry.Span(ctx, "router.authMaintainerMiddleware")
+	defer end()
+
+	ctx, err := api.authMiddleware(ctx, w, req, rc)
+	if err != nil {
+		return ctx, err
+	}
+
+	// Excluse consumers not maintainer or admin that are used for services
+	if !isMaintainer(ctx) || isService(ctx) {
 		return ctx, sdk.WithStack(sdk.ErrForbidden)
 	}
 
@@ -57,8 +77,41 @@ func (api *API) authMiddleware(ctx context.Context, w http.ResponseWriter, req *
 	}
 
 	// We should have a consumer in the context to validate the auth
-	if getAPIConsumer(ctx) == nil {
+	var apiConsumer = getAPIConsumer(ctx)
+	if apiConsumer == nil {
 		return ctx, sdk.WithStack(sdk.ErrUnauthorized)
+	}
+
+	// Set context values
+	if isService(ctx) {
+		ctx = context.WithValue(ctx, cdslog.AuthServiceName, apiConsumer.Service.Name)
+		SetTracker(w, cdslog.AuthServiceName, apiConsumer.Service.Name)
+	} else if isWorker(ctx) {
+		ctx = context.WithValue(ctx, cdslog.AuthWorkerName, apiConsumer.Worker.Name)
+		SetTracker(w, cdslog.AuthWorkerName, apiConsumer.Worker.Name)
+	} else {
+		ctx = context.WithValue(ctx, cdslog.AuthUsername, apiConsumer.AuthentifiedUser.Username)
+		SetTracker(w, cdslog.AuthUsername, apiConsumer.AuthentifiedUser.Username)
+	}
+
+	ctx = context.WithValue(ctx, cdslog.AuthUserID, apiConsumer.AuthentifiedUserID)
+	SetTracker(w, cdslog.AuthUserID, apiConsumer.AuthentifiedUserID)
+
+	ctx = context.WithValue(ctx, cdslog.AuthConsumerID, apiConsumer.ID)
+	SetTracker(w, cdslog.AuthConsumerID, apiConsumer.ID)
+
+	session := getAuthSession(ctx)
+	if session != nil {
+		ctx = context.WithValue(ctx, cdslog.AuthSessionID, session.ID)
+		SetTracker(w, cdslog.AuthSessionID, session.ID)
+		ctx = context.WithValue(ctx, cdslog.AuthSessionIAT, session.Created.Unix())
+		SetTracker(w, cdslog.AuthSessionIAT, session.Created.Unix())
+	}
+
+	claims := getAuthClaims(ctx)
+	if claims != nil {
+		ctx = context.WithValue(ctx, cdslog.AuthSessionTokenID, claims.TokenID)
+		SetTracker(w, cdslog.AuthSessionTokenID, claims.TokenID)
 	}
 
 	return ctx, nil
@@ -72,19 +125,20 @@ func (api *API) authOptionalMiddleware(ctx context.Context, w http.ResponseWrite
 	// If a JWT is given, we also checks that there are a valid session and consumer for it
 	jwt, ok := ctx.Value(service.ContextJWT).(*jwt.Token)
 	if !ok {
-		log.Debug("api.authOptionalMiddleware> no jwt token found in context")
+		log.Debug(ctx, "api.authOptionalMiddleware> no jwt token found in context")
 		return ctx, nil
 	}
 	claims := jwt.Claims.(*sdk.AuthSessionJWTClaims)
-	sessionID := claims.StandardClaims.Id
+	ctx = context.WithValue(ctx, contextClaims, claims)
 
 	// Check for session based on jwt from context
-	session, err := authentication.CheckSession(ctx, api.mustDB(), sessionID)
+	sessionID := claims.StandardClaims.Id
+	session, err := authentication.CheckSession(ctx, api.mustDB(), api.Cache, sessionID)
 	if err != nil {
-		log.Warning(ctx, "authMiddleware> cannot find a valid session for given JWT: %v", err)
+		log.Warn(ctx, "authMiddleware> cannot find a valid session for given JWT: %v", err)
 	}
 	if session == nil {
-		log.Debug("api.authOptionalMiddleware> no session found in context")
+		log.Debug(ctx, "api.authOptionalMiddleware> no session found in context")
 		return ctx, nil
 	}
 	ctx = context.WithValue(ctx, contextSession, session)
@@ -101,32 +155,36 @@ func (api *API) authOptionalMiddleware(ctx context.Context, w http.ResponseWrite
 	}
 
 	// If the driver was disabled for the consumer that was found, ignore it
-	if _, ok := api.AuthenticationDrivers[consumer.Type]; ok {
-		// Add contacts for consumer's user
-		if err := user.LoadOptions.WithContacts(ctx, api.mustDB(), consumer.AuthentifiedUser); err != nil {
-			return ctx, err
-		}
-
-		// Add service for consumer if exists
-		s, err := services.LoadByConsumerID(ctx, api.mustDB(), consumer.ID)
-		if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
-			return ctx, err
-		}
-		consumer.Service = s
-
-		// Add worker for consumer if exists
-		w, err := worker.LoadByConsumerID(ctx, api.mustDB(), consumer.ID)
-		if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
-			return ctx, err
-		}
-		consumer.Worker = w
+	var driverManifest *sdk.AuthDriverManifest
+	if authDriver, ok := api.AuthenticationDrivers[consumer.Type]; ok {
+		m := authDriver.GetManifest()
+		driverManifest = &m
 	}
-	if consumer == nil {
-		log.Debug("api.authOptionalMiddleware> no consumer found in context")
-		return ctx, nil
+	if driverManifest == nil {
+		return ctx, sdk.WrapError(sdk.ErrUnauthorized, "consumer driver (%s) was not found", consumer.Type)
+	}
+	ctx = context.WithValue(ctx, contextDriverManifest, driverManifest)
+
+	// Add contacts for consumer's user
+	if err := user.LoadOptions.WithContacts(ctx, api.mustDB(), consumer.AuthentifiedUser); err != nil {
+		return ctx, err
 	}
 
-	ctx = context.WithValue(ctx, contextAPIConsumer, consumer)
+	// Add service for consumer if exists
+	s, err := services.LoadByConsumerID(ctx, api.mustDB(), consumer.ID)
+	if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
+		return ctx, err
+	}
+	consumer.Service = s
+
+	// Add worker for consumer if exists
+	wk, err := worker.LoadByConsumerID(ctx, api.mustDB(), consumer.ID)
+	if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
+		return ctx, err
+	}
+	consumer.Worker = wk
+
+	ctx = context.WithValue(ctx, contextConsumer, consumer)
 
 	// Checks scopes, one of expected scopes should be in actual scopes
 	// Actual scope empty list means wildcard scope, we don't need to check scopes
@@ -158,7 +216,7 @@ func (api *API) authOptionalMiddleware(ctx context.Context, w http.ResponseWrite
 	}
 
 	// Check that permission are valid for current route and consumer
-	if err := api.checkPermission(ctx, mux.Vars(req), rc.PermissionLevel); err != nil {
+	if err := api.checkPermission(ctx, w, mux.Vars(req), rc.PermissionLevel); err != nil {
 		return ctx, err
 	}
 

@@ -3,7 +3,6 @@ package cdsclient
 import (
 	"archive/tar"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +19,7 @@ func (c *client) PipelineImport(projectKey string, content io.Reader, mods ...Re
 	}
 
 	messages := []string{}
-	_ = json.Unmarshal(btes, &messages)
+	_ = sdk.JSONUnmarshal(btes, &messages)
 	return messages, nil
 }
 
@@ -33,7 +32,7 @@ func (c *client) ApplicationImport(projectKey string, content io.Reader, mods ..
 	}
 
 	messages := []string{}
-	_ = json.Unmarshal(btes, &messages)
+	_ = sdk.JSONUnmarshal(btes, &messages)
 	return messages, nil
 }
 
@@ -46,7 +45,7 @@ func (c *client) EnvironmentImport(projectKey string, content io.Reader, mods ..
 	}
 
 	messages := []string{}
-	_ = json.Unmarshal(btes, &messages)
+	_ = sdk.JSONUnmarshal(btes, &messages)
 	return messages, nil
 }
 
@@ -59,11 +58,11 @@ func (c *client) WorkerModelImport(content io.Reader, mods ...RequestModifier) (
 		return nil, err
 	}
 	if code >= 400 {
-		return nil, fmt.Errorf("HTTP Status code %d", code)
+		return nil, newAPIError(fmt.Errorf("HTTP Status code %d", code))
 	}
 
 	var wm sdk.Model
-	if err := json.Unmarshal(btes, &wm); err != nil {
+	if err := sdk.JSONUnmarshal(btes, &wm); err != nil {
 		return nil, err
 	}
 
@@ -75,7 +74,7 @@ func (c *client) WorkflowImport(projectKey string, content io.Reader, mods ...Re
 
 	btes, _, _, err := c.Request(context.Background(), "POST", url, content, mods...)
 	messages := []string{} // could contains msg even if there is a 400 returned
-	_ = json.Unmarshal(btes, &messages)
+	_ = sdk.JSONUnmarshal(btes, &messages)
 	return messages, err
 }
 
@@ -91,11 +90,11 @@ func (c *client) WorkflowPush(projectKey string, tarContent io.Reader, mods ...R
 		return nil, nil, err
 	}
 	if code >= 400 {
-		return nil, nil, fmt.Errorf("HTTP Status code %d", code)
+		return nil, nil, newAPIError(fmt.Errorf("HTTP Status code %d", code))
 	}
 
 	messages := []string{}
-	if err := json.Unmarshal(btes, &messages); err != nil {
+	if err := sdk.JSONUnmarshal(btes, &messages); err != nil {
 		return nil, nil, err
 	}
 

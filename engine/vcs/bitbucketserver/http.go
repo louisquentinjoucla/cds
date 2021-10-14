@@ -12,10 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/ovh/cds/sdk/telemetry"
 )
 
 var (
@@ -70,6 +72,9 @@ type options struct {
 }
 
 func (c *bitbucketClient) do(ctx context.Context, method, api, path string, params url.Values, values []byte, v interface{}, opts *options) error {
+	ctx, end := telemetry.Span(ctx, "bitbucketserver.do_http")
+	defer end()
+
 	// Sad hack to get username
 	var username = false
 	if path == "username" {
@@ -100,6 +105,8 @@ func (c *bitbucketClient) do(ctx context.Context, method, api, path string, para
 		Close:      true,
 		Header:     http.Header{},
 	}
+
+	log.Info(ctx, "%s %s", req.Method, req.URL.String())
 
 	if values != nil && len(values) > 0 {
 		buf := bytes.NewBuffer(values)
@@ -153,9 +160,17 @@ func (c *bitbucketClient) do(ctx context.Context, method, api, path string, para
 	case 403:
 		return sdk.WithStack(sdk.ErrForbidden)
 	case 401:
+		var debugAT, debugAS string
+		if len(c.accessToken) > 4 {
+			debugAT = c.accessToken[:4]
+		}
+		if len(c.accessTokenSecret) > 4 {
+			debugAS = c.accessTokenSecret[:4]
+		}
+		log.Info(ctx, "debug_auth accessToken_http lenat:%d lenas:%d at:%v as:%v", len(c.accessToken), len(c.accessTokenSecret), debugAT, debugAS)
 		return sdk.WithStack(sdk.ErrUnauthorized)
 	case 400:
-		log.Warning(ctx, "bitbucketClient.do> %s", string(body))
+		log.Warn(ctx, "bitbucketClient.do> %s", string(body))
 		return sdk.WithStack(sdk.ErrWrongRequest)
 	}
 
@@ -177,7 +192,7 @@ func (c *bitbucketClient) do(ctx context.Context, method, api, path string, para
 
 		// bitbucket can return 204 with no-content
 		if resp.StatusCode != 204 || strings.TrimSpace(string(body)) != "" {
-			if err := json.Unmarshal(body, v); err != nil {
+			if err := sdk.JSONUnmarshal(body, v); err != nil {
 				return err
 			}
 		}

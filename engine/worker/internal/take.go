@@ -2,21 +2,22 @@ package internal
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
+	"net"
 	"strings"
 	"time"
 
 	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/jws"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/log/hook"
+	"github.com/rockbears/log"
 )
 
 func (w *CurrentWorker) Take(ctx context.Context, job sdk.WorkflowNodeJobRun) error {
-	ctxQueueTakeJob, cancelQueueTakeJob := context.WithTimeout(ctx, 20*time.Second)
-	defer cancelQueueTakeJob()
-	info, err := w.client.QueueTakeJob(ctxQueueTakeJob, job)
+	info, err := w.client.QueueTakeJob(ctx, job)
 	if err != nil {
 		return sdk.WrapError(err, "Unable to take job %d", job.ID)
 	}
@@ -37,9 +38,13 @@ func (w *CurrentWorker) Take(ctx context.Context, job sdk.WorkflowNodeJobRun) er
 	w.currentJob.workflowID = info.WorkflowID
 	w.currentJob.runID = info.RunID
 	w.currentJob.nodeRunName = info.NodeRunName
+	w.currentJob.runNumber = info.Number
+	w.currentJob.features = info.Features
 
 	// Reset build variables
 	w.currentJob.newVariables = nil
+
+	w.cdnHttpAddr = info.CDNHttpAddr
 
 	secretKey := make([]byte, 32)
 	if _, err := base64.StdEncoding.Decode(secretKey, []byte(info.SigningKey)); err != nil {
@@ -64,7 +69,22 @@ func (w *CurrentWorker) Take(ctx context.Context, job sdk.WorkflowNodeJobRun) er
 		},
 	}
 
-	l, h, err := log.New(ctx, graylogCfg)
+	if info.GelfServiceAddrEnableTLS {
+		tcpCDNUrl := info.GelfServiceAddr
+		// Check if the url has a scheme
+		// We have to remove if to retrieve the hostname
+		if i := strings.Index(tcpCDNUrl, "://"); i > -1 {
+			tcpCDNUrl = tcpCDNUrl[i+3:]
+		}
+		tcpCDNHostname, _, err := net.SplitHostPort(tcpCDNUrl)
+		if err != nil {
+			return sdk.WithStack(err)
+		}
+
+		graylogCfg.TLSConfig = &tls.Config{ServerName: tcpCDNHostname}
+	}
+
+	l, h, err := cdslog.New(ctx, graylogCfg)
 	if err != nil {
 		return sdk.WithStack(err)
 	}
@@ -145,19 +165,16 @@ func (w *CurrentWorker) Take(ctx context.Context, job sdk.WorkflowNodeJobRun) er
 	var lasterr error
 	for try := 1; try <= 10; try++ {
 		log.Info(ctx, "takeWorkflowJob> Sending build result...")
-		ctxSendResult, cancelSendResult := context.WithTimeout(ctx, 120*time.Second)
-		lasterr = w.client.QueueSendResult(ctxSendResult, job.ID, res)
+		lasterr = w.client.QueueSendResult(ctx, job.ID, res)
 		if lasterr == nil {
 			log.Info(ctx, "takeWorkflowJob> Send build result OK")
-			cancelSendResult()
 			return nil
 		}
-		cancelSendResult()
 		if ctx.Err() != nil {
 			log.Info(ctx, "takeWorkflowJob> Cannot send build result: HTTP %v - worker cancelled - giving up", lasterr)
 			return nil
 		}
-		log.Warning(ctx, "takeWorkflowJob> Cannot send build result for job id %d: HTTP %v - try: %d - new try in 15s", job.ID, lasterr, try)
+		log.Warn(ctx, "takeWorkflowJob> Cannot send build result for job id %d: HTTP %v - try: %d - new try in 15s", job.ID, lasterr, try)
 		time.Sleep(15 * time.Second)
 	}
 	log.Error(ctx, "takeWorkflowJob> Could not send built result 10 times, giving up. job: %d", job.ID)

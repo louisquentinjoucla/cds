@@ -2,10 +2,12 @@ package luascript
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/yuin/gluare"
 	lua "github.com/yuin/gopher-lua"
+	luajson "layeh.com/gopher-json"
 )
 
 // Check is a type which helps to call a lua script with variables to check something.
@@ -51,6 +53,7 @@ func NewCheck() (*Check, error) {
 
 	//Open gluare module
 	state.PreloadModule("re", gluare.Loader)
+	state.PreloadModule("json", luajson.Loader)
 
 	// Sandboxing lua engine
 	if err := state.DoString("coroutine=nil;debug=nil;io=nil;open=nil;os.rename=nil;os.remove=nil;os.exit=nil;os.clock=nil;os.execute=nil;os.getenv=nil;os.setlocale=nil;os.tmpname=nil"); err != nil {
@@ -85,6 +88,28 @@ func (c *Check) SetFloatVariables(vars map[string]float64) {
 	}
 }
 
+func (c *Check) EnableStrict() error {
+	// This code will override __index lua func that is called when reading a variable.
+	// If the variable is not define we want to return an error.
+	code := `
+    local mt = getmetatable(_G)
+    if mt == nil then
+      mt = {}
+      setmetatable(_G, mt)
+    end
+    mt.__index = function (t, n)
+      if n ~= "C" then
+        error("variable '"..n.."' is not declared", 2)
+      end
+      return rawget(t, n)
+    end
+  `
+	if err := c.state.DoString(code); err != nil {
+		return err
+	}
+	return nil
+}
+
 //Perform the lua script
 func (c *Check) Perform(script string) error {
 	var ok bool
@@ -95,6 +120,10 @@ func (c *Check) Perform(script string) error {
 	}
 
 	lv := c.state.Get(-1) // get the value at the top of the stack
+	if lv.Type() != lua.LTBool {
+		c.IsError = true
+		return fmt.Errorf("invalid result of type %s expected boolean", lv.Type().String())
+	}
 	if lua.LVAsBool(lv) { // lv is neither nil nor false
 		ok = true
 	}

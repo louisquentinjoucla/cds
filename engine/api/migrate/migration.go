@@ -3,16 +3,15 @@ package migrate
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/blang/semver"
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // MinCompatibleRelease represent the minimum release which is working with these migrations, need to update when we delete migration in our codebase
@@ -39,7 +38,7 @@ func Add(ctx context.Context, migration sdk.Migration) {
 }
 
 // Run run all local migrations
-func Run(ctx context.Context, db gorp.SqlExecutor, panicDump func(s string) (io.WriteCloser, error)) {
+func Run(ctx context.Context, db gorp.SqlExecutor) {
 	var wg = new(sync.WaitGroup)
 	for _, migration := range migrations {
 		func(currentMigration sdk.Migration) {
@@ -47,15 +46,16 @@ func Run(ctx context.Context, db gorp.SqlExecutor, panicDump func(s string) (io.
 				wg.Add(1)
 			}
 
-			sdk.NewGoRoutines().Run(ctx, "migrate_"+currentMigration.Name, func(contex context.Context) {
+			sdk.NewGoRoutines(ctx).Run(ctx, "migrate_"+currentMigration.Name, func(contex context.Context) {
 				defer func() {
 					if currentMigration.Blocker {
 						wg.Done()
 					}
 				}()
-				mig, errMig := GetByName(db, currentMigration.Name)
-				if errMig != nil {
-					log.Error(ctx, "Cannot get migration %s : %v", currentMigration.Name, errMig)
+				mig, err := GetByName(db, currentMigration.Name)
+				if err != nil {
+					ctx := sdk.ContextWithStacktrace(ctx, err)
+					log.Error(ctx, "Cannot get migration %s : %v", currentMigration.Name, err)
 					return
 				}
 				if mig != nil {
@@ -75,6 +75,7 @@ func Run(ctx context.Context, db gorp.SqlExecutor, panicDump func(s string) (io.
 						currentMigration.Progress = "Begin"
 					}
 					if err := Insert(db, &currentMigration); err != nil {
+						ctx := sdk.ContextWithStacktrace(ctx, err)
 						log.Error(ctx, "Cannot insert migration %s : %v", currentMigration.Name, err)
 						return
 					}
@@ -86,6 +87,7 @@ func Run(ctx context.Context, db gorp.SqlExecutor, panicDump func(s string) (io.
 
 				log.Info(ctx, "Migration [%s]: begin", currentMigration.Name)
 				if err := currentMigration.ExecFunc(contex); err != nil {
+					ctx := sdk.ContextWithStacktrace(ctx, err)
 					log.Error(ctx, "migration %s in ERROR : %v", currentMigration.Name, err)
 					currentMigration.Error = err.Error()
 				}
@@ -94,10 +96,11 @@ func Run(ctx context.Context, db gorp.SqlExecutor, panicDump func(s string) (io.
 				currentMigration.Status = sdk.MigrationStatusDone
 
 				if err := Update(db, &currentMigration); err != nil {
+					ctx := sdk.ContextWithStacktrace(ctx, err)
 					log.Error(ctx, "Cannot update migration %s : %v", currentMigration.Name, err)
 				}
 				log.Info(ctx, "Migration [%s]: Done", currentMigration.Name)
-			}, panicDump)
+			})
 		}(migration)
 	}
 	wg.Wait()

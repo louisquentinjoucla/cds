@@ -100,11 +100,11 @@ func (c *client) TemplatePush(tarContent io.Reader) ([]string, *tar.Reader, erro
 	}
 
 	if code >= 400 {
-		return nil, nil, fmt.Errorf("HTTP Status code %d", code)
+		return nil, nil, newAPIError(fmt.Errorf("HTTP Status code %d", code))
 	}
 
 	messages := []string{}
-	if err := json.Unmarshal(btes, &messages); err != nil {
+	if err := sdk.JSONUnmarshal(btes, &messages); err != nil {
 		return nil, nil, err
 	}
 

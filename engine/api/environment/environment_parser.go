@@ -1,15 +1,18 @@
 package environment
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 
+	"github.com/rockbears/log"
+
+	"github.com/ovh/cds/engine/api/ascode"
 	"github.com/ovh/cds/engine/api/keys"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // ImportOptions are options to import environment
@@ -19,9 +22,11 @@ type ImportOptions struct {
 }
 
 // ParseAndImport parse an exportentities.Environment and insert or update the environment in database
-func ParseAndImport(db gorpmapper.SqlExecutorWithTx, proj sdk.Project, eenv exportentities.Environment, opts ImportOptions, decryptFunc keys.DecryptFunc, u sdk.Identifiable) (*sdk.Environment, []sdk.Variable, []sdk.Message, error) {
-	log.Debug("ParseAndImport>> Import environment %s in project %s (force=%v)", eenv.Name, proj.Key, opts.Force)
-	log.Debug("ParseAndImport>> Env: %+v", eenv)
+func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, proj sdk.Project, eenv exportentities.Environment, opts ImportOptions, decryptFunc keys.DecryptFunc, u sdk.Identifiable) (*sdk.Environment, []sdk.Variable, []sdk.Message, error) {
+	log.Debug(ctx, "ParseAndImport>> Import environment %s in project %s from repository %q (force=%v)", eenv.Name, proj.Key, opts.FromRepository, opts.Force)
+	log.Debug(ctx, "ParseAndImport>> Env: %+v", eenv)
+
+	msgList := []sdk.Message{}
 
 	// Check valid application name
 	rx := sdk.NamePatternRegex
@@ -44,8 +49,18 @@ func ParseAndImport(db gorpmapper.SqlExecutorWithTx, proj sdk.Project, eenv expo
 		exist = true
 	}
 
-	if oldEnv != nil && oldEnv.FromRepository != "" && opts.FromRepository != oldEnv.FromRepository {
-		return nil, nil, nil, sdk.NewErrorFrom(sdk.ErrEnvironmentAsCodeOverride, "unable to update existing ascode environment from %s", oldEnv.FromRepository)
+	if oldEnv != nil {
+		if opts.Force && opts.FromRepository == "" {
+			if oldEnv.FromRepository != "" {
+				if err := ascode.DeleteEventsEnvironmentOnlyFromRepoName(ctx, db, oldEnv.FromRepository, oldEnv.ID, oldEnv.Name); err != nil {
+					return nil, nil, msgList, sdk.WrapError(err, "unable to delete as_code_event for %s on repo %s", oldEnv.Name, oldEnv.FromRepository)
+				}
+				msgList = append(msgList, sdk.NewMessage(sdk.MsgEnvironmentDetached, eenv.Name, oldEnv.FromRepository))
+			}
+			log.Debug(ctx, "ParseAndImport>> Force import environment %s in project %s without fromRepository", eenv.Name, proj.Key)
+		} else if oldEnv.FromRepository != "" && opts.FromRepository != oldEnv.FromRepository {
+			return nil, nil, nil, sdk.NewErrorFrom(sdk.ErrEnvironmentAsCodeOverride, "unable to update existing ascode environment from %s", oldEnv.FromRepository)
+		}
 	}
 
 	env := new(sdk.Environment)
@@ -58,26 +73,29 @@ func ParseAndImport(db gorpmapper.SqlExecutorWithTx, proj sdk.Project, eenv expo
 	envSecrets := make([]sdk.Variable, 0)
 
 	//Compute variables
-	for p, v := range eenv.Values {
-		switch v.Type {
+	for p := range eenv.Values {
+		value := eenv.Values[p].Value
+		vtype := eenv.Values[p].Type
+
+		switch vtype {
 		case "":
-			v.Type = sdk.StringVariable
+			vtype = sdk.StringVariable
 		case sdk.SecretVariable:
-			secret, err := decryptFunc(db, proj.ID, v.Value)
+			secret, err := decryptFunc(ctx, db, proj.ID, value)
 			if err != nil {
 				return env, nil, nil, sdk.WrapError(err, "Unable to decrypt secret variable")
 			}
-			v.Value = secret
+			value = secret
 		}
 
-		vv := sdk.EnvironmentVariable{Name: p, Type: v.Type, Value: v.Value, EnvironmentID: env.ID}
+		vv := sdk.EnvironmentVariable{Name: p, Type: vtype, Value: value, EnvironmentID: env.ID}
 		env.Variables = append(env.Variables, vv)
 
-		if v.Type == sdk.SecretVariable {
+		if vtype == sdk.SecretVariable {
 			envSecrets = append(envSecrets, sdk.Variable{
 				Name:  fmt.Sprintf("cds.env.%s", vv.Name),
-				Type:  v.Type,
-				Value: v.Value,
+				Type:  vtype,
+				Value: value,
 			})
 		}
 	}
@@ -106,7 +124,7 @@ func ParseAndImport(db gorpmapper.SqlExecutorWithTx, proj sdk.Project, eenv expo
 			keepOldValue = true
 		}
 
-		kk, err := keys.Parse(db, proj.ID, kname, kval, decryptFunc)
+		kk, err := keys.Parse(ctx, db, proj.ID, kname, kval, decryptFunc)
 		if err != nil {
 			return env, nil, nil, sdk.WrapError(err, "Unable to parse key")
 		}
@@ -142,7 +160,7 @@ func ParseAndImport(db gorpmapper.SqlExecutorWithTx, proj sdk.Project, eenv expo
 	done := new(sync.WaitGroup)
 	done.Add(1)
 	msgChan := make(chan sdk.Message)
-	msgList := []sdk.Message{}
+
 	go func(array *[]sdk.Message) {
 		defer done.Done()
 		for m := range msgChan {
@@ -153,7 +171,7 @@ func ParseAndImport(db gorpmapper.SqlExecutorWithTx, proj sdk.Project, eenv expo
 	var globalError error
 
 	if exist {
-		globalError = ImportInto(db, env, oldEnv, msgChan, u)
+		globalError = ImportInto(ctx, db, env, oldEnv, msgChan, u)
 	} else {
 		globalError = Import(db, proj, env, msgChan, u)
 	}

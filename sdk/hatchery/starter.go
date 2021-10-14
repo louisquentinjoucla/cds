@@ -3,17 +3,15 @@ package hatchery
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/namesgenerator"
 	"github.com/ovh/cds/sdk/slug"
 	"github.com/ovh/cds/sdk/telemetry"
+	"github.com/rockbears/log"
 )
 
 type workerStarterRequest struct {
@@ -29,16 +27,6 @@ type workerStarterRequest struct {
 	registerWorkerModel *sdk.Model
 }
 
-func PanicDump(h Interface) func(s string) (io.WriteCloser, error) {
-	return func(s string) (io.WriteCloser, error) {
-		dir, err := h.PanicDumpDirectory()
-		if err != nil {
-			return nil, err
-		}
-		return os.OpenFile(filepath.Join(dir, s), os.O_RDWR|os.O_CREATE, 0644)
-	}
-}
-
 // Start all goroutines which manage the hatchery worker spawning routine.
 // the purpose is to avoid go routines leak when there is a bunch of worker to start
 func startWorkerStarters(ctx context.Context, h Interface) chan<- workerStarterRequest {
@@ -49,9 +37,10 @@ func startWorkerStarters(ctx context.Context, h Interface) chan<- workerStarterR
 		maxProv = defaultMaxProvisioning
 	}
 	for workerNum := 0; workerNum < maxProv; workerNum++ {
-		h.GetGoRoutines().Run(ctx, "workerStarter", func(ctx context.Context) {
-			workerStarter(ctx, h, fmt.Sprintf("%d", workerNum), jobs)
-		}, PanicDump(h))
+		workerNumStr := fmt.Sprintf("%d", workerNum)
+		h.GetGoRoutines().Run(ctx, "workerStarter-"+workerNumStr, func(ctx context.Context) {
+			workerStarter(ctx, h, workerNumStr, jobs)
+		})
 	}
 	return jobs
 }
@@ -60,20 +49,22 @@ func workerStarter(ctx context.Context, h Interface, workerNum string, jobs <-ch
 	for j := range jobs {
 		// Start a worker for a job
 		if m := j.registerWorkerModel; m == nil {
-			_ = spawnWorkerForJob(ctx, h, j)
+			_ = spawnWorkerForJob(j.ctx, h, j)
 			j.cancel("") // call to EndTrace for observability
 		} else { // Start a worker for registering
-			log.Debug("Spawning worker for register model %s", m.Name)
+			log.Debug(ctx, "Spawning worker for register model %s", m.Name)
 			if atomic.LoadInt64(&nbWorkerToStart) > int64(h.Configuration().Provision.MaxConcurrentProvisioning) {
 				continue
 			}
+
+			workerName := generateWorkerName(h.Service().Name, true, m.Name)
 
 			atomic.AddInt64(&nbWorkerToStart, 1)
 			// increment nbRegisteringWorkerModels, but no decrement.
 			// this counter is reset with func workerRegister
 			atomic.AddInt64(&nbRegisteringWorkerModels, 1)
 			arg := SpawnArguments{
-				WorkerName:   generateWorkerName(h.Service().Name, true, m.Name),
+				WorkerName:   workerName,
 				Model:        m,
 				RegisterOnly: true,
 				HatcheryName: h.Service().Name,
@@ -82,6 +73,7 @@ func workerStarter(ctx context.Context, h Interface, workerNum string, jobs <-ch
 			// Get a JWT to authentified the worker
 			jwt, err := NewWorkerToken(h.Service().Name, h.GetPrivateKey(), time.Now().Add(1*time.Hour), arg)
 			if err != nil {
+				ctx = sdk.ContextWithStacktrace(ctx, err)
 				var spawnError = sdk.SpawnErrorForm{
 					Error: fmt.Sprintf("cannot spawn worker for register: %v", err),
 				}
@@ -93,7 +85,8 @@ func workerStarter(ctx context.Context, h Interface, workerNum string, jobs <-ch
 			arg.WorkerToken = jwt
 
 			if err := h.SpawnWorker(ctx, arg); err != nil {
-				log.Warning(ctx, "workerRegister> cannot spawn worker for register:%s err:%v", m.Name, err)
+				ctx = sdk.ContextWithStacktrace(ctx, err)
+				log.Warn(ctx, "workerRegister> cannot spawn worker for register:%s err:%v", m.Name, err)
 				var spawnError = sdk.SpawnErrorForm{
 					Error: fmt.Sprintf("cannot spawn worker for register: %v", err),
 				}
@@ -107,24 +100,26 @@ func workerStarter(ctx context.Context, h Interface, workerNum string, jobs <-ch
 }
 
 func spawnWorkerForJob(ctx context.Context, h Interface, j workerStarterRequest) bool {
-	ctxJob, end := telemetry.Span(j.ctx, "hatchery.spawnWorkerForJob")
+	ctx, end := telemetry.Span(ctx, "hatchery.spawnWorkerForJob")
 	defer end()
 
-	ctxJob = telemetry.ContextWithTag(ctxJob,
+	ctx = telemetry.ContextWithTag(ctx,
 		telemetry.TagServiceName, h.Name(),
 		telemetry.TagServiceType, h.Type(),
 	)
-	telemetry.Record(ctxJob, GetMetrics().SpawnedWorkers, 1)
+	telemetry.Record(ctx, GetMetrics().SpawnedWorkers, 1)
 
-	log.Debug("hatchery> spawnWorkerForJob> %d", j.id)
-	defer log.Debug("hatchery> spawnWorkerForJob> %d (%.3f seconds elapsed)", j.id, time.Since(time.Unix(j.timestamp, 0)).Seconds())
+	ctx = context.WithValue(ctx, log.Field("action_metadata_job_id"), strconv.Itoa(int(j.id)))
+
+	log.Debug(ctx, "hatchery> spawnWorkerForJob> %d", j.id)
+	defer log.Info(ctx, "hatchery> spawnWorkerForJob> %d (%.3f seconds elapsed)", j.id, time.Since(time.Unix(j.timestamp, 0)).Seconds())
 
 	maxProv := h.Configuration().Provision.MaxConcurrentProvisioning
 	if maxProv < 1 {
 		maxProv = defaultMaxProvisioning
 	}
 	if atomic.LoadInt64(&nbWorkerToStart) >= int64(maxProv) {
-		log.Debug("hatchery> spawnWorkerForJob> max concurrent provisioning reached")
+		log.Debug(ctx, "hatchery> spawnWorkerForJob> max concurrent provisioning reached")
 		return false
 	}
 
@@ -139,25 +134,26 @@ func spawnWorkerForJob(ctx context.Context, h Interface, j workerStarterRequest)
 	}
 
 	if h.Service() == nil {
-		log.Warning(ctx, "hatchery> spawnWorkerForJob> %d - job %d %s- hatchery not registered", j.timestamp, j.id, modelName)
+		log.Warn(ctx, "hatchery> spawnWorkerForJob> %d - job %d %s- hatchery not registered", j.timestamp, j.id, modelName)
 		return false
 	}
 
-	ctxQueueJobBook, next := telemetry.Span(ctxJob, "hatchery.QueueJobBook")
+	ctxQueueJobBook, next := telemetry.Span(ctx, "hatchery.QueueJobBook")
 	ctxQueueJobBook, cancel := context.WithTimeout(ctxQueueJobBook, 10*time.Second)
 	bookedInfos, err := h.CDSClient().QueueJobBook(ctxQueueJobBook, j.id)
 	if err != nil {
 		next()
 		// perhaps already booked by another hatchery
+		ctx = sdk.ContextWithStacktrace(ctx, err)
 		log.Info(ctx, "hatchery> spawnWorkerForJob> %d - cannot book job %d: %s", j.timestamp, j.id, err)
 		cancel()
 		return false
 	}
 	next()
 	cancel()
-	log.Debug("hatchery> spawnWorkerForJob> %d - send book job %d", j.timestamp, j.id)
+	log.Debug(ctx, "hatchery> spawnWorkerForJob> %d - send book job %d", j.timestamp, j.id)
 
-	ctxSendSpawnInfo, next := telemetry.Span(ctxJob, "hatchery.SendSpawnInfo", telemetry.Tag("msg", sdk.MsgSpawnInfoHatcheryStarts.ID))
+	ctxSendSpawnInfo, next := telemetry.Span(ctx, "hatchery.SendSpawnInfo", telemetry.Tag("msg", sdk.MsgSpawnInfoHatcheryStarts.ID))
 	start := time.Now()
 	SendSpawnInfo(ctxSendSpawnInfo, h, j.id, sdk.SpawnMsg{
 		ID: sdk.MsgSpawnInfoHatcheryStarts.ID,
@@ -168,9 +164,11 @@ func spawnWorkerForJob(ctx context.Context, h Interface, j workerStarterRequest)
 	})
 	next()
 
-	_, next = telemetry.Span(ctxJob, "hatchery.SpawnWorker")
+	workerName := generateWorkerName(h.Service().Name, false, modelName)
+
+	ctxSpawnWorker, next := telemetry.Span(ctx, "hatchery.SpawnWorker", telemetry.Tag(telemetry.TagWorker, workerName))
 	arg := SpawnArguments{
-		WorkerName:   generateWorkerName(h.Service().Name, false, modelName),
+		WorkerName:   workerName,
 		Model:        j.model,
 		JobID:        j.id,
 		NodeRunID:    j.workflowNodeRunID,
@@ -189,6 +187,7 @@ func spawnWorkerForJob(ctx context.Context, h Interface, j workerStarterRequest)
 	// Get a JWT to authentified the worker
 	jwt, err := NewWorkerToken(h.Service().Name, h.GetPrivateKey(), time.Now().Add(1*time.Hour), arg)
 	if err != nil {
+		ctx = sdk.ContextWithStacktrace(ctx, err)
 		var spawnError = sdk.SpawnErrorForm{
 			Error: fmt.Sprintf("cannot spawn worker for register: %v", err),
 		}
@@ -198,33 +197,22 @@ func spawnWorkerForJob(ctx context.Context, h Interface, j workerStarterRequest)
 		return false
 	}
 	arg.WorkerToken = jwt
-	log.Debug("hatchery> spawnWorkerForJob> new JWT for worker: %s", jwt)
-
-	errSpawn := h.SpawnWorker(ctx, arg)
+	errSpawn := h.SpawnWorker(ctxSpawnWorker, arg)
 	next()
 	if errSpawn != nil {
-		ctxSendSpawnInfo, next = telemetry.Span(ctxJob, "hatchery.QueueJobSendSpawnInfo", telemetry.Tag("status", "errSpawn"), telemetry.Tag("msg", sdk.MsgSpawnInfoHatcheryErrorSpawn.ID))
+		ctx = sdk.ContextWithStacktrace(ctx, errSpawn)
+		ctxSendSpawnInfo, next = telemetry.Span(ctx, "hatchery.QueueJobSendSpawnInfo", telemetry.Tag("status", "errSpawn"), telemetry.Tag("msg", sdk.MsgSpawnInfoHatcheryErrorSpawn.ID))
 		SendSpawnInfo(ctxSendSpawnInfo, h, j.id, sdk.SpawnMsg{
 			ID:   sdk.MsgSpawnInfoHatcheryErrorSpawn.ID,
-			Args: []interface{}{h.Service().Name, modelName, sdk.Round(time.Since(start), time.Second).String(), sdk.ExtractHTTPError(errSpawn, "").Error()},
+			Args: []interface{}{h.Service().Name, modelName, sdk.Round(time.Since(start), time.Second).String(), sdk.ExtractHTTPError(errSpawn).Error()},
 		})
-		log.Error(ctx, "hatchery %s cannot spawn worker %s for job %d: %v", h.Service().Name, modelName, j.id, errSpawn)
+		log.ErrorWithStackTrace(ctx, sdk.WrapError(errSpawn, "hatchery %s cannot spawn worker %s for job %d", h.Service().Name, modelName, j.id))
 		next()
 		return false
 	}
 
-	ctxSendSpawnInfo, next = telemetry.Span(ctxJob, "hatchery.SendSpawnInfo", telemetry.Tag("msg", sdk.MsgSpawnInfoHatcheryStartsSuccessfully.ID))
-	SendSpawnInfo(ctxSendSpawnInfo, h, j.id, sdk.SpawnMsg{
-		ID: sdk.MsgSpawnInfoHatcheryStartsSuccessfully.ID,
-		Args: []interface{}{
-			h.Service().Name,
-			arg.WorkerName,
-			sdk.Round(time.Since(start), time.Second).String()},
-	})
-	next()
-
 	if j.model != nil && j.model.IsDeprecated {
-		ctxSendSpawnInfo, next = telemetry.Span(ctxJob, "hatchery.SendSpawnInfo", telemetry.Tag("msg", sdk.MsgSpawnInfoDeprecatedModel.ID))
+		ctxSendSpawnInfo, next = telemetry.Span(ctx, "hatchery.SendSpawnInfo", telemetry.Tag("msg", sdk.MsgSpawnInfoDeprecatedModel.ID))
 		SendSpawnInfo(ctxSendSpawnInfo, h, j.id, sdk.SpawnMsg{
 			ID:   sdk.MsgSpawnInfoDeprecatedModel.ID,
 			Args: []interface{}{modelName},
@@ -235,28 +223,22 @@ func spawnWorkerForJob(ctx context.Context, h Interface, j workerStarterRequest)
 }
 
 // a worker name must be 60 char max, without '.' and '_', "/" -> replaced by '-'
+const maxLength = 64
+
 func generateWorkerName(hatcheryName string, isRegister bool, modelName string) string {
 	prefix := ""
 	if isRegister {
 		prefix = "register-"
 	}
 
-	maxLength := 63
-	hName := hatcheryName + "-"
-	random := namesgenerator.GetRandomNameCDS(0)
-	workerName := fmt.Sprintf("%s%s-%s-%s", prefix, hatcheryName, modelName, random)
+	var nameFirstPart = fmt.Sprintf("%s%s", prefix, modelName)
+	if len(nameFirstPart) > maxLength-10 {
+		nameFirstPart = nameFirstPart[:maxLength-10]
+	}
+	var remainingLength = maxLength - len(nameFirstPart) - 1
 
-	if len(workerName) <= maxLength {
-		return slug.Convert(workerName)
-	}
-	if len(hName) > 10 {
-		hName = ""
-	}
-	workerName = fmt.Sprintf("%s%s%s-%s", prefix, hName, modelName, random)
-	if len(workerName) <= maxLength {
-		return slug.Convert(workerName)
-	}
-	modelName = sdk.StringFirstN(modelName, 15)
-	workerName = fmt.Sprintf("%s%s%s-%s", prefix, hName, modelName, random)
-	return slug.Convert(sdk.StringFirstN(workerName, maxLength))
+	random := namesgenerator.GetRandomNameCDSWithMaxLength(remainingLength)
+	workerName := fmt.Sprintf("%s-%s", nameFirstPart, random)
+
+	return slug.Convert(workerName)
 }

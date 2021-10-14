@@ -6,6 +6,11 @@ import { RouterTestingModule } from '@angular/router/testing';
 import { TranslateLoader, TranslateModule } from '@ngx-translate/core';
 import { Store } from '@ngxs/store';
 import { ToasterModule } from 'angular2-toaster-sgu';
+import { EventService } from 'app/event.service';
+import { MonitoringStatus } from 'app/model/monitoring.model';
+import { EnvironmentService } from 'app/service/environment/environment.service';
+import { HelpService } from 'app/service/help/help.service';
+import { MonitoringService } from 'app/service/monitoring/monitoring.service';
 import { WorkflowRunService } from 'app/service/workflow/run/workflow.run.service';
 import { WorkflowService } from 'app/service/workflow/workflow.service';
 import { of } from 'rxjs';
@@ -16,12 +21,11 @@ import { AppService } from './app.service';
 import { Application } from './model/application.model';
 import { Pipeline } from './model/pipeline.model';
 import { Project } from './model/project.model';
-import { AuthentifiedUser } from './model/user.model';
+import { AuthSummary } from './model/user.model';
 import { ApplicationService } from './service/application/application.service';
 import { AuthenticationService } from './service/authentication/authentication.service';
 import { BroadcastService } from './service/broadcast/broadcast.service';
 import { BroadcastStore } from './service/broadcast/broadcast.store';
-import { LanguageStore } from './service/language/language.store';
 import { NavbarService } from './service/navbar/navbar.service';
 import { NotificationService } from './service/notification/notification.service';
 import { PipelineService } from './service/pipeline/pipeline.service';
@@ -34,14 +38,14 @@ import { TimelineStore } from './service/timeline/timeline.store';
 import { UserService } from './service/user/user.service';
 import { SharedModule } from './shared/shared.module';
 import { ToastService } from './shared/toast/ToastService';
-import { FetchCurrentUser } from './store/authentication.action';
+import { FetchCurrentAuth } from './store/authentication.action';
 import { NgxsStoreModule } from './store/store.module';
 import { NavbarModule } from './views/navbar/navbar.module';
 
 describe('App: CDS', () => {
 
-    beforeEach(() => {
-        TestBed.configureTestingModule({
+    beforeEach(async () => {
+        await TestBed.configureTestingModule({
             declarations: [
                 AppComponent
             ],
@@ -51,9 +55,12 @@ describe('App: CDS', () => {
                 WorkflowRunService,
                 UserService,
                 NavbarService,
+                HelpService,
+                MonitoringService,
+                EventService,
                 ProjectStore,
+                EnvironmentService,
                 AuthenticationService,
-                LanguageStore,
                 ThemeStore,
                 NotificationService,
                 AppService,
@@ -84,7 +91,7 @@ describe('App: CDS', () => {
                     }
                 }),
             ]
-        });
+        }).compileComponents();
     });
 
     it('should create the app', () => {
@@ -103,14 +110,16 @@ describe('App: CDS', () => {
 
         fixture.componentInstance.ngOnInit();
 
-        const store = TestBed.get(Store);
-        store.dispatch(new FetchCurrentUser());
-
         const http = TestBed.get(HttpTestingController);
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/user/me';
-        })).flush(<AuthentifiedUser>{
-            username: 'someone',
+
+        http.expectOne((req: HttpRequest<any>) => req.url === '/mon/status').flush(<MonitoringStatus>{});
+
+        const store = TestBed.get(Store);
+        store.dispatch(new FetchCurrentAuth());
+
+
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/auth/me')).flush(<AuthSummary>{
+            user: { username: 'someone' }
         });
 
         expect(fixture.componentInstance.isConnected).toBeTruthy('IsConnected flag must be true');
@@ -127,9 +136,9 @@ class MockActivatedRoutes {
     constructor() {
         this.snapshot = {
             params: {
-                'key': 'key1',
-                'appName': 'app2',
-                'pipName': 'pip2'
+                key: 'key1',
+                appName: 'app2',
+                pipName: 'pip2'
             }
         };
     }

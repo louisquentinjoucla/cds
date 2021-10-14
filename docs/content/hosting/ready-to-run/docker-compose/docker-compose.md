@@ -7,7 +7,7 @@ card:
 
 ## Run with Docker-Compose
 
-The [docker-compose.yml](https://github.com/ovh/cds/blob/master/docker-compose.yml) contains:
+The [docker-compose.yml](https://github.com/ovh/cds/blob/{{< param "version" "master" >}}/docker-compose.yml) contains:
 
 - cds-db service with a PostgreSQL
 - cds-cache service with a Redis
@@ -28,11 +28,12 @@ Docker compose is very convenient to launch CDS for testing it. But this is not 
 
 ```bash
 $ mkdir /tmp/cdstest && cd /tmp/cdstest && mkdir -p tools/smtpmock
-$ curl https://raw.githubusercontent.com/ovh/cds/master/docker-compose.yml -o docker-compose.yml
+$ curl https://raw.githubusercontent.com/ovh/cds/{{< param "version" "master" >}}/docker-compose.yml -o docker-compose.yml
 $ export HOSTNAME=$(hostname)
+$ export CDS_DOCKER_IMAGE=ovhcom/cds-engine:{{< param "version" "latest" >}}
 
 # Get the latest version
-$ docker pull ovhcom/cds-engine:latest
+$ docker pull ovhcom/cds-engine:{{< param "version" "latest" >}}
 
 # Create PostgreSQL database, redis and elasticsearch
 $ docker-compose up --no-recreate -d cds-db cds-cache elasticsearch dockerhost
@@ -41,6 +42,7 @@ $ docker-compose up --no-recreate -d cds-db cds-cache elasticsearch dockerhost
 $ docker-compose logs| grep 'database system is ready to accept connections'
 # you should have this line after few seconds: cds-db_1 | LOG:  database system is ready to accept connections
 
+$ docker-compose up --no-recreate cds-db-init
 $ docker-compose up --no-recreate cds-migrate
 # You should have this log: "cdstest_cds-migrate_1 exited with code 0"
 
@@ -83,13 +85,13 @@ $ ./cdsctl user me
 #username  admin
 
 # run others services
-$ docker-compose up -d cds-ui cds-hooks cds-elasticsearch cds-hatchery-swarm
+$ docker-compose up -d cds-ui cds-cdn cds-hooks cds-elasticsearch cds-hatchery-swarm
 
 # create first worker model
-$ ./cdsctl worker model import https://raw.githubusercontent.com/ovh/cds/master/contrib/worker-models/go-official-1.13.yml
+$ ./cdsctl worker model import https://raw.githubusercontent.com/ovh/cds/{{< param "version" "master" >}}/contrib/worker-models/go-official-1.13.yml
 
 # import Import a workflow template
-$ ./cdsctl template push https://raw.githubusercontent.com/ovh/cds/master/contrib/workflow-templates/demo-workflow-hello-world/demo-workflow-hello-world.yml
+$ ./cdsctl template push https://raw.githubusercontent.com/ovh/cds/{{< param "version" "master" >}}/contrib/workflow-templates/demo-workflow-hello-world/demo-workflow-hello-world.yml
 Workflow template shared.infra/demo-workflow-hello-world has been created
 Template successfully pushed !
 
@@ -125,7 +127,7 @@ The build pipeline contains two stages, with only one job in each stage
 ## Setup connection with a VCS
 
 ```bash
-# READ THE section https://ovh.github.io/cds/docs/integrations/github/#create-a-cds-application-on-github to generate the clientId and clientSecret.
+# READ THE section https://ovh.github.io/cds/docs/integrations/github/github_repository_manager/#create-a-cds-application-on-github to generate the clientId and clientSecret.
 # Short version: 
 # go on https://github.com/settings/applications/new
 # Application name: cds-test-docker-compose
@@ -151,7 +153,7 @@ Users can store CDS Files on their repositories. This service clones user reposi
 - Import actions, example:
 
 ```bash
-$ ./cdsctl action import https://raw.githubusercontent.com/ovh/cds/master/contrib/actions/cds-docker-package.yml
+$ ./cdsctl action import https://raw.githubusercontent.com/ovh/cds/{{< param "version" "master" >}}/contrib/actions/cds-docker-package.yml
 ```
 
 ## Go further

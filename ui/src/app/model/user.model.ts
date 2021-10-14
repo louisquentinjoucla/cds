@@ -1,19 +1,29 @@
+import { AuthConsumer, AuthDriverManifest, AuthSession } from './authentication.model';
+
+export class AuthSummary {
+    user: AuthentifiedUser;
+    consumer: AuthConsumer;
+    session: AuthSession;
+    driverManifest: AuthDriverManifest;
+
+    constructor() { }
+
+    isAdmin(): boolean {
+        const dontNeedMFA = !this.driverManifest.support_mfa;
+        return this.user.ring === 'ADMIN' && (dontNeedMFA || this.session.mfa);
+    }
+
+    isMaintainer(): boolean {
+        return this.user.ring === 'MAINTAINER' || this.user.ring === 'ADMIN';
+    }
+}
+
 export class AuthentifiedUser {
     id: string;
     created: string;
     username: string;
     fullname: string;
     ring: string;
-
-    constructor() { }
-
-    isAdmin(): boolean {
-        return this.ring === 'ADMIN';
-    }
-
-    isMaintainer(): boolean {
-        return this.ring === 'MAINTAINER' || this.isAdmin();
-    }
 }
 
 export class User {

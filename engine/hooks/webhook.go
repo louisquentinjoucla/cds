@@ -2,7 +2,6 @@ package hooks
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"mime"
 	"net/http"
@@ -10,14 +9,14 @@ import (
 	"strings"
 
 	dump "github.com/fsamin/go-dump"
+	"github.com/rockbears/log"
 	"github.com/xanzy/go-gitlab"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (s *Service) doWebHookExecution(ctx context.Context, e *sdk.TaskExecution) ([]sdk.WorkflowNodeRunHookEvent, error) {
-	log.Debug("Hooks> Processing webhook %s %s", e.UUID, e.Type)
+	log.Debug(ctx, "Hooks> Processing webhook %s %s", e.UUID, e.Type)
 
 	if e.Type == TypeRepoManagerWebHook {
 		return s.executeRepositoryWebHook(ctx, e)
@@ -37,7 +36,7 @@ func getRepositoryHeader(t *sdk.TaskExecution, events []string) string {
 	} else if v, ok := t.WebHook.RequestHeader[BitbucketHeader]; ok {
 		if sdk.IsInArray(v[0], events) || (len(events) == 0 && (v[0] == "repo:refs_changed" || v[0] == "repo:push")) {
 			var request sdk.BitbucketServerWebhookEvent
-			if err := json.Unmarshal(t.WebHook.RequestBody, &request); err == nil && request.EventKey != "" {
+			if err := sdk.JSONUnmarshal(t.WebHook.RequestBody, &request); err == nil && request.EventKey != "" {
 				return BitbucketHeader
 			} else {
 				// We return a fake header to make a difference between server and cloud version
@@ -91,7 +90,7 @@ func (s *Service) executeRepositoryWebHook(ctx context.Context, t *sdk.TaskExecu
 			return nil, errG
 		}
 	default:
-		log.Warning(ctx, "executeRepositoryWebHook> Repository manager not found. Cannot read %s", string(t.WebHook.RequestBody))
+		log.Warn(ctx, "executeRepositoryWebHook> Repository manager not found. Cannot read %s", string(t.WebHook.RequestBody))
 		return nil, fmt.Errorf("Repository manager not found. Cannot read request body")
 	}
 
@@ -157,11 +156,11 @@ func executeWebHook(t *sdk.TaskExecution) (*sdk.WorkflowNodeRunHookEvent, error)
 
 			//Try to parse the body as an array
 			bodyJSONArray := []interface{}{}
-			if err := json.Unmarshal(t.WebHook.RequestBody, &bodyJSONArray); err != nil {
+			if err := sdk.JSONUnmarshal(t.WebHook.RequestBody, &bodyJSONArray); err != nil {
 
 				//Try to parse the body as a map
 				bodyJSONMap := map[string]interface{}{}
-				if err2 := json.Unmarshal(t.WebHook.RequestBody, &bodyJSONMap); err2 == nil {
+				if err2 := sdk.JSONUnmarshal(t.WebHook.RequestBody, &bodyJSONMap); err2 == nil {
 					bodyJSON = bodyJSONMap
 				}
 			} else {
@@ -211,35 +210,6 @@ func executeWebHook(t *sdk.TaskExecution) (*sdk.WorkflowNodeRunHookEvent, error)
 		h.Payload[k] = values.Get(k)
 	}
 	return &h, nil
-}
-
-func (s *Service) enqueueBranchDeletion(projectKey, workflowName, branch string) error {
-	config := sdk.WorkflowNodeHookConfig{
-		"project": sdk.WorkflowNodeHookConfigValue{
-			Configurable: false,
-			Type:         sdk.HookConfigTypeProject,
-			Value:        projectKey,
-		},
-		"workflow": sdk.WorkflowNodeHookConfigValue{
-			Configurable: false,
-			Type:         sdk.HookConfigTypeWorkflow,
-			Value:        workflowName,
-		},
-		"branch": sdk.WorkflowNodeHookConfigValue{
-			Configurable: false,
-			Type:         sdk.HookConfigTypeString,
-			Value:        branch,
-		},
-	}
-	task := sdk.Task{
-		Config: config,
-		Type:   TypeBranchDeletion,
-		UUID:   branch + "-" + sdk.UUID(),
-	}
-
-	_, err := s.startTask(context.Background(), &task)
-
-	return sdk.WrapError(err, "cannot start task")
 }
 
 func copyValues(dst, src url.Values) {

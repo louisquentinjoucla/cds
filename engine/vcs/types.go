@@ -16,21 +16,18 @@ type Service struct {
 	Cfg    Configuration
 	Router *api.Router
 	Cache  cache.Store
+	UI     struct {
+		HTTP struct {
+			URL string
+		}
+	}
 }
 
 // Configuration is the vcs configuration structure
 type Configuration struct {
-	Name string `toml:"name" comment:"Name of this CDS VCS Service\n Enter a name to enable this service" json:"name"`
-	HTTP struct {
-		Addr string `toml:"addr" default:"" commented:"true" comment:"Listen address without port, example: 127.0.0.1" json:"addr"`
-		Port int    `toml:"port" default:"8084" json:"port"`
-	} `toml:"http" comment:"######################\n CDS VCS HTTP Configuration \n######################" json:"http"`
-	URL string `default:"http://localhost:8084" json:"url"`
-	UI  struct {
-		HTTP struct {
-			URL string `toml:"url" default:"http://localhost:8080" json:"url"`
-		} `toml:"http" json:"http"`
-	} `toml:"ui" json:"ui"`
+	Name  string                          `toml:"name" comment:"Name of this CDS VCS Service\n Enter a name to enable this service" json:"name"`
+	HTTP  service.HTTPRouterConfiguration `toml:"http" comment:"######################\n CDS VCS HTTP Configuration \n######################" json:"http"`
+	URL   string                          `default:"http://localhost:8084" json:"url"`
 	API   service.APIServiceConfiguration `toml:"api" comment:"######################\n CDS API Settings \n######################" json:"api"`
 	Cache struct {
 		TTL   int `toml:"ttl" default:"60" json:"ttl"`
@@ -54,8 +51,8 @@ type ServerConfiguration struct {
 
 // GithubServerConfiguration represents the github configuration
 type GithubServerConfiguration struct {
-	ClientID     string `toml:"clientId" json:"-" default:"xxxxx" comment:"Github OAuth Application Client ID"`
-	ClientSecret string `toml:"clientSecret" json:"-" default:"xxxxx" comment:"Github OAuth Application Client Secret"`
+	ClientID     string `toml:"clientId" json:"-" default:"xxxxx" comment:"GitHub OAuth Application Client ID"`
+	ClientSecret string `toml:"clientSecret" json:"-" default:"xxxxx" comment:"GitHub OAuth Application Client Secret"`
 	APIURL       string `toml:"apiUrl" json:"-" default:"https://api.github.com" comment:"The URL for the GitHub API."`
 	Status       struct {
 		Disable    bool `toml:"disable" default:"false" commented:"true" comment:"Set to true if you don't want CDS to push statuses on the VCS server" json:"disable"`
@@ -64,8 +61,8 @@ type GithubServerConfiguration struct {
 	DisableWebHooks bool   `toml:"disableWebHooks" comment:"Does webhooks are supported by VCS Server" json:"disable_web_hook"`
 	DisablePolling  bool   `toml:"disablePolling" comment:"Does polling is supported by VCS Server" json:"disable_polling"`
 	ProxyWebhook    string `toml:"proxyWebhook" default:"" commented:"true" comment:"If you want to have a reverse proxy url for your repository webhook, for example if you put https://myproxy.com it will generate a webhook URL like this https://myproxy.com/UUID_OF_YOUR_WEBHOOK" json:"proxy_webhook"`
-	Username        string `toml:"username" comment:"optional. Github username, used to create pull-request for ascode workflow and to add comment on Pull Request on failed build." json:"username"`
-	Token           string `toml:"token" comment:"optional, Github Token associated to username, used to create pull-request for ascode workflow and to add comment on Pull Request" json:"-"`
+	Username        string `toml:"username" comment:"optional. GitHub username, used to create pull-request for ascode workflow and to add comment on Pull Request on failed build." json:"username"`
+	Token           string `toml:"token" comment:"optional, GitHub Token associated to username, used to create pull-request for ascode workflow and to add comment on Pull Request" json:"-"`
 }
 
 func (s GithubServerConfiguration) check() error {
@@ -76,12 +73,12 @@ func (s GithubServerConfiguration) check() error {
 		return errGithubConfigurationError
 	}
 	if s.ProxyWebhook != "" && !strings.Contains(s.ProxyWebhook, "://") {
-		return fmt.Errorf("Github proxy webhook must have the HTTP scheme")
+		return fmt.Errorf("GitHub proxy webhook must have the HTTP scheme")
 	}
 	return nil
 }
 
-var errGithubConfigurationError = fmt.Errorf("Github configuration Error")
+var errGithubConfigurationError = fmt.Errorf("GitHub configuration Error")
 
 // GitlabServerConfiguration represents the gitlab configuration
 type GitlabServerConfiguration struct {
@@ -99,7 +96,7 @@ type GitlabServerConfiguration struct {
 
 func (s GitlabServerConfiguration) check() error {
 	if s.ProxyWebhook != "" && !strings.Contains(s.ProxyWebhook, "://") {
-		return fmt.Errorf("Gitlab proxy webhook must have the HTTP scheme")
+		return fmt.Errorf("GitLab proxy webhook must have the HTTP scheme")
 	}
 	return nil
 }
@@ -149,7 +146,7 @@ func (s BitbucketCloudConfiguration) check() error {
 
 func (s *Service) addServerConfiguration(name string, c ServerConfiguration) error {
 	if name == "" {
-		return fmt.Errorf("Invalid VCS server name")
+		return fmt.Errorf("invalid VCS server name")
 	}
 
 	if err := c.check(); err != nil {
@@ -164,11 +161,11 @@ func (s *Service) addServerConfiguration(name string, c ServerConfiguration) err
 
 func (s ServerConfiguration) check() error {
 	if s.URL == "" {
-		return fmt.Errorf("Invalid VCS server URL")
+		return fmt.Errorf("invalid VCS server URL")
 	}
 
 	if s.Bitbucket != nil && s.BitbucketCloud != nil && s.Github != nil && s.Gitlab != nil {
-		return fmt.Errorf("Invalid VCS server configuration")
+		return fmt.Errorf("invalid VCS server configuration")
 	}
 
 	if s.Bitbucket != nil {
@@ -203,15 +200,15 @@ type GerritServerConfiguration struct {
 	Status struct {
 		Disable    bool `toml:"disable" default:"false" commented:"true" comment:"Set to true if you don't want CDS to push statuses on the VCS server" json:"disable"`
 		ShowDetail bool `toml:"showDetail" default:"false" commented:"true" comment:"Set to true if you don't want CDS to push CDS URL in statuses on the VCS server" json:"show_detail"`
-	}
+	} `json:"status"`
 	DisableGerritEvent bool `toml:"disableGerritEvent" comment:"Does gerrit event stream are supported by VCS Server" json:"disable_gerrit_event"`
-	SSHPort            int  `toml:"sshport" default:"" commented:"true" comment:"SSH port of gerrit, example: 29418"`
+	SSHPort            int  `toml:"sshport" default:"" commented:"true" comment:"SSH port of gerrit, example: 29418" json:"ssh_port"`
 	EventStream        struct {
-		User       string `toml:"user" default:"" commented:"true" comment:"User to access to gerrit event stream"`
-		PrivateKey string `toml:"privateKey" default:"" commented:"true" comment:"Private key of the user who access to gerrit event stream"`
-	}
+		User       string `toml:"user" default:"" commented:"true" comment:"User to access to gerrit event stream" json:"user"`
+		PrivateKey string `toml:"privateKey" default:"" commented:"true" comment:"Private key of the user who access to gerrit event stream" json:"-"`
+	} `json:"event_stream"`
 	Reviewer struct {
-		User  string `toml:"user" default:"" commented:"true" comment:"User that review changes"`
-		Token string `toml:"token" default:"" commented:"true" comment:"Token of the reviewer"`
-	}
+		User  string `toml:"user" default:"" commented:"true" comment:"User that review changes" json:"user"`
+		Token string `toml:"token" default:"" commented:"true" comment:"Token of the reviewer" json:"-"`
+	} `json:"reviewer"`
 }

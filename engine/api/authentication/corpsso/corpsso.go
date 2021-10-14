@@ -4,16 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/rockbears/log"
 	jose "gopkg.in/square/go-jose.v2"
 
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/gpg"
+	"github.com/ovh/cds/sdk/slug"
 )
 
 const (
@@ -45,7 +46,8 @@ type Config struct {
 			SigningKeyClaim string `json:"signing_key_claim"`
 		} `json:"key_signing_key,omitempty"`
 	} `json:"token"`
-	MailDomain string `json:"mail_domain"`
+	MailDomain        string `json:"mail_domain"`
+	MFASupportEnabled bool   `json:"mfa_support"`
 }
 
 func NewDriver(cfg Config) sdk.AuthDriver {
@@ -57,6 +59,7 @@ func (d authDriver) GetManifest() sdk.AuthDriverManifest {
 	return sdk.AuthDriverManifest{
 		Type:           sdk.ConsumerCorporateSSO,
 		SignupDisabled: false,
+		SupportMFA:     d.Config.MFASupportEnabled,
 	}
 }
 
@@ -126,7 +129,7 @@ func (d authDriver) CheckSigninStateToken(req sdk.AuthConsumerSigninRequest) err
 	}
 
 	var signinStateToken sdk.AuthSigninConsumerToken
-	if err := json.Unmarshal(rawRequest, &signinStateToken); err != nil {
+	if err := sdk.JSONUnmarshal(rawRequest, &signinStateToken); err != nil {
 		return sdk.NewError(sdk.ErrWrongRequest, fmt.Errorf("unable to parse state: %v", err))
 	}
 
@@ -209,7 +212,7 @@ func (d authDriver) GetUserInfo(ctx context.Context, req sdk.AuthConsumerSigninR
 	}
 
 	var itk issuedToken
-	if err := json.Unmarshal(rawIssuedToken, &itk); err != nil {
+	if err := sdk.JSONUnmarshal(rawIssuedToken, &itk); err != nil {
 		return u, sdk.NewError(sdk.ErrUnauthorized, err)
 	}
 
@@ -218,18 +221,25 @@ func (d authDriver) GetUserInfo(ctx context.Context, req sdk.AuthConsumerSigninR
 		return u, sdk.NewErrorFrom(sdk.ErrWrongRequest, "expired JWT %s/%s", itk.RemoteUser, itk.TokenID)
 	}
 
+	log.Info(ctx, "new session created for remote_user: %v, iat: %v, token_id: %v, mfa: %v", itk.RemoteUser, itk.IAT, itk.TokenID, itk.MFA)
+
 	u.Username = itk.RemoteUser
+	if len(u.Username) < 3 && itk.RemoteUsername != "" {
+		u.Username = slug.Convert(itk.RemoteUsername)
+	}
 	u.ExternalID = itk.RemoteUser
-	u.MFA = itk.MFA
+	u.MFA = itk.MFA && d.Config.MFASupportEnabled
 	u.Email = itk.RemoteUser + "@" + d.Config.MailDomain
+	u.ExternalTokenID = itk.TokenID
 
 	return u, nil
 }
 
 type issuedToken struct {
-	Audience   string `json:"Audience"`
-	RemoteUser string `json:"RemoteUser"`
-	TokenID    string `json:"TokenId"`
-	MFA        bool   `json:"MFA"`
-	IAT        int64  `json:"iat"`
+	Audience       string `json:"Audience"`
+	RemoteUser     string `json:"RemoteUser"`
+	RemoteUsername string `json:"RemoteUsername"`
+	TokenID        string `json:"TokenId"`
+	MFA            bool   `json:"MFA"`
+	IAT            int64  `json:"iat"`
 }

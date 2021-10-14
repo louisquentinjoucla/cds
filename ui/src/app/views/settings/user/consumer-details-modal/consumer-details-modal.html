@@ -32,6 +32,12 @@
                             </span>
                         </div>
                     </div>
+                    <div class="two fields">
+                        <div class="field">
+                            <label>Last authentication</label>
+                            {{consumer.last_authentication}}
+                        </div>
+                    </div>
                     <div class="field">
                         <app-menu class="menu" [items]="menuItems" (onSelect)="selectMenuItem($event)"></app-menu>
                     </div>
@@ -44,16 +50,21 @@
                                 [data]="[consumer.parent]">
                             </app-data-table>
                         </ng-container>
+                        <ng-container *ngSwitchCase="'validity_periods'">
+                            <app-data-table *ngIf="consumer.validity_periods" [columns]="columnsValidityPeriods"
+                                [data]="consumer.validity_periods">
+                            </app-data-table>
+                        </ng-container>
                         <app-data-table *ngSwitchCase="'children'" [withFilter]="filterChildren" [withPagination]="5"
                             [columns]="columnsConsumers" [data]="consumer.children">
                         </app-data-table>
                     </div>
                     <div class="wide field">
                         <div class="ui wide field">
-                            <ng-container *ngIf="user.id === currentUser.id || currentUser.isAdmin()"
+                            <ng-container *ngIf="user.id === currentAuthSummary.user.id || currentAuthSummary.isAdmin()"
                                 [ngSwitch]="consumer.type">
                                 <ng-container *ngSwitchCase="'local'">
-                                    <button *ngIf="user.id === currentUser.id" class="ui button green left floated"
+                                    <button *ngIf="user.id === currentAuthSummary.user.id" class="ui button green left floated"
                                         (click)="clickResetPassword()">{{'account_password_btn_reset' | translate }}</button>
                                 </ng-container>
                                 <ng-container *ngSwitchCase="'builtin'">
@@ -73,7 +84,7 @@
                                     </div>
                                 </ng-container>
                                 <ng-container *ngSwitchDefault>
-                                    <app-delete-button *ngIf="user.id === currentUser.id" class="left floated"
+                                    <app-delete-button *ngIf="user.id === currentAuthSummary.user.id" class="left floated"
                                         (event)="clickDetach()" [loading]="loading"
                                         [title]="'user_auth_consumer_detach_btn'">
                                     </app-delete-button>

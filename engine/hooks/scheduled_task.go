@@ -2,15 +2,15 @@ package hooks
 
 import (
 	"context"
-	"encoding/json"
 
 	dump "github.com/fsamin/go-dump"
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (s *Service) doScheduledTaskExecution(ctx context.Context, t *sdk.TaskExecution) (*sdk.WorkflowNodeRunHookEvent, error) {
-	log.Debug("Hooks> Processing scheduled task %s", t.UUID)
+	log.Debug(ctx, "Hooks> Processing scheduled task %s", t.UUID)
 
 	// Prepare a struct to send to CDS API
 	h := sdk.WorkflowNodeRunHookEvent{
@@ -23,7 +23,7 @@ func (s *Service) doScheduledTaskExecution(ctx context.Context, t *sdk.TaskExecu
 	payloadValues := map[string]string{}
 	if payload, ok := t.Config[sdk.Payload]; ok && payload.Value != "{}" {
 		var payloadInt interface{}
-		if err := json.Unmarshal([]byte(payload.Value), &payloadInt); err == nil {
+		if err := sdk.JSONUnmarshal([]byte(payload.Value), &payloadInt); err == nil {
 			e := dump.NewDefaultEncoder()
 			e.Formatters = []dump.KeyFormatterFunc{dump.WithDefaultLowerCaseFormatter()}
 			e.ExtraFields.DetailedMap = false

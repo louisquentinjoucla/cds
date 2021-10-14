@@ -3,8 +3,14 @@ package workflow
 import (
 	"context"
 
+	"github.com/rockbears/log"
+
 	"github.com/go-gorp/gorp"
+	"github.com/ovh/cds/engine/api/application"
+	"github.com/ovh/cds/engine/api/ascode"
+	"github.com/ovh/cds/engine/api/environment"
 	"github.com/ovh/cds/engine/api/group"
+	"github.com/ovh/cds/engine/api/pipeline"
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
@@ -19,11 +25,6 @@ func Import(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 	w.ProjectKey = proj.Key
 	w.ProjectID = proj.ID
 
-	// Default value of history length is 20
-	if w.HistoryLength == 0 {
-		w.HistoryLength = 20
-	}
-
 	if w.WorkflowData.Node.Context == nil {
 		w.WorkflowData.Node.Context = &sdk.NodeContext{}
 	}
@@ -36,7 +37,6 @@ func Import(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 		if msgChan != nil {
 			msgChan <- sdk.NewMessage(sdk.MsgWorkflowImportedInserted, w.Name)
 		}
-
 		return nil
 	}
 
@@ -46,6 +46,14 @@ func Import(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 
 	if !force {
 		return sdk.NewErrorFrom(sdk.ErrAlreadyExist, "workflow exists")
+	}
+
+	if force && oldW != nil && oldW.FromRepository != "" && w.FromRepository == "" {
+		if err := detachResourceFromRepository(db, proj.ID, oldW, msgChan); err != nil {
+			return err
+		}
+		msgChan <- sdk.NewMessage(sdk.MsgWorkflowDetached, oldW.Name, oldW.FromRepository)
+		log.Debug(ctx, "workflow.Import>> Force import workflow %s in project %s without fromRepository", oldW.Name, proj.Key)
 	}
 
 	// Retrieve existing hook
@@ -88,6 +96,56 @@ func Import(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 	if msgChan != nil {
 		msgChan <- sdk.NewMessage(sdk.MsgWorkflowImportedUpdated, w.Name)
 	}
+	return nil
+}
+
+func detachResourceFromRepository(db gorp.SqlExecutor, projectID int64, oldW *sdk.Workflow, msgChan chan<- sdk.Message) error {
+	// delete ascode event if exists on this workflow
+	if err := ascode.DeleteAsCodeEventByWorkflowID(db, oldW.ID); err != nil {
+		return err
+	}
+	// reset fromRepository for all pipeline using it
+	pips, err := pipeline.LoadAllNamesByFromRepository(db, projectID, oldW.FromRepository)
+	if err != nil {
+		return err
+	}
+
+	if err := pipeline.ResetFromRepository(db, projectID, oldW.FromRepository); err != nil {
+		return sdk.WrapError(err, "could not reset fromRepository %s from pipelines", oldW.FromRepository)
+	}
+
+	for _, pip := range pips {
+		msgChan <- sdk.NewMessage(sdk.MsgPipelineDetached, pip.Name, oldW.FromRepository)
+	}
+
+	// reset fromRepository for all app using it
+	apps, err := application.LoadAllNamesByFromRepository(db, projectID, oldW.FromRepository)
+	if err != nil {
+		return err
+	}
+
+	if err := application.ResetFromRepository(db, projectID, oldW.FromRepository); err != nil {
+		return sdk.WrapError(err, "could not reset fromRepository %s from applications", oldW.FromRepository)
+	}
+
+	for _, app := range apps {
+		msgChan <- sdk.NewMessage(sdk.MsgApplicationDetached, app.Name, oldW.FromRepository)
+	}
+
+	// reset fromRepository for all env using it
+	envs, err := environment.LoadAllNamesByFromRepository(db, projectID, oldW.FromRepository)
+	if err != nil {
+		return err
+	}
+
+	if err := environment.ResetFromRepository(db, projectID, oldW.FromRepository); err != nil {
+		return sdk.WrapError(err, "could not reset fromRepository %s from environments", oldW.FromRepository)
+	}
+
+	for _, env := range envs {
+		msgChan <- sdk.NewMessage(sdk.MsgEnvironmentDetached, env.Name, oldW.FromRepository)
+	}
+
 	return nil
 }
 

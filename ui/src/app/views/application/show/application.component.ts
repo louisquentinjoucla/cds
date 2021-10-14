@@ -67,7 +67,6 @@ export class ApplicationShowComponent implements OnInit, OnDestroy {
     pipelines: Array<Pipeline> = new Array<Pipeline>();
     workflows: Array<Workflow> = new Array<Workflow>();
     environments: Array<Environment> = new Array<Environment>();
-    currentUser: AuthentifiedUser;
     usageCount = 0;
 
     storeSub: Subscription;
@@ -81,7 +80,6 @@ export class ApplicationShowComponent implements OnInit, OnDestroy {
         private _store: Store,
         private _cd: ChangeDetectorRef
     ) {
-        this.currentUser = this._store.selectSnapshot(AuthenticationState.user);
         this.project = this._routeActivated.snapshot.data['project'];
 
         this.workflowName = this._routeActivated.snapshot.queryParams['workflow'];
@@ -104,7 +102,7 @@ export class ApplicationShowComponent implements OnInit, OnDestroy {
                 this.application = null;
             }
             if (projectKey && this.urlAppName) {
-                this._store.dispatch(new applicationsActions.FetchApplication({ projectKey: projectKey, applicationName: this.urlAppName }))
+                this._store.dispatch(new applicationsActions.FetchApplication({ projectKey, applicationName: this.urlAppName }))
                     .subscribe(
                         () => {},
                         () => this._router.navigate(['/project', projectKey], { queryParams: { tab: 'applications' } }),
@@ -159,6 +157,7 @@ export class ApplicationShowComponent implements OnInit, OnDestroy {
 
     /**
      * Event on variable
+     *
      * @param event
      */
     variableEvent(event: VariableEvent, skip?: boolean) {

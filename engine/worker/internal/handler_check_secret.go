@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -14,6 +13,10 @@ import (
 
 func checkSecretHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := workerruntime.SetJobID(ctx, wk.currentJob.wJob.ID)
+		ctx = workerruntime.SetStepOrder(ctx, wk.currentJob.currentStepIndex)
+		ctx = workerruntime.SetStepName(ctx, wk.currentJob.currentStepName)
+
 		data, errRead := ioutil.ReadAll(r.Body)
 		if errRead != nil {
 			returnHTTPError(ctx, w, 400, errRead)
@@ -21,7 +24,7 @@ func checkSecretHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc
 		}
 
 		var a workerruntime.FilePath
-		if err := json.Unmarshal(data, &a); err != nil {
+		if err := sdk.JSONUnmarshal(data, &a); err != nil {
 			returnHTTPError(ctx, w, 400, fmt.Errorf("failed to unmarshal %s", data))
 			return
 		}

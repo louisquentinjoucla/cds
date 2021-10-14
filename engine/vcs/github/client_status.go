@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 type statusData struct {
@@ -28,7 +29,7 @@ type statusData struct {
 //https://developer.github.com/v3/repos/statuses/#create-a-status
 func (g *githubClient) SetStatus(ctx context.Context, event sdk.Event) error {
 	if g.DisableStatus {
-		log.Warning(ctx, "github.SetStatus>  ⚠ Github statuses are disabled")
+		log.Warn(ctx, "github.SetStatus>  ⚠ Github statuses are disabled")
 		return nil
 	}
 
@@ -46,7 +47,7 @@ func (g *githubClient) SetStatus(ctx context.Context, event sdk.Event) error {
 	}
 
 	if data.status == "" {
-		log.Debug("github.SetStatus> Do not process event for current status: %v", event)
+		log.Debug(ctx, "github.SetStatus> Do not process event for current status: %v", event)
 		return nil
 	}
 
@@ -65,7 +66,9 @@ func (g *githubClient) SetStatus(ctx context.Context, event sdk.Event) error {
 	}
 	buf := bytes.NewBuffer(b)
 
-	res, err := g.post(path, "application/json", buf, nil)
+	log.Debug(ctx, "SetStatus> github post on %v body:%v", path, string(b))
+
+	res, err := g.post(ctx, path, "application/json", buf, nil, nil)
 	if err != nil {
 		return sdk.WrapError(err, "Unable to post status")
 	}
@@ -77,16 +80,18 @@ func (g *githubClient) SetStatus(ctx context.Context, event sdk.Event) error {
 		return sdk.WrapError(err, "Unable to read body")
 	}
 
+	log.Debug(ctx, "SetStatus> github response for %v body:%v", path, string(body))
+
 	if res.StatusCode != 201 {
 		return sdk.WrapError(err, "Unable to create status on github. Status code : %d - Body: %s - target:%s", res.StatusCode, body, data.urlPipeline)
 	}
 
 	s := &Status{}
-	if err := json.Unmarshal(body, s); err != nil {
+	if err := sdk.JSONUnmarshal(body, s); err != nil {
 		return sdk.WrapError(err, "Unable to unmarshal body")
 	}
 
-	log.Debug("SetStatus> Status %d %s created at %v", s.ID, s.URL, s.CreatedAt)
+	log.Debug(ctx, "SetStatus> Status %d %s created at %v", s.ID, s.URL, s.CreatedAt)
 
 	return nil
 }
@@ -110,7 +115,7 @@ func (g *githubClient) ListStatuses(ctx context.Context, repo string, ref string
 			log.Error(ctx, "cannot get from cache %s: %v", k, err)
 		}
 	} else {
-		if err := json.Unmarshal(body, &ss); err != nil {
+		if err := sdk.JSONUnmarshal(body, &ss); err != nil {
 			return []sdk.VCSCommitStatus{}, sdk.WrapError(err, "Unable to parse github commit: %s", ref)
 		}
 		//Put the body on cache for one hour and one minute
@@ -150,7 +155,7 @@ func processGithubState(s Status) string {
 func processEventWorkflowNodeRun(event sdk.Event, cdsUIURL string, disabledStatusDetail bool) (statusData, error) {
 	data := statusData{}
 	var eventNR sdk.EventRunWorkflowNode
-	if err := json.Unmarshal(event.Payload, &eventNR); err != nil {
+	if err := sdk.JSONUnmarshal(event.Payload, &eventNR); err != nil {
 		return data, sdk.WrapError(err, "cannot unmarshal payload")
 	}
 	//We only manage status Success and Failure

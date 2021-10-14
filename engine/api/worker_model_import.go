@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"io/ioutil"
 	"net/http"
 
@@ -40,7 +39,7 @@ func (api *API) postWorkerModelImportHandler() service.Handler {
 		var errUnMarshall error
 		switch contentType {
 		case "application/json":
-			errUnMarshall = json.Unmarshal(body, &eWorkerModel)
+			errUnMarshall = sdk.JSONUnmarshal(body, &eWorkerModel)
 		case "application/x-yaml", "text/x-yam":
 			errUnMarshall = yaml.Unmarshal(body, &eWorkerModel)
 		default:
@@ -69,8 +68,12 @@ func (api *API) postWorkerModelImportHandler() service.Handler {
 			return sdk.NewError(sdk.ErrWrongRequest, err)
 		}
 		data.GroupID = grp.ID
-		if !isGroupAdmin(ctx, grp) && !isAdmin(ctx) {
-			return sdk.NewErrorFrom(sdk.ErrForbidden, "you should be admin of the group to import a worker model")
+		if !isGroupAdmin(ctx, grp) {
+			if isAdmin(ctx) {
+				trackSudo(ctx, w)
+			} else {
+				return sdk.NewErrorFrom(sdk.ErrForbidden, "you should be admin of the group to import a worker model")
+			}
 		}
 
 		// validate worker model fields

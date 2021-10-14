@@ -8,6 +8,8 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/authentication"
 	"github.com/ovh/cds/engine/api/authentication/builtin"
+	"github.com/ovh/cds/engine/api/environment"
 	"github.com/ovh/cds/engine/api/group"
 	"github.com/ovh/cds/engine/api/integration"
 	"github.com/ovh/cds/engine/api/pipeline"
@@ -381,7 +384,7 @@ func Test_getWorkflowHandler_AsProvider(t *testing.T) {
 	localConsumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), api.mustDB(), sdk.ConsumerLocal, admin.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
 	require.NoError(t, err)
 
-	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), localConsumer, admin.GetGroupIDs(),
+	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), 0, localConsumer, admin.GetGroupIDs(),
 		sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeProject))
 
 	u, _ := assets.InsertLambdaUser(t, db)
@@ -667,14 +670,12 @@ func Test_putWorkflowHandler(t *testing.T) {
 			w.Body = ioutil.NopCloser(body)
 
 			switch r.URL.String() {
-			case "/vcs/github/repos/foo/bar/branches":
-				bs := []sdk.VCSBranch{}
+			case "/vcs/github/repos/foo/bar/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					DisplayID: "master",
 					Default:   true,
 				}
-				bs = append(bs, b)
-				if err := enc.Encode(bs); err != nil {
+				if err := enc.Encode(b); err != nil {
 					return writeError(w, err)
 				}
 			case "/task/bulk":
@@ -843,7 +844,7 @@ func Test_putWorkflowHandler(t *testing.T) {
 				},
 			},
 		},
-		EventIntegrations: []sdk.ProjectIntegration{projInt},
+		Integrations: []sdk.WorkflowProjectIntegration{{ProjectIntegration: projInt}},
 	}
 	workflow1.WorkflowData.Node.Hooks[0].Config[sdk.HookConfigEventFilter] = sdk.WorkflowNodeHookConfigValue{
 		Value:        "push;create",
@@ -865,7 +866,7 @@ func Test_putWorkflowHandler(t *testing.T) {
 
 	assert.NotEqual(t, 0, workflow1.WorkflowData.Node.Context.ApplicationID)
 	assert.NotNil(t, workflow1.WorkflowData.Node.Context.DefaultPayload)
-	assert.NotNil(t, workflow1.EventIntegrations)
+	assert.NotNil(t, workflow1.Integrations)
 
 	payload, err := workflow1.WorkflowData.Node.Context.DefaultPayloadToMap()
 	test.NoError(t, err)
@@ -965,7 +966,9 @@ func Test_deleteWorkflowEventIntegrationHandler(t *testing.T) {
 				},
 			},
 		},
-		EventIntegrations: []sdk.ProjectIntegration{projInt},
+		Integrations: []sdk.WorkflowProjectIntegration{
+			{ProjectIntegration: projInt},
+		},
 	}
 
 	req = assets.NewAuthentifiedRequest(t, u, pass, "PUT", uri, &workflow1)
@@ -982,8 +985,8 @@ func Test_deleteWorkflowEventIntegrationHandler(t *testing.T) {
 
 	assert.NotEqual(t, 0, workflow1.WorkflowData.Node.Context.ApplicationID)
 	assert.NotNil(t, workflow1.WorkflowData.Node.Context.DefaultPayload)
-	assert.NotNil(t, workflow1.EventIntegrations)
-	assert.Equal(t, len(workflow1.EventIntegrations), 1)
+	assert.NotNil(t, workflow1.Integrations)
+	assert.Equal(t, len(workflow1.Integrations), 1)
 
 	vars["integrationID"] = fmt.Sprintf("%d", projInt.ID)
 	uri = router.GetRoute("DELETE", api.deleteWorkflowEventsIntegrationHandler, vars)
@@ -997,7 +1000,7 @@ func Test_deleteWorkflowEventIntegrationHandler(t *testing.T) {
 	wfUpdated, err := workflow.Load(context.TODO(), api.mustDB(), api.Cache, *proj, wf.Name, workflow.LoadOptions{WithIntegrations: true})
 	test.NoError(t, err, "cannot load workflow")
 
-	test.Equal(t, 0, len(wfUpdated.EventIntegrations))
+	test.Equal(t, 0, len(wfUpdated.Integrations))
 }
 
 func Test_postWorkflowHandlerWithError(t *testing.T) {
@@ -1420,7 +1423,7 @@ func TestBenchmarkGetWorkflowsWithoutAPIAsAdmin(t *testing.T) {
 	res := testing.Benchmark(func(b *testing.B) {
 		b.ResetTimer()
 		for n := 0; n < b.N; n++ {
-			if _, err := workflow.LoadAll(db, prj.Key); err != nil {
+			if _, err := workflow.LoadAll(context.TODO(), db, prj.Key); err != nil {
 				b.Logf("Cannot load workflows : %v", err)
 				b.Fail()
 				return
@@ -1752,7 +1755,7 @@ func Test_getWorkflowsHandler_FilterByRepo(t *testing.T) {
 	localConsumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), api.mustDB(), sdk.ConsumerLocal, admin.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
 	require.NoError(t, err)
 
-	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), localConsumer, admin.GetGroupIDs(),
+	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), 0, localConsumer, admin.GetGroupIDs(),
 		sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeProject))
 
 	u, _ := assets.InsertLambdaUser(t, db)
@@ -1832,7 +1835,7 @@ func Test_getSearchWorkflowHandler(t *testing.T) {
 	localConsumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), api.mustDB(), sdk.ConsumerLocal, admin.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
 	require.NoError(t, err)
 
-	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), localConsumer, admin.GetGroupIDs(),
+	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), 0, localConsumer, admin.GetGroupIDs(),
 		sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeProject))
 
 	u, _ := assets.InsertLambdaUser(t, db)
@@ -1929,5 +1932,234 @@ func Test_getSearchWorkflowHandler(t *testing.T) {
 	require.NotEmpty(t, wfs[0].Runs[0].URLs.UIURL)
 
 	t.Logf("%+v", wfs[0].Runs[0].URLs)
+
+}
+
+func Test_getWorkfloDependencieswHandler(t *testing.T) {
+	api, db, router := newTestAPI(t)
+	ctx := context.Background()
+	cache := api.Cache
+
+	a, _ := assets.InsertService(t, db, "Test_getWorkfloDependencieswHandlerVCS", sdk.TypeVCS)
+	b, _ := assets.InsertService(t, db, "Test_getWorkfloDependencieswHandlerHook", sdk.TypeHooks)
+
+	defer func() {
+		_ = services.Delete(db, a)
+		_ = services.Delete(db, b)
+	}()
+
+	services.HTTPClient = mock(
+		func(r *http.Request) (*http.Response, error) {
+			body := new(bytes.Buffer)
+			w := new(http.Response)
+			enc := json.NewEncoder(body)
+			w.Body = ioutil.NopCloser(body)
+			switch r.URL.String() {
+			// NEED get REPO
+			case "/vcs/github/repos/sguiheux/demo":
+				repo := sdk.VCSRepo{
+					URL:          "https",
+					Name:         "demo",
+					ID:           "123",
+					Fullname:     "sguiheux/demo",
+					Slug:         "sguiheux",
+					HTTPCloneURL: "https://github.com/sguiheux/demo.git",
+					SSHCloneURL:  "git://github.com/sguiheux/demo.git",
+				}
+				if err := enc.Encode(repo); err != nil {
+					return writeError(w, err)
+				}
+				// NEED for default payload on insert
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
+				b := sdk.VCSBranch{
+					Default:      true,
+					DisplayID:    "master",
+					LatestCommit: "mylastcommit",
+				}
+				if err := enc.Encode(b); err != nil {
+					return writeError(w, err)
+				}
+			case "/task/bulk":
+				var hooks map[string]sdk.NodeHook
+				request, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					return writeError(w, err)
+				}
+				if err := json.Unmarshal(request, &hooks); err != nil {
+					return writeError(w, err)
+				}
+				if len(hooks) != 1 {
+					return writeError(w, fmt.Errorf("Must only have 1 hook"))
+				}
+				k := reflect.ValueOf(hooks).MapKeys()[0].String()
+				hooks[k].Config["webHookURL"] = sdk.WorkflowNodeHookConfigValue{
+					Value:        fmt.Sprintf("http://6.6.6:8080/%s", hooks[k].UUID),
+					Type:         "string",
+					Configurable: false,
+				}
+
+				if err := enc.Encode(map[string]sdk.NodeHook{
+					hooks[k].UUID: hooks[k],
+				}); err != nil {
+					return writeError(w, err)
+				}
+			case "/vcs/github/webhooks":
+				infos := repositoriesmanager.WebhooksInfos{
+					WebhooksDisabled:  false,
+					WebhooksSupported: true,
+					Icon:              "github",
+				}
+				if err := enc.Encode(infos); err != nil {
+					return writeError(w, err)
+				}
+			case "/vcs/github/repos/sguiheux/demo/hooks":
+				pr := sdk.VCSHook{
+					ID: "666",
+				}
+				if err := enc.Encode(pr); err != nil {
+					return writeError(w, err)
+				}
+			default:
+				if strings.HasPrefix(r.URL.String(), "/vcs/github/repos/sguiheux/demo/hooks?url=htt") && strings.HasSuffix(r.URL.String(), "&id=666") {
+					// Do NOTHING
+				} else {
+					t.Fatalf("UNKNOWN ROUTE: %s", r.URL.String())
+				}
+			}
+
+			return w, nil
+		},
+	)
+
+	u, pass := assets.InsertAdminUser(t, db)
+
+	proj := assets.InsertTestProject(t, db, api.Cache, sdk.RandomString(10), sdk.RandomString(10))
+	vcsServer := sdk.ProjectVCSServerLink{
+		ProjectID: proj.ID,
+		Name:      "github",
+	}
+	vcsServer.Set("token", "foo")
+	vcsServer.Set("secret", "bar")
+	assert.NoError(t, repositoriesmanager.InsertProjectVCSServerLink(context.TODO(), db, &vcsServer))
+
+	// Add pipeline
+	pipS := `version: v1.0
+name: print-env
+jobs:
+- job: New Job
+  steps:
+  - script:
+    - '#!/bin/bash'
+    - env
+  requirements:
+  - binary: docker
+  - binary: git`
+
+	var epip = new(exportentities.PipelineV1)
+	require.NoError(t, yaml.Unmarshal([]byte(pipS), epip))
+
+	pip, _, err := pipeline.ParseAndImport(ctx, db, cache, *proj, epip, u, pipeline.ImportOptions{PipelineName: epip.Name, FromRepository: "from/my-repo"})
+	require.NotNil(t, pip)
+	require.NoError(t, err)
+
+	// Add application
+	appS := `version: v1.0
+name: blabla
+vcs_server: github
+repo: sguiheux/demo
+vcs_ssh_key: proj-blabla`
+
+	var eapp = new(exportentities.Application)
+	require.NoError(t, yaml.Unmarshal([]byte(appS), eapp))
+	app, _, _, err := application.ParseAndImport(context.Background(), db, cache, *proj, eapp, application.ImportOptions{FromRepository: "from/my-repo"}, nil, u)
+	require.NotNil(t, app)
+	require.NoError(t, err)
+
+	// Add environmment
+	envS := `name: test
+values:
+  var_a:
+    type: string
+    value: a`
+
+	var eEnv = new(exportentities.Environment)
+	require.NoError(t, yaml.Unmarshal([]byte(envS), eEnv))
+	env, _, _, err := environment.ParseAndImport(ctx, db, *proj, *eEnv, environment.ImportOptions{FromRepository: "from/my-repo"}, project.DecryptWithBuiltinKey, u)
+	require.NotNil(t, env)
+	require.NoError(t, err)
+
+	proj.Applications = append(proj.Applications, *app)
+	proj.Pipelines = append(proj.Pipelines, *pip)
+	proj.Environments = append(proj.Environments, *env)
+
+	workflowS := `name: test-env
+version: v2.0
+workflow:
+  test-env:
+    pipeline: print-env
+    environment: test
+    application: blabla`
+
+	eWf, err := exportentities.UnmarshalWorkflow([]byte(workflowS), exportentities.FormatYAML)
+	require.NoError(t, err)
+
+	wf, _, err := workflow.ParseAndImport(ctx, db, cache, *proj, nil, eWf, u, workflow.ImportOptions{WorkflowName: "test-env", FromRepository: "from/my-repo"})
+	require.NotNil(t, wf)
+	require.NoError(t, err)
+
+	// Insert the workflow
+	vars := map[string]string{
+		"key":              proj.Key,
+		"permWorkflowName": wf.Name,
+	}
+	uri := router.GetRoute("GET", api.getWorkflowDependenciesHandler, vars)
+	test.NotEmpty(t, uri)
+	req := assets.NewAuthentifiedRequest(t, u, pass, "GET", uri, &wf)
+	w := httptest.NewRecorder()
+	router.Mux.ServeHTTP(w, req)
+	require.Equal(t, 200, w.Code)
+
+	var res sdk.WorkflowDeleteDependencies
+	require.NoError(t, sdk.JSONUnmarshal(w.Body.Bytes(), &res))
+	t.Logf("%+v", res)
+
+	require.Equal(t, pip.ID, res.DeletedDependencies.Pipelines[0].ID)
+	require.Equal(t, pip.Name, res.DeletedDependencies.Pipelines[0].Name)
+	require.Equal(t, app.ID, res.DeletedDependencies.Applications[0].ID)
+	require.Equal(t, app.Name, res.DeletedDependencies.Applications[0].Name)
+	require.Equal(t, env.ID, res.DeletedDependencies.Environments[0].ID)
+	require.Equal(t, env.Name, res.DeletedDependencies.Environments[0].Name)
+
+	// Craft a new workflow that use the same resources
+	workflowS2 := `name: test-env-2
+version: v2.0
+workflow:
+  test-env:
+    pipeline: print-env
+    environment: test
+    application: blabla`
+
+	eWf2, err := exportentities.UnmarshalWorkflow([]byte(workflowS2), exportentities.FormatYAML)
+	require.NoError(t, err)
+
+	wf2, _, err := workflow.ParseAndImport(ctx, db, cache, *proj, nil, eWf2, u, workflow.ImportOptions{WorkflowName: "test-env-2", FromRepository: "from/my-repo-2"})
+	require.NotNil(t, wf2)
+	require.NoError(t, err)
+
+	req = assets.NewAuthentifiedRequest(t, u, pass, "GET", uri, nil)
+	w = httptest.NewRecorder()
+	router.Mux.ServeHTTP(w, req)
+	require.Equal(t, 200, w.Code)
+
+	var res2 sdk.WorkflowDeleteDependencies
+	require.NoError(t, sdk.JSONUnmarshal(w.Body.Bytes(), &res2))
+	t.Logf("%+v", res2)
+
+	require.Equal(t, pip.ID, res2.UnlinkedAsCodeDependencies.Pipelines[0].ID)
+	require.Equal(t, pip.Name, res2.UnlinkedAsCodeDependencies.Pipelines[0].Name)
+	require.Equal(t, app.ID, res2.UnlinkedAsCodeDependencies.Applications[0].ID)
+	require.Equal(t, app.Name, res2.UnlinkedAsCodeDependencies.Applications[0].Name)
+	require.Equal(t, env.ID, res2.UnlinkedAsCodeDependencies.Environments[0].ID)
+	require.Equal(t, env.Name, res2.UnlinkedAsCodeDependencies.Environments[0].Name)
 
 }

@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/gorhill/cronexpr"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 //This are all the types
@@ -20,7 +20,6 @@ const (
 	TypeWebHook            = "Webhook"
 	TypeScheduler          = "Scheduler"
 	TypeRepoPoller         = "RepoPoller"
-	TypeBranchDeletion     = "BranchDeletion"
 	TypeKafka              = "Kafka"
 	TypeGerrit             = "Gerrit"
 	TypeRabbitMQ           = "RabbitMQ"
@@ -69,10 +68,24 @@ func (s *Service) synchronizeTasks(ctx context.Context) error {
 
 	log.Info(ctx, "Hooks> Synchronizing tasks from CDS API (%s)", s.Cfg.API.HTTP.URL)
 
-	//Get all hooks from CDS, and synchronize the tasks in cache
+	// Get all hooks from CDS, and synchronize the tasks in cache
 	hooks, err := s.Client.WorkflowAllHooksList()
 	if err != nil {
-		return sdk.WrapError(err, "Unable to get hooks")
+		return sdk.WrapError(err, "unable to get hooks")
+	}
+	mHookIDs := make(map[string]struct{}, len(hooks))
+	for i := range hooks {
+		mHookIDs[hooks[i].UUID] = struct{}{}
+	}
+
+	// Get all node run execution ids from CDS, and synchronize the outgoing tasks in cache
+	executionIDs, err := s.Client.WorkflowAllHooksExecutions()
+	if err != nil {
+		return sdk.WrapError(err, "unable to get hook execution ids")
+	}
+	mExecutionIDs := make(map[string]struct{}, len(executionIDs))
+	for i := range executionIDs {
+		mExecutionIDs[executionIDs[i]] = struct{}{}
 	}
 
 	allOldTasks, err := s.Dao.FindAllTasks(ctx)
@@ -80,18 +93,16 @@ func (s *Service) synchronizeTasks(ctx context.Context) error {
 		return sdk.WrapError(err, "Unable to get allOldTasks")
 	}
 
-	//Delete all old task which are not referenced in CDS API anymore
+	// Delete all old task which are not referenced in CDS API anymore
 	for i := range allOldTasks {
 		t := &allOldTasks[i]
 		var found bool
-		for _, h := range hooks {
-			if h.UUID == t.UUID {
-				found = true
-				log.Debug("Hook> Synchronizing %s task %s", h.HookModelName, t.UUID)
-				break
-			}
+		if t.Type == TypeOutgoingWebHook || t.Type == TypeOutgoingWorkflow {
+			_, found = mExecutionIDs[t.UUID]
+		} else {
+			_, found = mHookIDs[t.UUID]
 		}
-		if !found && t.Type != TypeOutgoingWebHook && t.Type != TypeOutgoingWorkflow {
+		if !found {
 			if err := s.deleteTask(ctx, t); err != nil {
 				log.Error(ctx, "Hook> Error on task %s delete on synchronization: %v", t.UUID, err)
 			} else {
@@ -100,6 +111,7 @@ func (s *Service) synchronizeTasks(ctx context.Context) error {
 		}
 	}
 
+	// Create or update hook tasks from CDS API data
 	for _, h := range hooks {
 		confProj := h.Config[sdk.HookConfigProject]
 		confWorkflow := h.Config[sdk.HookConfigWorkflow]
@@ -274,7 +286,7 @@ func (s *Service) startTask(ctx context.Context, t *sdk.Task) (*sdk.TaskExecutio
 	switch t.Type {
 	case TypeWebHook, TypeRepoManagerWebHook, TypeWorkflowHook:
 		return nil, nil
-	case TypeScheduler, TypeRepoPoller, TypeBranchDeletion:
+	case TypeScheduler, TypeRepoPoller:
 		return nil, s.prepareNextScheduledTaskExecution(ctx, t)
 	case TypeKafka:
 		return nil, s.startKafkaHook(ctx, t)
@@ -304,7 +316,7 @@ func (s *Service) prepareNextScheduledTaskExecution(ctx context.Context, t *sdk.
 
 	//The last execution has not been executed, let it go
 	if len(execs) > 0 && execs[len(execs)-1].ProcessingTimestamp == 0 {
-		log.Debug("Hooks> Scheduled task %s:%d ready. Next execution already scheduled on %v", t.UUID, execs[len(execs)-1].Timestamp, time.Unix(0, execs[len(execs)-1].Timestamp))
+		log.Debug(ctx, "Hooks> Scheduled task %s:%d ready. Next execution already scheduled on %v", t.UUID, execs[len(execs)-1].Timestamp, time.Unix(0, execs[len(execs)-1].Timestamp))
 		return nil
 	}
 
@@ -339,10 +351,6 @@ func (s *Service) prepareNextScheduledTaskExecution(ctx context.Context, t *sdk.
 				nextSchedule = time.Unix(nextExec, 0)
 			}
 		}
-
-	case TypeBranchDeletion:
-		now := time.Now()
-		nextSchedule = now.Add(24 * time.Hour)
 	}
 
 	//Craft a new execution
@@ -360,7 +368,7 @@ func (s *Service) prepareNextScheduledTaskExecution(ctx context.Context, t *sdk.
 	s.Dao.SaveTaskExecution(exec)
 	//We don't push in queue, we will the scheduler to run it
 
-	log.Debug("Hooks> Scheduled task %v:%d ready. Next execution scheduled on %v, len:%d", t.UUID, exec.Timestamp, time.Unix(0, exec.Timestamp), len(execs))
+	log.Debug(ctx, "Hooks> Scheduled task %v:%d ready. Next execution scheduled on %v, len:%d", t.UUID, exec.Timestamp, time.Unix(0, exec.Timestamp), len(execs))
 
 	return nil
 }
@@ -374,11 +382,11 @@ func (s *Service) stopTask(ctx context.Context, t *sdk.Task) error {
 
 	switch t.Type {
 	case TypeWebHook, TypeScheduler, TypeRepoManagerWebHook, TypeRepoPoller, TypeKafka, TypeWorkflowHook:
-		log.Debug("Hooks> Tasks %s has been stopped", t.UUID)
+		log.Debug(ctx, "Hooks> Tasks %s has been stopped", t.UUID)
 		return nil
 	case TypeGerrit:
 		s.stopGerritHookTask(t)
-		log.Debug("Hooks> Gerrit Task %s has been stopped", t.UUID)
+		log.Debug(ctx, "Hooks> Gerrit Task %s has been stopped", t.UUID)
 		return nil
 	default:
 		return fmt.Errorf("Unsupported task type %s", t.Type)
@@ -412,8 +420,6 @@ func (s *Service) doTask(ctx context.Context, t *sdk.Task, e *sdk.TaskExecution)
 		//Populate next execution
 		hs, err = s.doPollerTaskExecution(ctx, t, e)
 		doRestart = true
-	case e.ScheduledTask != nil && e.Type == TypeBranchDeletion:
-		_, err = s.doBranchDeletionTaskExecution(e)
 	case e.Kafka != nil && e.Type == TypeKafka:
 		h, err = s.doKafkaTaskExecution(e)
 	case e.RabbitMQ != nil && e.Type == TypeRabbitMQ:
@@ -440,11 +446,12 @@ func (s *Service) doTask(ctx context.Context, t *sdk.Task, e *sdk.TaskExecution)
 		run, err := s.Client.WorkflowRunFromHook(confProj.Value, confWorkflow.Value, hEvent)
 		if err != nil {
 			globalErr = err
-			log.Warning(ctx, "Hooks> %s > unable to run workflow %s/%s : %v", t.UUID, confProj.Value, confWorkflow.Value, err)
+			ctx := sdk.ContextWithStacktrace(ctx, err)
+			log.Warn(ctx, "Hooks> %s > unable to run workflow %s/%s : %v", t.UUID, confProj.Value, confWorkflow.Value, err)
 		} else {
 			//Save the run number
 			e.WorkflowRun = run.Number
-			log.Debug("Hooks> workflow %s/%s#%d has been triggered", confProj.Value, confWorkflow.Value, run.Number)
+			log.Debug(ctx, "Hooks> workflow %s/%s#%d has been triggered", confProj.Value, confWorkflow.Value, run.Number)
 		}
 	}
 

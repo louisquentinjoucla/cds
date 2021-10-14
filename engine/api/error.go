@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -10,10 +9,8 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 type graylogResponse struct {
@@ -57,7 +54,7 @@ func (api *API) getErrorHandler() service.Handler {
 		}
 
 		var res graylogResponse
-		if err := json.Unmarshal(body, &res); err != nil {
+		if err := sdk.JSONUnmarshal(body, &res); err != nil {
 			return sdk.WrapError(err, "cannot unmarshal response from Graylog")
 		}
 
@@ -75,26 +72,5 @@ func (api *API) getErrorHandler() service.Handler {
 		}
 
 		return service.WriteJSON(w, logs, http.StatusOK)
-	}
-}
-
-func (api *API) getPanicDumpHandler() service.Handler {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		vars := mux.Vars(r)
-		id := vars["uuid"]
-
-		k := cache.Key("api", "panic_dump", id)
-		var data string
-		find, err := api.Cache.Get(k, &data)
-		if err != nil {
-			log.Error(ctx, "cannot get from cache %s: %v", k, err)
-		}
-		if !find {
-			return sdk.WithStack(sdk.ErrNotFound)
-		}
-		w.Write([]byte(data)) // nolint
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.WriteHeader(http.StatusOK)
-		return nil
 	}
 }

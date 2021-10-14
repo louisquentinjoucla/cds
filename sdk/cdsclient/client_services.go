@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (c *client) ServiceHeartbeat(s *sdk.MonitoringStatus) error {
@@ -20,7 +21,7 @@ func (c *client) ServiceRegister(ctx context.Context, s sdk.Service) (*sdk.Servi
 	code, err := c.PostJSON(context.Background(), "/services/register", &s, &s)
 	if code != 201 && code != 200 {
 		if err == nil {
-			return nil, fmt.Errorf("HTTP Code %d", code)
+			return nil, newAPIError(fmt.Errorf("HTTP Code %d", code))
 		}
 	}
 	if err != nil {
@@ -28,7 +29,7 @@ func (c *client) ServiceRegister(ctx context.Context, s sdk.Service) (*sdk.Servi
 	}
 
 	if !s.Uptodate {
-		log.Warning(ctx, "-=-=-=-=- Please update your cds engine binary - current version:%s -=-=-=-=-", sdk.VersionString())
+		log.Warn(ctx, "-=-=-=-=- Please update your cds engine binary - current version:%s -=-=-=-=-", sdk.VersionString())
 	}
 	return &s, nil
 }

@@ -17,7 +17,7 @@ import cloneDeep from 'lodash-es/cloneDeep';
 import { debounceTime, finalize, first } from 'rxjs/operators';
 import { Subscription } from 'rxjs/Subscription';
 
-declare var CodeMirror: any;
+declare let CodeMirror: any;
 
 @Component({
     selector: 'app-workflow-node-run-param',
@@ -83,7 +83,7 @@ export class WorkflowNodeRunParamComponent implements AfterViewInit, OnDestroy {
         };
     }
 
-    ngOnDestroy(): void {} // Should be set to use @AutoUnsubscribe with AOT
+    ngOnDestroy(): void { } // Should be set to use @AutoUnsubscribe with AOT
 
     ngAfterViewInit() {
         this.themeSubscription = this._theme.get()
@@ -203,8 +203,12 @@ export class WorkflowNodeRunParamComponent implements AfterViewInit, OnDestroy {
         }
 
         this.modal = this._modalService.open(config);
-        this.modal.onApprove(() => { this.open = false; });
-        this.modal.onDeny(() => { this.open = false; });
+        this.modal.onApprove(() => {
+            this.open = false;
+        });
+        this.modal.onDeny(() => {
+            this.open = false;
+        });
 
         this.codeMirrorConfig = Object.assign({}, this.codeMirrorConfig, { readOnly: this.readOnly });
 
@@ -236,7 +240,7 @@ export class WorkflowNodeRunParamComponent implements AfterViewInit, OnDestroy {
         if (!this.linkedToRepo) {
             return;
         }
-        let branch, hash, repository;
+        let branch; let hash; let repository;
         let currentContext = this.getCurrentPayload();
 
         if (change && this.payloadString) {
@@ -322,7 +326,7 @@ export class WorkflowNodeRunParamComponent implements AfterViewInit, OnDestroy {
 
     private updateDefaultPipelineParameters() {
         if (this.nodeToRun) {
-            let pipToRun = Workflow.getPipeline(this.workflow, this.nodeToRun);
+            let pipToRun = Workflow.getPipeline(this.currentWorkflowRun ? this.currentWorkflowRun.workflow : this.workflow, this.nodeToRun);
             if (!pipToRun) {
                 return;
             }
@@ -363,15 +367,11 @@ export class WorkflowNodeRunParamComponent implements AfterViewInit, OnDestroy {
             request.number = this.num;
         }
 
-
-        this._workflowRunService.runWorkflow(this.projectKey, this.workflow.name, request).pipe(finalize(() => {
+        this._workflowRunService.runWorkflow(this.projectKey, this.workflow.name, request).subscribe(wr => {
             this.loading = false;
-            this._cd.markForCheck();
-        })).subscribe(wr => {
+            this._cd.detectChanges();
             this.modal.approve(true);
-            this._router.navigate(['/project', this.projectKey, 'workflow', this.workflow.name, 'run', wr.num],
-                { queryParams: { subnum: wr.last_subnumber } });
-            wr.force_update = true;
+            this._router.navigate(['/project', this.projectKey, 'workflow', this.workflow.name, 'run', wr.num]);
         });
     }
 
@@ -396,6 +396,8 @@ export class WorkflowNodeRunParamComponent implements AfterViewInit, OnDestroy {
     }
 
     changeCodeMirror(codemirror: any, eventRoot: Event): void {
+        this.invalidJSON = false;
+
         let num = this.num;
         if (!codemirror || !codemirror.instance) {
             return;

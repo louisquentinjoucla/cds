@@ -9,6 +9,8 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/api/event"
 	"github.com/ovh/cds/engine/api/project"
 	"github.com/ovh/cds/engine/api/workflow"
@@ -16,7 +18,6 @@ import (
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -57,7 +58,26 @@ func (api *API) postWorkflowPreviewHandler() service.Handler {
 			return sdk.NewError(sdk.ErrWrongRequest, errw)
 		}
 
-		wf, err := workflow.Parse(ctx, *proj, ew)
+		// load the workflow from database if exists
+		tx, err := api.mustDB().Begin()
+		if err != nil {
+			return sdk.WrapError(err, "unable to start transaction")
+		}
+		defer tx.Rollback() // nolint
+
+		workflowExists, err := workflow.Exists(ctx, tx, proj.Key, ew.GetName())
+		if err != nil {
+			return sdk.WrapError(err, "Cannot check if workflow exists")
+		}
+		var existingWorkflow *sdk.Workflow
+		if workflowExists {
+			existingWorkflow, err = workflow.Load(ctx, tx, api.Cache, *proj, ew.GetName(), workflow.LoadOptions{WithIcon: true})
+			if err != nil {
+				return sdk.WrapError(err, "unable to load existing workflow")
+			}
+		}
+
+		wf, err := workflow.Parse(ctx, *proj, existingWorkflow, ew)
 		if err != nil {
 			return sdk.WrapError(err, "unable import workflow %s", ew.GetName())
 		}
@@ -125,7 +145,7 @@ func (api *API) postWorkflowImportHandler() service.Handler {
 		u := getAPIConsumer(ctx)
 
 		// load the workflow from database if exists
-		workflowExists, err := workflow.Exists(tx, proj.Key, ew.GetName())
+		workflowExists, err := workflow.Exists(ctx, tx, proj.Key, ew.GetName())
 		if err != nil {
 			return sdk.WrapError(err, "Cannot check if workflow exists")
 		}
@@ -138,10 +158,10 @@ func (api *API) postWorkflowImportHandler() service.Handler {
 		}
 
 		wrkflw, msgList, globalError := workflow.ParseAndImport(ctx, tx, api.Cache, *proj, wf, ew, getAPIConsumer(ctx), workflow.ImportOptions{Force: force})
-		msgListString := translate(r, msgList)
+		msgListString := translate(msgList)
 		if globalError != nil {
 			if len(msgListString) != 0 {
-				sdkErr := sdk.ExtractHTTPError(globalError, r.Header.Get("Accept-Language"))
+				sdkErr := sdk.ExtractHTTPError(globalError)
 				return service.WriteJSON(w, append(msgListString, sdkErr.Message), sdkErr.Status)
 			}
 			return sdk.WrapError(globalError, "Unable to import workflow %s", ew.GetName())
@@ -222,10 +242,10 @@ func (api *API) putWorkflowImportHandler() service.Handler {
 		defer tx.Rollback() //nolint
 
 		wrkflw, msgList, globalError := workflow.ParseAndImport(ctx, tx, api.Cache, *proj, wf, ew, u, workflow.ImportOptions{Force: true, WorkflowName: wfName})
-		msgListString := translate(r, msgList)
+		msgListString := translate(msgList)
 		if globalError != nil {
 			if len(msgListString) != 0 {
-				sdkErr := sdk.ExtractHTTPError(globalError, r.Header.Get("Accept-Language"))
+				sdkErr := sdk.ExtractHTTPError(globalError)
 				return service.WriteJSON(w, append(msgListString, sdkErr.Error()), sdkErr.Status)
 			}
 			return sdk.WrapError(globalError, "unable to import workflow %s", ew.GetName())
@@ -269,7 +289,7 @@ func (api *API) postWorkflowPushHandler() service.Handler {
 		}
 		defer r.Body.Close()
 
-		log.Debug("Read %d bytes from body", len(btes))
+		log.Debug(ctx, "Read %d bytes from body", len(btes))
 		tr := tar.NewReader(bytes.NewReader(btes))
 
 		var pushOptions *workflow.PushOption
@@ -325,7 +345,7 @@ func (api *API) postWorkflowPushHandler() service.Handler {
 			return err
 		}
 
-		msgListString := translate(r, allMsg)
+		msgListString := translate(allMsg)
 
 		if wrkflw != nil {
 			w.Header().Add(sdk.ResponseWorkflowIDHeader, fmt.Sprintf("%d", wrkflw.ID))

@@ -17,14 +17,13 @@ import (
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/engine/websocket"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/ovh/cds/sdk/cdn"
 	"github.com/ovh/cds/sdk/log/hook"
 )
 
 type handledMessage struct {
-	Signature    log.Signature
+	Signature    cdn.Signature
 	Msg          hook.Message
-	Line         int64
 	IsTerminated bool
 }
 
@@ -57,23 +56,23 @@ type Service struct {
 		ItemToDelete             *stats.Int64Measure
 		ItemUnitToDelete         *stats.Int64Measure
 	}
-	storageUnitLags sync.Map
+	storageUnitLags          sync.Map
+	storageUnitPreviousLags  sync.Map
+	storageUnitSizes         sync.Map
+	storageUnitPreviousSizes sync.Map
 }
 
 // Configuration is the hooks configuration structure
 type Configuration struct {
-	Name string        `toml:"name" default:"cds-cdn" comment:"Name of this CDS CDN Service\n Enter a name to enable this service" json:"name"`
-	TCP  sdk.TCPServer `toml:"tcp" comment:"######################\n CDS CDN TCP Configuration \n######################" json:"tcp"`
-	HTTP struct {
-		Addr string `toml:"addr" default:"" commented:"true" comment:"Listen address without port, example: 127.0.0.1" json:"addr"`
-		Port int    `toml:"port" default:"8089" json:"port"`
-	} `toml:"http" comment:"######################\n CDS CDN HTTP Configuration \n######################" json:"http"`
-	URL                 string                                 `default:"http://localhost:8089" json:"url" comment:"Private URL for communication with API"`
-	PublicTCP           string                                 `toml:"publicTCP" default:"localhost:8090" comment:"Public address to access to CDN TCP server" json:"public_tcp"`
-	PublicHTTP          string                                 `toml:"publicHTTP" default:"http://localhost:8089" comment:"Public address to access to CDN HTTP server" json:"public_http"`
-	EnableLogProcessing bool                                   `toml:"enableLogProcessing" comment:"Enable CDN preview feature that will index logs (this require a database)" json:"enableDatabaseFeatures"`
-	Database            database.DBConfigurationWithEncryption `toml:"database" comment:"################################\n Postgresql Database settings \n###############################" json:"database"`
-	Cache               struct {
+	Name               string                                 `toml:"name" default:"cds-cdn" comment:"Name of this CDS CDN Service\n Enter a name to enable this service" json:"name"`
+	TCP                sdk.TCPServer                          `toml:"tcp" comment:"######################\n CDS CDN TCP Configuration \n######################" json:"tcp"`
+	HTTP               service.HTTPRouterConfiguration        `toml:"http" comment:"######################\n CDS CDN HTTP Configuration \n######################" json:"http"`
+	URL                string                                 `default:"http://localhost:8089" json:"url" comment:"Private URL for communication with API"`
+	PublicTCP          string                                 `toml:"publicTCP" default:"localhost:8090" comment:"Public address to access to CDN TCP server" json:"public_tcp"`
+	PublicTCPEnableTLS bool                                   `toml:"publicTCPEnableTLS" comment:"Enable TLS on public address to access to CDN TCP server" json:"public_tcp_enable_tls"`
+	PublicHTTP         string                                 `toml:"publicHTTP" default:"http://localhost:8089" comment:"Public address to access to CDN HTTP server" json:"public_http"`
+	Database           database.DBConfigurationWithEncryption `toml:"database" comment:"################################\n Postgresql Database settings \n###############################" json:"database"`
+	Cache              struct {
 		TTL     int   `toml:"ttl" default:"60" json:"ttl"`
 		LruSize int64 `toml:"lruSize" default:"134217728" json:"lruSize" comment:"Redis LRU cache for logs items in bytes (default: 128MB)"`
 		Redis   struct {
@@ -81,9 +80,12 @@ type Configuration struct {
 			Password string `toml:"password" json:"-"`
 		} `toml:"redis" json:"redis"`
 	} `toml:"cache" comment:"######################\n CDN Cache Settings \n######################" json:"cache"`
-	API   service.APIServiceConfiguration `toml:"api" comment:"######################\n CDS API Settings \n######################" json:"api"`
-	Log   storage.LogConfig               `toml:"log" json:"log" comment:"###########################\n Log settings.\n##########################"`
-	Units storage.Configuration           `toml:"storageUnits" json:"storageUnits" mapstructure:"storageUnits"`
+	API     service.APIServiceConfiguration `toml:"api" comment:"######################\n CDS API Settings \n######################" json:"api"`
+	Log     storage.LogConfig               `toml:"log" json:"log" comment:"###########################\n Log settings.\n##########################"`
+	Units   storage.Configuration           `toml:"storageUnits" json:"storageUnits" mapstructure:"storageUnits" comment:"###########################\n Storage Units settings.\n##########################"`
+	Metrics struct {
+		Frequency int64 `toml:"frequency" default:"30" json:"frequency" comment:"each 30s, metrics are computed"`
+	} `toml:"metrics" comment:"######################\n CDN Metrics Settings \n######################" json:"metrics"`
 }
 
 type rateLimiter struct {
@@ -102,4 +104,13 @@ func (r *rateLimiter) WaitN(n int) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	return sdk.WithStack(r.limiter.WaitN(r.ctx, n))
+}
+
+type SizeWriter struct {
+	Size int64
+}
+
+func (s *SizeWriter) Write(data []byte) (n int, err error) {
+	s.Size += int64(len(data))
+	return len(data), nil
 }

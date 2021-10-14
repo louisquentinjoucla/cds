@@ -2,16 +2,15 @@ package elasticsearch
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/rockbears/log"
 	"gopkg.in/olivere/elastic.v6"
 
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (s *Service) getEventsHandler() service.Handler {
@@ -35,7 +34,7 @@ func (s *Service) getEventsHandler() service.Handler {
 		result, errR := esClient.Search().Index(s.Cfg.ElasticSearch.IndexEvents).Type(fmt.Sprintf("%T", sdk.Event{})).Query(boolQuery).Sort("timestamp", false).From(filters.CurrentItem).Size(15).Do(context.Background())
 		if errR != nil {
 			if strings.Contains(errR.Error(), indexNotFoundException) {
-				log.Warning(ctx, "elasticsearch> getEventsHandler> %v", errR.Error())
+				log.Warn(ctx, "elasticsearch> getEventsHandler> %v", errR.Error())
 				return service.WriteJSON(w, nil, http.StatusOK)
 			}
 			esReq := fmt.Sprintf(`esClient.Search().Index(%+v).Type("%T").Query(%+v).Sort("timestamp", false).From(%+v).Size(15)`, s.Cfg.ElasticSearch.IndexEvents, sdk.Event{}, boolQuery, filters.CurrentItem)
@@ -92,7 +91,7 @@ func (s *Service) getMetricsHandler() service.Handler {
 			Do(context.Background())
 		if errR != nil {
 			if strings.Contains(errR.Error(), indexNotFoundException) {
-				log.Warning(ctx, "elasticsearch> getMetricsHandler> %v", errR.Error())
+				log.Warn(ctx, "elasticsearch> getMetricsHandler> %v", errR.Error())
 				return service.WriteJSON(w, nil, http.StatusOK)
 			}
 			return sdk.WrapError(errR, "Unable to get result")
@@ -151,7 +150,7 @@ func (s *Service) loadMetric(ctx context.Context, ID string) (sdk.Metric, error)
 		Do(context.Background())
 	if errR != nil {
 		if strings.Contains(errR.Error(), indexNotFoundException) {
-			log.Warning(ctx, "elasticsearch> loadMetric> %v", errR.Error())
+			log.Warn(ctx, "elasticsearch> loadMetric> %v", errR.Error())
 			return m, nil
 		}
 		return m, sdk.WrapError(errR, "unable to get result")
@@ -161,7 +160,7 @@ func (s *Service) loadMetric(ctx context.Context, ID string) (sdk.Metric, error)
 		return m, nil
 	}
 
-	if err := json.Unmarshal(*results.Hits.Hits[0].Source, &m); err != nil {
+	if err := sdk.JSONUnmarshal(*results.Hits.Hits[0].Source, &m); err != nil {
 		return m, err
 	}
 	return m, nil

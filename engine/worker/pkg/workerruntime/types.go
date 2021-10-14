@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
 	"github.com/spf13/afero"
@@ -73,6 +73,12 @@ type Runtime interface {
 	Take(ctx context.Context, job sdk.WorkflowNodeJobRun) error
 	ProcessJob(job sdk.WorkflowNodeJobRunData) sdk.Result
 	SendLog(ctx context.Context, level Level, format string)
+	RunResultSignature(fileName string, perm uint32, t sdk.WorkflowRunResultType) (string, error)
+	WorkerCacheSignature(tag string) (string, error)
+	FeatureEnabled(featureName sdk.FeatureName) bool
+	GetPlugin(pluginType string) *sdk.GRPCPlugin
+	GetJobIdentifiers() (int64, int64, int64)
+	CDNHttpURL() string
 	InstallKey(key sdk.Variable) (*KeyResponse, error)
 	InstallKeyTo(key sdk.Variable, destinationPath string) (*KeyResponse, error)
 	Unregister(ctx context.Context) error
@@ -129,12 +135,12 @@ func WorkingDirectory(ctx context.Context) (afero.File, error) {
 	if !ok {
 		return nil, sdk.WithStack(errors.New("unable to get working directory"))
 	}
-	log.Debug("WorkingDirectory> working directory is : %s", wd.Name())
+	log.Debug(ctx, "WorkingDirectory> working directory is : %s", wd.Name())
 	return wd, nil
 }
 
 func SetWorkingDirectory(ctx context.Context, s afero.File) context.Context {
-	log.Debug("SetWorkingDirectory> working directory is: %s", s.Name())
+	log.Debug(ctx, "SetWorkingDirectory> working directory is: %s", s.Name())
 	return context.WithValue(ctx, workDir, s)
 }
 
@@ -144,12 +150,12 @@ func KeysDirectory(ctx context.Context) (afero.File, error) {
 	if !ok {
 		return nil, fmt.Errorf("unable to get key directory (%T) %v", wdi, wdi)
 	}
-	log.Debug("KeysDirectory> working directory is : %s", wd.Name())
+	log.Debug(ctx, "KeysDirectory> working directory is : %s", wd.Name())
 	return wd, nil
 }
 
 func SetKeysDirectory(ctx context.Context, s afero.File) context.Context {
-	log.Debug("SetKeysDirectory> working directory is: %s", s.Name())
+	log.Debug(ctx, "SetKeysDirectory> working directory is: %s", s.Name())
 	return context.WithValue(ctx, keysDir, s)
 }
 
@@ -159,11 +165,11 @@ func TmpDirectory(ctx context.Context) (afero.File, error) {
 	if !ok {
 		return nil, fmt.Errorf("unable to get tmp directory (%T) %v", wdi, wdi)
 	}
-	log.Debug("TmpDirectory> working directory is : %s", wd.Name())
+	log.Debug(ctx, "TmpDirectory> working directory is : %s", wd.Name())
 	return wd, nil
 }
 
 func SetTmpDirectory(ctx context.Context, s afero.File) context.Context {
-	log.Debug("SetTmpDirectory> working directory is: %s", s.Name())
+	log.Debug(ctx, "SetTmpDirectory> working directory is: %s", s.Name())
 	return context.WithValue(ctx, tmpDir, s)
 }

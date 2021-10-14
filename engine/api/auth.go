@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/authentication"
 	"github.com/ovh/cds/engine/api/group"
@@ -168,8 +170,10 @@ func (api *API) postAuthSigninHandler() service.Handler {
 						return err
 					}
 				}
-				if err := group.CheckUserInDefaultGroup(ctx, tx, u.ID); err != nil {
-					return err
+				if !api.Config.Auth.DisableAddUserInDefaultGroup {
+					if err := group.CheckUserInDefaultGroup(ctx, tx, u.ID); err != nil {
+						return err
+					}
 				}
 			} else {
 				// Check if a user already exists for external username
@@ -236,10 +240,11 @@ func (api *API) postAuthSigninHandler() service.Handler {
 							return err
 						}
 
-						if err := group.CheckUserInDefaultGroup(ctx, tx, u.ID); err != nil {
-							return err
+						if !api.Config.Auth.DisableAddUserInDefaultGroup {
+							if err := group.CheckUserInDefaultGroup(ctx, tx, u.ID); err != nil {
+								return err
+							}
 						}
-
 						signupDone = true
 					}
 				}
@@ -261,13 +266,28 @@ func (api *API) postAuthSigninHandler() service.Handler {
 		}
 
 		// Generate a new session for consumer
-		session, err := authentication.NewSession(ctx, tx, consumer, driver.GetSessionDuration(), userInfo.MFA)
+		sessionDuration := driver.GetSessionDuration()
+		var session *sdk.AuthSession
+		if userInfo.MFA {
+			session, err = authentication.NewSessionWithMFA(ctx, tx, api.Cache, consumer, sessionDuration)
+		} else {
+			session, err = authentication.NewSession(ctx, tx, consumer, sessionDuration)
+		}
 		if err != nil {
 			return err
 		}
 
+		// Store the last authentication date on the consumer
+		now := time.Now()
+		consumer.LastAuthentication = &now
+		if err := authentication.UpdateConsumerLastAuthentication(ctx, tx, consumer); err != nil {
+			return err
+		}
+
+		log.Debug(ctx, "postAuthSigninHandler> new session %s created for %.2f seconds: %+v", session.ID, sessionDuration.Seconds(), session)
+
 		// Generate a jwt for current session
-		jwt, err := authentication.NewSessionJWT(session)
+		jwt, err := authentication.NewSessionJWT(session, userInfo.ExternalTokenID)
 		if err != nil {
 			return err
 		}
@@ -282,7 +302,7 @@ func (api *API) postAuthSigninHandler() service.Handler {
 		}
 
 		// Set a cookie with the jwt token
-		api.SetCookie(w, service.JWTCookieName, jwt, session.ExpireAt)
+		api.SetCookie(w, service.JWTCookieName, jwt, session.ExpireAt, true)
 
 		// Prepare http response
 		resp := sdk.AuthConsumerSigninResponse{
@@ -304,7 +324,7 @@ func (api *API) postAuthSignoutHandler() service.Handler {
 		}
 
 		// Delete the jwt cookie value
-		api.UnsetCookie(w, service.JWTCookieName)
+		api.UnsetCookie(w, service.JWTCookieName, true)
 
 		return service.WriteJSON(w, nil, http.StatusOK)
 	}
@@ -347,7 +367,7 @@ func (api *API) postAuthDetachHandler() service.Handler {
 
 		// If we just removed the current consumer, clean http cookie.
 		if consumer.ID == currentConsumer.ID {
-			api.UnsetCookie(w, service.JWTCookieName)
+			api.UnsetCookie(w, service.JWTCookieName, true)
 		}
 
 		return service.WriteJSON(w, nil, http.StatusOK)
@@ -356,14 +376,23 @@ func (api *API) postAuthDetachHandler() service.Handler {
 
 func (api *API) getAuthMe() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		m := getAuthDriverManifest(ctx)
 		c := getAPIConsumer(ctx)
 		s := getAuthSession(ctx)
-		if c == nil || s == nil {
+		if m == nil || c == nil || s == nil {
 			return sdk.WithStack(sdk.ErrUnauthorized)
 		}
+
+		// Clean user and consumer aggregated data
+		u := *c.AuthentifiedUser
+		u.Groups = nil
+		c.AuthentifiedUser = nil
+
 		return service.WriteJSON(w, sdk.AuthCurrentConsumerResponse{
-			Consumer: *c,
-			Session:  *s,
+			User:           u,
+			Consumer:       *c,
+			Session:        *s,
+			DriverManifest: *m,
 		}, http.StatusOK)
 	}
 }
@@ -378,6 +407,8 @@ func (api *API) getAuthSession() service.Handler {
 		if !isAdmin(ctx) {
 			return sdk.WithStack(sdk.ErrUnauthorized)
 		}
+
+		trackSudo(ctx, w)
 
 		vars := mux.Vars(r)
 		sessionID := vars["sessionID"]

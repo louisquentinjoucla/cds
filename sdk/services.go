@@ -75,7 +75,7 @@ func (c *ServiceConfig) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, c), "cannot unmarshal ServiceConfig")
+	return WrapError(JSONUnmarshal(source, c), "cannot unmarshal ServiceConfig")
 }
 
 // ServiceConfiguration is the configuration of service
@@ -93,5 +93,7 @@ type ServiceConfiguration struct {
 }
 
 type CDNConfig struct {
-	TCPURL string `json:"tcp_url"`
+	TCPURL          string `json:"tcp_url"`
+	TCPURLEnableTLS bool   `json:"tcp_url_enable_tls"`
+	HTTPURL         string `json:"http_url"`
 }

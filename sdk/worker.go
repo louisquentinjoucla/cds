@@ -56,6 +56,8 @@ type WorkerArgs struct {
 	GraylogExtraKey   string `json:"graylog_extra_key"`
 	GraylogExtraValue string `json:"graylog_extra_value"`
 	WorkerBinary      string
+	// Env variables
+	InjectEnvVars map[string]string `json:"inject_env_vars"`
 }
 
 // TemplateEnvs return envs interpolated with worker arguments
@@ -77,15 +79,18 @@ func TemplateEnvs(args WorkerArgs, envs map[string]string) (map[string]string, e
 
 // WorkflowNodeJobRunData is returned to worker in answer to postTakeWorkflowJobHandler
 type WorkflowNodeJobRunData struct {
-	NodeJobRun      WorkflowNodeJobRun
-	Secrets         []Variable
-	Number          int64
-	SubNumber       int64
-	SigningKey      string
-	GelfServiceAddr string
-	ProjectKey      string
-	WorkflowName    string
-	WorkflowID      int64
-	RunID           int64
-	NodeRunName     string
+	NodeJobRun               WorkflowNodeJobRun
+	Secrets                  []Variable
+	Features                 map[FeatureName]bool
+	Number                   int64
+	SubNumber                int64
+	SigningKey               string
+	GelfServiceAddr          string
+	GelfServiceAddrEnableTLS bool
+	CDNHttpAddr              string
+	ProjectKey               string
+	WorkflowName             string
+	WorkflowID               int64
+	RunID                    int64
+	NodeRunName              string
 }

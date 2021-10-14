@@ -7,7 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
+
+	"github.com/spf13/afero"
 
 	"github.com/gorilla/websocket"
 	"github.com/sguiheux/go-coverage"
@@ -36,23 +39,23 @@ type TemplateClient interface {
 
 // Admin expose all function to CDS administration
 type Admin interface {
-	AdminDatabaseMigrationDelete(id string) error
-	AdminDatabaseMigrationUnlock(id string) error
-	AdminDatabaseMigrationsList() ([]sdk.DatabaseMigrationStatus, error)
-	AdminDatabaseSignaturesResume() (sdk.CanonicalFormUsageResume, error)
-	AdminDatabaseSignaturesRollEntity(e string) error
-	AdminDatabaseSignaturesRollAllEntities() error
-	AdminDatabaseListEncryptedEntities() ([]string, error)
-	AdminDatabaseRollEncryptedEntity(e string) error
-	AdminDatabaseRollAllEncryptedEntities() error
+	AdminDatabaseMigrationDelete(service string, id string) error
+	AdminDatabaseMigrationUnlock(service string, id string) error
+	AdminDatabaseMigrationsList(service string) ([]sdk.DatabaseMigrationStatus, error)
+	AdminDatabaseSignaturesResume(service string) (sdk.CanonicalFormUsageResume, error)
+	AdminDatabaseSignaturesRollEntity(service string, e string) error
+	AdminDatabaseSignaturesRollAllEntities(service string) error
+	AdminDatabaseListEncryptedEntities(service string) ([]string, error)
+	AdminDatabaseRollEncryptedEntity(service string, e string) error
+	AdminDatabaseRollAllEncryptedEntities(service string) error
 	AdminCDSMigrationList() ([]sdk.Migration, error)
 	AdminCDSMigrationCancel(id int64) error
 	AdminCDSMigrationReset(id int64) error
 	AdminWorkflowUpdateMaxRuns(projectKey string, workflowName string, maxRuns int64) error
 	Features() ([]sdk.Feature, error)
 	FeatureCreate(f sdk.Feature) error
-	FeatureDelete(name string) error
-	FeatureGet(name string) (sdk.Feature, error)
+	FeatureDelete(name sdk.FeatureName) error
+	FeatureGet(name sdk.FeatureName) (sdk.Feature, error)
 	FeatureUpdate(f sdk.Feature) error
 	Services() ([]sdk.Service, error)
 	ServicesByName(name string) (*sdk.Service, error)
@@ -158,7 +161,6 @@ type EventsClient interface {
 type DownloadClient interface {
 	Download() ([]sdk.DownloadableResource, error)
 	DownloadURLFromAPI(name, os, arch, variant string) string
-	DownloadURLFromGithub(filename string) (string, error)
 }
 
 // ActionClient exposes actions related functions
@@ -224,6 +226,7 @@ type ProjectClient interface {
 	ProjectIntegrationDelete(projectKey string, integrationName string) error
 	ProjectRepositoryManagerList(projectKey string) ([]sdk.ProjectVCSServer, error)
 	ProjectRepositoryManagerDelete(projectKey string, repoManagerName string, force bool) error
+	ProjectAccess(ctx context.Context, projectKey, sessionID string, itemType sdk.CDNItemType) error
 }
 
 // ProjectKeysClient exposes project keys related functions
@@ -241,13 +244,15 @@ type ProjectVariablesClient interface {
 	ProjectVariableGet(projectKey string, varName string) (*sdk.Variable, error)
 	ProjectVariableUpdate(projectKey string, variable *sdk.Variable) error
 	VariableEncrypt(projectKey string, varName string, content string) (*sdk.Variable, error)
+	VariableListEncrypt(projectKey string) ([]sdk.Secret, error)
+	VariableEncryptDelete(projectKey, name string) error
 }
 
 // QueueClient exposes queue related functions
 type QueueClient interface {
-	QueueWorkflowNodeJobRun(status ...string) ([]sdk.WorkflowNodeJobRun, error)
+	QueueWorkflowNodeJobRun(mods ...RequestModifier) ([]sdk.WorkflowNodeJobRun, error)
 	QueueCountWorkflowNodeJobRun(since *time.Time, until *time.Time, modelType string, ratioService *int) (sdk.WorkflowNodeJobRunCount, error)
-	QueuePolling(ctx context.Context, goRoutines *sdk.GoRoutines, jobs chan<- sdk.WorkflowNodeJobRun, errs chan<- error, delay time.Duration, modelType string, ratioService *int) error
+	QueuePolling(ctx context.Context, goRoutines *sdk.GoRoutines, jobs chan<- sdk.WorkflowNodeJobRun, errs chan<- error, delay time.Duration, ms ...RequestModifier) error
 	QueueTakeJob(ctx context.Context, job sdk.WorkflowNodeJobRun) (*sdk.WorkflowNodeJobRunData, error)
 	QueueJobBook(ctx context.Context, id int64) (sdk.WorkflowNodeJobRunBooked, error)
 	QueueJobRelease(ctx context.Context, id int64) error
@@ -255,15 +260,16 @@ type QueueClient interface {
 	QueueJobSendSpawnInfo(ctx context.Context, id int64, in []sdk.SpawnInfo) error
 	QueueSendCoverage(ctx context.Context, id int64, report coverage.Report) error
 	QueueSendUnitTests(ctx context.Context, id int64, report venom.Tests) error
-	QueueSendLogs(ctx context.Context, id int64, log sdk.Log) error
 	QueueSendVulnerability(ctx context.Context, id int64, report sdk.VulnerabilityWorkerReport) error
 	QueueSendStepResult(ctx context.Context, id int64, res sdk.StepStatus) error
 	QueueSendResult(ctx context.Context, id int64, res sdk.Result) error
 	QueueArtifactUpload(ctx context.Context, projectKey, integrationName string, nodeJobRunID int64, tag, filePath string) (bool, time.Duration, error)
 	QueueStaticFilesUpload(ctx context.Context, projectKey, integrationName string, nodeJobRunID int64, name, entrypoint, staticKey string, tarContent io.Reader) (string, bool, time.Duration, error)
 	QueueJobTag(ctx context.Context, jobID int64, tags []sdk.WorkflowRunTag) error
-	QueueServiceLogs(ctx context.Context, logs []sdk.ServiceLog) error
 	QueueJobSetVersion(ctx context.Context, jobID int64, version sdk.WorkflowRunVersion) error
+	QueueWorkerCacheLink(ctx context.Context, jobID int64, tag string) (sdk.CDNItemLinks, error)
+	QueueWorkflowRunResultsAdd(ctx context.Context, jobID int64, addRequest sdk.WorkflowRunResult) error
+	QueueWorkflowRunResultCheck(ctx context.Context, jobID int64, runResultCheck sdk.WorkflowRunResultCheck) (int, error)
 }
 
 // UserClient exposes users functions
@@ -293,6 +299,13 @@ type WorkerClient interface {
 	WorkerModelSecretList(groupName, name string) (sdk.WorkerModelSecrets, error)
 	WorkerRegister(ctx context.Context, authToken string, form sdk.WorkerRegistrationForm) (*sdk.Worker, bool, error)
 	WorkerSetStatus(ctx context.Context, status string) error
+	CDNClient
+}
+
+type CDNClient interface {
+	CDNItemUpload(ctx context.Context, cdnAddr string, signature string, fs afero.Fs, path string) (time.Duration, error)
+	CDNItemDownload(ctx context.Context, cdnAddr string, hash string, itemType sdk.CDNItemType, md5 string, writer io.WriteSeeker) error
+	CDNItemStream(ctx context.Context, cdnAddr string, hash string, itemType sdk.CDNItemType) (io.Reader, error)
 }
 
 // HookClient exposes functions used for hooks services
@@ -309,21 +322,21 @@ type ServiceClient interface {
 // WorkflowClient exposes workflows functions
 type WorkflowClient interface {
 	WorkflowSearch(opts ...RequestModifier) ([]sdk.Workflow, error)
-	WorkflowRunsAndNodesIDs(projectkey string) ([]sdk.WorkflowNodeRunIdentifiers, error)
 	WorkflowList(projectKey string, opts ...RequestModifier) ([]sdk.Workflow, error)
 	WorkflowGet(projectKey, name string, opts ...RequestModifier) (*sdk.Workflow, error)
 	WorkflowUpdate(projectKey, name string, wf *sdk.Workflow) error
-	WorkflowDelete(projectKey string, workflowName string) error
+	WorkflowDelete(projectKey string, workflowName string, opts ...RequestModifier) error
 	WorkflowLabelAdd(projectKey, name, labelName string) error
 	WorkflowLabelDelete(projectKey, name string, labelID int64) error
 	WorkflowGroupAdd(projectKey, name, groupName string, permission int) error
 	WorkflowGroupDelete(projectKey, name, groupName string) error
 	WorkflowRunGet(projectKey string, workflowName string, number int64) (*sdk.WorkflowRun, error)
 	WorkflowRunsDeleteByBranch(projectKey string, workflowName string, branch string) error
-	WorkflowRunResync(projectKey string, workflowName string, number int64) (*sdk.WorkflowRun, error)
 	WorkflowRunSearch(projectKey string, offset, limit int64, filter ...Filter) ([]sdk.WorkflowRun, error)
 	WorkflowRunList(projectKey string, workflowName string, offset, limit int64) ([]sdk.WorkflowRun, error)
 	WorkflowRunArtifacts(projectKey string, name string, number int64) ([]sdk.WorkflowNodeRunArtifact, error)
+	WorkflowRunArtifactsLinks(projectKey string, name string, number int64) (sdk.CDNItemLinks, error)
+	WorkflowRunResultsList(ctx context.Context, projectKey string, name string, number int64) ([]sdk.WorkflowRunResult, error)
 	WorkflowRunFromHook(projectKey string, workflowName string, hook sdk.WorkflowNodeRunHookEvent) (*sdk.WorkflowRun, error)
 	WorkflowRunFromManual(projectKey string, workflowName string, manual sdk.WorkflowNodeRunManual, number, fromNodeID int64) (*sdk.WorkflowRun, error)
 	WorkflowRunNumberGet(projectKey string, workflowName string) (*sdk.WorkflowRunNumber, error)
@@ -332,17 +345,21 @@ type WorkflowClient interface {
 	WorkflowNodeStop(projectKey string, workflowName string, number, fromNodeID int64) (*sdk.WorkflowNodeRun, error)
 	WorkflowNodeRun(projectKey string, name string, number int64, nodeRunID int64) (*sdk.WorkflowNodeRun, error)
 	WorkflowNodeRunArtifactDownload(projectKey string, name string, a sdk.WorkflowNodeRunArtifact, w io.Writer) error
+	WorkflowNodeRunJobStepLinks(ctx context.Context, projectKey string, workflowName string, nodeRunID, job int64) (*sdk.CDNLogLinks, error)
 	WorkflowNodeRunJobStepLink(ctx context.Context, projectKey string, workflowName string, nodeRunID, job int64, step int64) (*sdk.CDNLogLink, error)
-	WorkflowNodeRunJobStepLog(ctx context.Context, projectKey string, workflowName string, nodeRunID, job int64, step int64) (*sdk.BuildState, error)
 	WorkflowNodeRunJobServiceLink(ctx context.Context, projectKey string, workflowName string, nodeRunID, job int64, serviceName string) (*sdk.CDNLogLink, error)
-	WorkflowNodeRunJobServiceLog(ctx context.Context, projectKey string, workflowName string, nodeRunID, job int64, serviceName string) (*sdk.ServiceLog, error)
-	WorkflowLogAccess(ctx context.Context, projectKey, workflowName, sessionID string) error
+	WorkflowAccess(ctx context.Context, projectKey string, workflowID int64, sessionID string, itemType sdk.CDNItemType) error
 	WorkflowLogDownload(ctx context.Context, link sdk.CDNLogLink) ([]byte, error)
 	WorkflowNodeRunRelease(projectKey string, workflowName string, runNumber int64, nodeRunID int64, release sdk.WorkflowNodeRunRelease) error
 	WorkflowAllHooksList() ([]sdk.NodeHook, error)
+	WorkflowAllHooksExecutions() ([]string, error)
 	WorkflowCachePush(projectKey, integrationName, ref string, tarContent io.Reader, size int) error
 	WorkflowCachePull(projectKey, integrationName, ref string) (io.Reader, error)
 	WorkflowTransformAsCode(projectKey, workflowName, branch, message string) (*sdk.Operation, error)
+}
+
+type WorkflowV3Client interface {
+	WorkflowV3Get(projectKey string, workflowName string, opts ...RequestModifier) ([]byte, error)
 }
 
 // MonitoringClient exposes monitoring functions
@@ -377,7 +394,7 @@ type Interface interface {
 	EnvironmentClient
 	EventsClient
 	ExportImportInterface
-	FeatureEnabled(name string, params map[string]string) (sdk.FeatureEnabledResponse, error)
+	FeatureEnabled(name sdk.FeatureName, params map[string]string) (sdk.FeatureEnabledResponse, error)
 	GroupClient
 	GRPCPluginsClient
 	BroadcastClient
@@ -395,6 +412,7 @@ type Interface interface {
 	UserClient
 	WorkerClient
 	WorkflowClient
+	WorkflowV3Client
 	MonitoringClient
 	HookClient
 	Version() (*sdk.Version, error)
@@ -415,6 +433,8 @@ type WorkerInterface interface {
 	WorkflowRunList(projectKey string, workflowName string, offset, limit int64) ([]sdk.WorkflowRun, error)
 	WorkflowNodeRunArtifactDownload(projectKey string, name string, a sdk.WorkflowNodeRunArtifact, w io.Writer) error
 	WorkflowNodeRunRelease(projectKey string, workflowName string, runNumber int64, nodeRunID int64, release sdk.WorkflowNodeRunRelease) error
+	WorkflowRunArtifactsLinks(projectKey string, name string, number int64) (sdk.CDNItemLinks, error)
+	WorkflowRunResultsList(ctx context.Context, projectKey string, name string, number int64) ([]sdk.WorkflowRunResult, error)
 }
 
 // Raw is a low-level interface exposing HTTP functions
@@ -425,8 +445,9 @@ type Raw interface {
 	DeleteJSON(ctx context.Context, path string, out interface{}, mods ...RequestModifier) (int, error)
 	RequestJSON(ctx context.Context, method, path string, in interface{}, out interface{}, mods ...RequestModifier) ([]byte, http.Header, int, error)
 	Request(ctx context.Context, method string, path string, body io.Reader, mods ...RequestModifier) ([]byte, http.Header, int, error)
+	Stream(ctx context.Context, httpClient HTTPClient, method string, path string, body io.Reader, mods ...RequestModifier) (io.ReadCloser, http.Header, int, error)
 	HTTPClient() *http.Client
-	HTTPSSEClient() *http.Client
+	HTTPNoTimeoutClient() *http.Client
 	HTTPWebsocketClient() *websocket.Dialer
 }
 
@@ -526,6 +547,24 @@ func WithKeys() RequestModifier {
 	}
 }
 
+// WithDeepPipelines allows to get pipelines details on a workflow.
+func WithDeepPipelines() RequestModifier {
+	return func(r *http.Request) {
+		q := r.URL.Query()
+		q.Set("withDeepPipelines", "true")
+		r.URL.RawQuery = q.Encode()
+	}
+}
+
+// Full allows to get job details on a workflow v3.
+func Full() RequestModifier {
+	return func(r *http.Request) {
+		q := r.URL.Query()
+		q.Set("full", "true")
+		r.URL.RawQuery = q.Encode()
+	}
+}
+
 // WithTemplate allow a provider to retrieve a workflow with template if exists.
 func WithTemplate() RequestModifier {
 	return func(r *http.Request) {
@@ -557,6 +596,46 @@ func ContentType(value string) RequestModifier {
 	}
 }
 
+func Status(status ...string) RequestModifier {
+	return func(r *http.Request) {
+		if len(status) > 0 {
+			q := r.URL.Query()
+			for _, s := range status {
+				q.Add("status", s)
+			}
+			r.URL.RawQuery = q.Encode()
+		}
+	}
+}
+
+func Region(regions ...string) RequestModifier {
+	return func(r *http.Request) {
+		if len(regions) > 0 {
+			q := r.URL.Query()
+			for _, r := range regions {
+				q.Add("region", r)
+			}
+			r.URL.RawQuery = q.Encode()
+		}
+	}
+}
+
+func RatioService(ratioService int) RequestModifier {
+	return func(r *http.Request) {
+		q := r.URL.Query()
+		q.Set("ratioService", strconv.Itoa(ratioService))
+		r.URL.RawQuery = q.Encode()
+	}
+}
+
+func ModelType(modelType string) RequestModifier {
+	return func(r *http.Request) {
+		q := r.URL.Query()
+		q.Set("modelType", modelType)
+		r.URL.RawQuery = q.Encode()
+	}
+}
+
 // AuthClient is the interface for authentication management.
 type AuthClient interface {
 	AuthDriverList() (sdk.AuthDriverResponse, error)
@@ -568,7 +647,7 @@ type AuthClient interface {
 	AuthConsumerSignout() error
 	AuthConsumerListByUser(username string) (sdk.AuthConsumers, error)
 	AuthConsumerDelete(username, id string) error
-	AuthConsumerRegen(username, id string) (sdk.AuthConsumerCreateResponse, error)
+	AuthConsumerRegen(username, id string, newDuration int64, overlapDuration string) (sdk.AuthConsumerCreateResponse, error)
 	AuthConsumerCreateForUser(username string, request sdk.AuthConsumer) (sdk.AuthConsumerCreateResponse, error)
 	AuthSessionListByUser(username string) (sdk.AuthSessions, error)
 	AuthSessionDelete(username, id string) error

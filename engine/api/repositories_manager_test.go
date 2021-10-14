@@ -69,7 +69,7 @@ func TestAPI_detachRepositoriesManagerHandler(t *testing.T) {
 					return writeError(w, err)
 				}
 				// Default payload on workflow insert
-			case "/vcs/github/repos/sguiheux/demo/branches":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=&default=true":
 				b := sdk.VCSBranch{
 					Default:      true,
 					DisplayID:    "master",
@@ -79,7 +79,7 @@ func TestAPI_detachRepositoriesManagerHandler(t *testing.T) {
 					return writeError(w, err)
 				}
 				// NEED GET BRANCH TO GET LATEST COMMIT
-			case "/vcs/github/repos/sguiheux/demo/branches/?branch=master":
+			case "/vcs/github/repos/sguiheux/demo/branches/?branch=master&default=false":
 				b := sdk.VCSBranch{
 					Default:      false,
 					DisplayID:    "master",
@@ -278,7 +278,7 @@ vcs_ssh_key: proj-blabla
 	w2.WorkflowData.Node.Hooks = append(w2.WorkflowData.Node.Hooks[:index], w2.WorkflowData.Node.Hooks[index+1:]...)
 
 	// save the workflow with the repositorywebhook deleted
-	t.Log("Updating the workflo without the repositorywebhook=====")
+	t.Log("Updating the workflow without the repositorywebhook=====")
 	test.NoError(t, workflow.Update(context.TODO(), db, api.Cache, *proj, w2, workflow.UpdateOptions{}))
 
 	req, err = http.NewRequest("POST", uri, nil)

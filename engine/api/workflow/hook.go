@@ -8,13 +8,13 @@ import (
 	"strings"
 
 	"github.com/fsamin/go-dump"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/repositoriesmanager"
 	"github.com/ovh/cds/engine/api/services"
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -39,7 +39,7 @@ func hookUnregistration(ctx context.Context, db gorpmapper.SqlExecutorWithTx, st
 
 	// Delete from vcs configuration if needed
 	for _, h := range hookToDelete {
-		if h.HookModelName == sdk.RepositoryWebHookModelName {
+		if h.HookModelName == sdk.RepositoryWebHookModelName || h.HookModelName == sdk.GerritHookModelName {
 			// Call VCS to know if repository allows webhook and get the configuration fields
 			projectVCSServer, err := repositoriesmanager.LoadProjectVCSServerLinkByProjectKeyAndVCSServerName(ctx, db, proj.Key, h.Config["vcsServer"].Value)
 			if err == nil {
@@ -116,6 +116,20 @@ func hookRegistration(ctx context.Context, db gorpmapper.SqlExecutorWithTx, stor
 			Configurable: false,
 		}
 
+		if h.IsRepositoryWebHook() || h.HookModelName == sdk.GitPollerModelName || h.HookModelName == sdk.GerritHookModelName {
+			if wf.WorkflowData.Node.Context.ApplicationID == 0 || wf.Applications[wf.WorkflowData.Node.Context.ApplicationID].RepositoryFullname == "" || wf.Applications[wf.WorkflowData.Node.Context.ApplicationID].VCSServer == "" {
+				return sdk.NewErrorFrom(sdk.ErrForbidden, "cannot create a git poller or repository webhook on an application without a repository")
+			}
+			h.Config[sdk.HookConfigVCSServer] = sdk.WorkflowNodeHookConfigValue{
+				Value:        wf.Applications[wf.WorkflowData.Node.Context.ApplicationID].VCSServer,
+				Configurable: false,
+			}
+			h.Config[sdk.HookConfigRepoFullName] = sdk.WorkflowNodeHookConfigValue{
+				Value:        wf.Applications[wf.WorkflowData.Node.Context.ApplicationID].RepositoryFullname,
+				Configurable: false,
+			}
+		}
+
 		if h.UUID == "" && oldHooksByRef != nil {
 			// search previous hook configuration by ref
 			previousHook, has := oldHooksByRef[h.Ref()]
@@ -138,33 +152,26 @@ func hookRegistration(ctx context.Context, db gorpmapper.SqlExecutorWithTx, stor
 					h.Config[sdk.HookConfigEventFilter] = previousHook.Config[sdk.HookConfigEventFilter]
 				}
 				continue
+			} else if has {
+				// If repository change, force new UUID to be able to delete the previous one
+				if h.IsRepositoryWebHook() || h.HookModelName == sdk.GitPollerModelName || h.HookModelName == sdk.GerritHookModelName {
+					if h.Config[sdk.HookConfigVCSServer].Value != previousHook.Config[sdk.HookConfigVCSServer].Value ||
+						h.Config[sdk.HookConfigRepoFullName].Value != previousHook.Config[sdk.HookConfigRepoFullName].Value {
+						h.UUID = sdk.UUID()
+					}
+				}
 			}
 
 		}
-		// initialize a UUID is there no uuid
 		if h.UUID == "" {
 			h.UUID = sdk.UUID()
-		}
-
-		if h.IsRepositoryWebHook() || h.HookModelName == sdk.GitPollerModelName || h.HookModelName == sdk.GerritHookModelName {
-			if wf.WorkflowData.Node.Context.ApplicationID == 0 || wf.Applications[wf.WorkflowData.Node.Context.ApplicationID].RepositoryFullname == "" || wf.Applications[wf.WorkflowData.Node.Context.ApplicationID].VCSServer == "" {
-				return sdk.NewErrorFrom(sdk.ErrForbidden, "cannot create a git poller or repository webhook on an application without a repository")
-			}
-			h.Config[sdk.HookConfigVCSServer] = sdk.WorkflowNodeHookConfigValue{
-				Value:        wf.Applications[wf.WorkflowData.Node.Context.ApplicationID].VCSServer,
-				Configurable: false,
-			}
-			h.Config[sdk.HookConfigRepoFullName] = sdk.WorkflowNodeHookConfigValue{
-				Value:        wf.Applications[wf.WorkflowData.Node.Context.ApplicationID].RepositoryFullname,
-				Configurable: false,
-			}
 		}
 
 		if err := updateSchedulerPayload(ctx, db, store, proj, wf, h); err != nil {
 			return err
 		}
 		hookToUpdate[h.UUID] = *h
-		log.Debug("workflow.hookrRegistration> following hook must be updated: %+v", h)
+		log.Debug(ctx, "workflow.hookrRegistration> following hook must be updated: %+v", h)
 	}
 
 	if len(hookToUpdate) > 0 {
@@ -188,7 +195,7 @@ func hookRegistration(ctx context.Context, db gorpmapper.SqlExecutorWithTx, stor
 			}
 			v, ok := h.Config[sdk.HookConfigWebHookID]
 			if h.IsRepositoryWebHook() {
-				log.Debug("workflow.hookRegistration> managing vcs configuration: %+v", h)
+				log.Debug(ctx, "workflow.hookRegistration> managing vcs configuration: %+v", h)
 			}
 			if h.IsRepositoryWebHook() && h.Config["vcsServer"].Value != "" {
 				if !ok || v.Value == "" {
@@ -201,7 +208,7 @@ func hookRegistration(ctx context.Context, db gorpmapper.SqlExecutorWithTx, stor
 						// hook not found on VCS, perhaps manually deleted on vcs
 						// we try to create a new hook
 						if sdk.ErrorIs(err, sdk.ErrNotFound) {
-							log.Warning(ctx, "hook %s not found on %s/%s", v.Value, h.Config["vcsServer"].Value, h.Config["repoFullName"].Value)
+							log.Warn(ctx, "hook %s not found on %s/%s", v.Value, h.Config["vcsServer"].Value, h.Config["repoFullName"].Value)
 							if err := createVCSConfiguration(ctx, db, store, proj, h); err != nil {
 								return err
 							}
@@ -231,10 +238,10 @@ func updateSchedulerPayload(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 			var bodyJSON interface{}
 			//Try to parse the body as an array
 			bodyJSONArray := []interface{}{}
-			if err := json.Unmarshal([]byte(h.Config["payload"].Value), &bodyJSONArray); err != nil {
+			if err := sdk.JSONUnmarshal([]byte(h.Config["payload"].Value), &bodyJSONArray); err != nil {
 				//Try to parse the body as a map
 				bodyJSONMap := map[string]interface{}{}
-				if err2 := json.Unmarshal([]byte(h.Config["payload"].Value), &bodyJSONMap); err2 == nil {
+				if err2 := sdk.JSONUnmarshal([]byte(h.Config["payload"].Value), &bodyJSONMap); err2 == nil {
 					bodyJSON = bodyJSONMap
 				}
 			} else {
@@ -293,7 +300,7 @@ func createVCSConfiguration(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 	// Call VCS to know if repository allows webhook and get the configuration fields
 	projectVCSServer, err := repositoriesmanager.LoadProjectVCSServerLinkByProjectKeyAndVCSServerName(ctx, db, proj.Key, h.Config["vcsServer"].Value)
 	if err != nil {
-		log.Debug("createVCSConfiguration> No vcsServer found: %v", err)
+		log.Debug(ctx, "createVCSConfiguration> No vcsServer found: %v", err)
 		return nil
 	}
 
@@ -357,7 +364,7 @@ func updateVCSConfiguration(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 	// Call VCS to know if repository allows webhook and get the configuration fields
 	projectVCSServer, err := repositoriesmanager.LoadProjectVCSServerLinkByProjectKeyAndVCSServerName(ctx, db, proj.Key, h.Config["vcsServer"].Value)
 	if err != nil {
-		log.Debug("createVCSConfiguration> No vcsServer found: %v", err)
+		log.Debug(ctx, "createVCSConfiguration> No vcsServer found: %v", err)
 		return nil
 	}
 
@@ -417,17 +424,11 @@ func DefaultPayload(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 				return wf.WorkflowData.Node.Context.DefaultPayload, sdk.WrapError(err, "cannot get authorized client")
 			}
 
-			branches, err := client.Branches(ctx, app.RepositoryFullname)
+			branch, err := repositoriesmanager.DefaultBranch(ctx, client, app.RepositoryFullname)
 			if err != nil {
 				return wf.WorkflowData.Node.Context.DefaultPayload, err
 			}
-
-			for _, branch := range branches {
-				if branch.Default {
-					defaultBranch = branch.DisplayID
-					break
-				}
-			}
+			defaultBranch = branch.DisplayID
 		}
 
 		defaultPayload = wf.WorkflowData.Node.Context.DefaultPayload
@@ -437,7 +438,7 @@ func DefaultPayload(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 				GitRepository: app.RepositoryFullname,
 			}
 			defaultPayloadBtes, _ := json.Marshal(structuredDefaultPayload)
-			if err := json.Unmarshal(defaultPayloadBtes, &defaultPayload); err != nil {
+			if err := sdk.JSONUnmarshal(defaultPayloadBtes, &defaultPayload); err != nil {
 				return nil, err
 			}
 		} else if defaultPayloadMap, err := wf.WorkflowData.Node.Context.DefaultPayloadToMap(); err == nil && defaultPayloadMap["git.branch"] == "" {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/lib/pq"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/ascode"
@@ -18,7 +19,7 @@ import (
 	"github.com/ovh/cds/engine/api/workflowtemplate"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/ovh/cds/sdk/telemetry"
 )
 
 // LoadOptions custom option for loading workflow
@@ -203,7 +204,7 @@ func (dao WorkflowDAO) Query() gorpmapping.Query {
 
 	q := gorpmapping.NewQuery(queryString).Args(args...)
 
-	log.Debug("workflow.WorkflowDAO.Query> %v", q)
+	log.Debug(context.TODO(), "workflow.WorkflowDAO.Query> %v", q)
 
 	return q
 }
@@ -213,40 +214,40 @@ func (dao WorkflowDAO) GetLoaders() []gorpmapping.GetOptionFunc {
 	var loaders = []gorpmapping.GetOptionFunc{}
 
 	if dao.Loaders.WithApplications {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withApplications(db, ws)
+			return dao.withApplications(ctx, db, ws)
 		})
 	}
 
 	if dao.Loaders.WithEnvironments {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withEnvironments(db, ws)
+			return dao.withEnvironments(ctx, db, ws)
 		})
 	}
 
 	if dao.Loaders.WithDeepPipelines {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withPipelines(db, ws, true)
+			return dao.withPipelines(ctx, db, ws, true)
 		})
 	} else if dao.Loaders.WithPipelines {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withPipelines(db, ws, false)
+			return dao.withPipelines(ctx, db, ws, false)
 		})
 	}
 
 	if dao.Loaders.WithAsCodeUpdateEvents {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withAsCodeUpdateEvents(db, ws)
+			return dao.withAsCodeUpdateEvents(ctx, db, ws)
 		})
 	}
 
 	if !dao.Loaders.WithIcon {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
 			for j := range *ws {
 				w := (*ws)[j]
@@ -257,54 +258,57 @@ func (dao WorkflowDAO) GetLoaders() []gorpmapping.GetOptionFunc {
 	}
 
 	if dao.Loaders.WithIntegrations {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withIntegrations(db, ws)
+			return dao.withIntegrations(ctx, db, ws)
 		})
 	}
 
 	if dao.Loaders.WithTemplate {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withTemplates(db, ws)
+			return dao.withTemplates(ctx, db, ws)
 		})
 	}
 
 	if dao.Loaders.WithLabels {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withLabels(db, ws)
+			return dao.withLabels(ctx, db, ws)
 		})
 	}
 
 	if dao.Loaders.WithFavoritesForUserID != "" {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withFavorites(db, ws, dao.Loaders.WithFavoritesForUserID)
+			return dao.withFavorites(ctx, db, ws, dao.Loaders.WithFavoritesForUserID)
 		})
 	}
 
 	if dao.Loaders.WithRuns != 0 {
-		loaders = append(loaders, func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		loaders = append(loaders, func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withRuns(db, ws, dao.Loaders.WithRuns)
+			return dao.withRuns(ctx, db, ws, dao.Loaders.WithRuns)
 		})
 	}
 
 	loaders = append(loaders,
-		func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withGroups(db, ws)
+			return dao.withGroups(ctx, db, ws)
 		},
-		func(m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
+		func(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i interface{}) error {
 			ws := i.(*[]Workflow)
-			return dao.withNotifications(db, ws)
+			return dao.withNotifications(ctx, db, ws)
 		})
 
 	return loaders
 }
 
-func (dao WorkflowDAO) withGroups(db gorp.SqlExecutor, ws *[]Workflow) error {
+func (dao WorkflowDAO) withGroups(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow) error {
+	_, end := telemetry.Span(ctx, "workflowDAO.withGroups")
+	defer end()
+
 	var mapIDs = map[int64]*Workflow{}
 	for _, w := range *ws {
 		mapIDs[w.ID] = &w
@@ -333,7 +337,10 @@ func (dao WorkflowDAO) withGroups(db gorp.SqlExecutor, ws *[]Workflow) error {
 	return nil
 }
 
-func (dao WorkflowDAO) withEnvironments(db gorp.SqlExecutor, ws *[]Workflow) error {
+func (dao WorkflowDAO) withEnvironments(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow) error {
+	_, end := telemetry.Span(ctx, "workflowDAO.withEnvironments")
+	defer end()
+
 	var mapIDs = map[int64]*sdk.Environment{}
 	for _, w := range *ws {
 		nodesArray := w.WorkflowData.Array()
@@ -384,7 +391,10 @@ func (dao WorkflowDAO) withEnvironments(db gorp.SqlExecutor, ws *[]Workflow) err
 	return nil
 }
 
-func (dao WorkflowDAO) withPipelines(db gorp.SqlExecutor, ws *[]Workflow, deep bool) error {
+func (dao WorkflowDAO) withPipelines(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow, deep bool) error {
+	_, end := telemetry.Span(ctx, "workflowDAO.withPipelines")
+	defer end()
+
 	var mapIDs = map[int64]*sdk.Pipeline{}
 	for _, w := range *ws {
 		nodesArray := w.WorkflowData.Array()
@@ -435,7 +445,10 @@ func (dao WorkflowDAO) withPipelines(db gorp.SqlExecutor, ws *[]Workflow, deep b
 	return nil
 }
 
-func (dao WorkflowDAO) withTemplates(db gorp.SqlExecutor, ws *[]Workflow) error {
+func (dao WorkflowDAO) withTemplates(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow) error {
+	ctx, end := telemetry.Span(ctx, "workflowDAO.withTemplates")
+	defer end()
+
 	var mapIDs = map[int64]struct{}{}
 	for _, w := range *ws {
 		mapIDs[w.ID] = struct{}{}
@@ -446,7 +459,7 @@ func (dao WorkflowDAO) withTemplates(db gorp.SqlExecutor, ws *[]Workflow) error 
 		ids = append(ids, id)
 	}
 
-	wtis, err := workflowtemplate.LoadInstanceByWorkflowIDs(context.Background(), db, ids, workflowtemplate.LoadInstanceOptions.WithTemplate)
+	wtis, err := workflowtemplate.LoadInstanceByWorkflowIDs(ctx, db, ids, workflowtemplate.LoadInstanceOptions.WithTemplate)
 	if err != nil {
 		return err
 	}
@@ -467,13 +480,16 @@ func (dao WorkflowDAO) withTemplates(db gorp.SqlExecutor, ws *[]Workflow) error 
 	return nil
 }
 
-func (dao WorkflowDAO) withIntegrations(db gorp.SqlExecutor, ws *[]Workflow) error {
+func (dao WorkflowDAO) withIntegrations(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow) error {
+	ctx, end := telemetry.Span(ctx, "workflowDAO.withIntegrations")
+	defer end()
+
 	var mapIDs = map[int64]*sdk.ProjectIntegration{}
 	for _, w := range *ws {
 		nodesArray := w.WorkflowData.Array()
 		for _, n := range nodesArray {
 			if n.Context != nil && n.Context.ProjectIntegrationID != 0 {
-				log.Debug("found ProjectIntegrationID=%d(%s) on workflow %d, node=%d", n.Context.ProjectIntegrationID, n.Context.ProjectIntegrationName, w.ID, n.ID)
+				log.Debug(context.TODO(), "found ProjectIntegrationID=%d(%s) on workflow %d, node=%d", n.Context.ProjectIntegrationID, n.Context.ProjectIntegrationName, w.ID, n.ID)
 				if _, ok := mapIDs[n.Context.ProjectIntegrationID]; !ok {
 					mapIDs[n.Context.ProjectIntegrationID] = nil
 				}
@@ -486,7 +502,7 @@ func (dao WorkflowDAO) withIntegrations(db gorp.SqlExecutor, ws *[]Workflow) err
 		ids = append(ids, id)
 	}
 
-	projectIntegrations, err := integration.LoadIntegrationsByIDs(db, ids)
+	projectIntegrations, err := integration.LoadIntegrationsByIDs(ctx, db, ids)
 	if err != nil {
 		return err
 	}
@@ -502,7 +518,7 @@ func (dao WorkflowDAO) withIntegrations(db gorp.SqlExecutor, ws *[]Workflow) err
 	for x := range *ws {
 		w := &(*ws)[x]
 		var err error
-		w.EventIntegrations, err = integration.LoadWorkflowIntegrationsByWorkflowID(db, w.ID)
+		w.Integrations, err = LoadWorkflowIntegrationsByWorkflowID(ctx, db, w.ID)
 		if err != nil {
 			return err
 		}
@@ -525,7 +541,7 @@ func (dao WorkflowDAO) withIntegrations(db gorp.SqlExecutor, ws *[]Workflow) err
 	return nil
 }
 
-func (dao WorkflowDAO) withAsCodeUpdateEvents(db gorp.SqlExecutor, ws *[]Workflow) error {
+func (dao WorkflowDAO) withAsCodeUpdateEvents(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow) error {
 	var ids = make([]int64, 0, len(*ws))
 	for _, w := range *ws {
 		ids = append(ids, w.ID)
@@ -550,7 +566,9 @@ func (dao WorkflowDAO) withAsCodeUpdateEvents(db gorp.SqlExecutor, ws *[]Workflo
 	return nil
 }
 
-func (dao WorkflowDAO) withApplications(db gorp.SqlExecutor, ws *[]Workflow) error {
+func (dao WorkflowDAO) withApplications(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow) error {
+	_, end := telemetry.Span(ctx, "workflowDAO.withApplications")
+	defer end()
 	var mapIDs = map[int64]*sdk.Application{}
 	for _, w := range *ws {
 		nodesArray := w.WorkflowData.Array()
@@ -605,7 +623,9 @@ func (dao WorkflowDAO) withApplications(db gorp.SqlExecutor, ws *[]Workflow) err
 	return nil
 }
 
-func (dao WorkflowDAO) withNotifications(db gorp.SqlExecutor, ws *[]Workflow) error {
+func (dao WorkflowDAO) withNotifications(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow) error {
+	_, end := telemetry.Span(ctx, "workflowDAO.withNotifications")
+	defer end()
 	var ids = make([]int64, 0, len(*ws))
 	for _, w := range *ws {
 		ids = append(ids, w.ID)
@@ -623,7 +643,9 @@ func (dao WorkflowDAO) withNotifications(db gorp.SqlExecutor, ws *[]Workflow) er
 	return nil
 }
 
-func (dao WorkflowDAO) withLabels(db gorp.SqlExecutor, ws *[]Workflow) error {
+func (dao WorkflowDAO) withLabels(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow) error {
+	_, end := telemetry.Span(ctx, "workflowDAO.withLabels")
+	defer end()
 	var ids = make([]int64, 0, len(*ws))
 	for _, w := range *ws {
 		ids = append(ids, w.ID)
@@ -646,13 +668,15 @@ func (dao WorkflowDAO) withLabels(db gorp.SqlExecutor, ws *[]Workflow) error {
 	return nil
 }
 
-func (dao WorkflowDAO) withRuns(db gorp.SqlExecutor, ws *[]Workflow, limit int) error {
+func (dao WorkflowDAO) withRuns(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow, limit int) error {
+	_, end := telemetry.Span(ctx, "workflowDAO.withRuns")
+	defer end()
 	var ids = make([]int64, 0, len(*ws))
 	for _, w := range *ws {
 		ids = append(ids, w.ID)
 	}
 
-	runs, err := LoadLastRuns(db, ids, limit)
+	runs, err := LoadLastRuns(ctx, db, ids, limit)
 	if err != nil {
 		return err
 	}
@@ -669,7 +693,9 @@ func (dao WorkflowDAO) withRuns(db gorp.SqlExecutor, ws *[]Workflow, limit int) 
 	return nil
 }
 
-func (dao WorkflowDAO) withFavorites(db gorp.SqlExecutor, ws *[]Workflow, userID string) error {
+func (dao WorkflowDAO) withFavorites(ctx context.Context, db gorp.SqlExecutor, ws *[]Workflow, userID string) error {
+	_, end := telemetry.Span(ctx, "workflowDAO.withFavorites")
+	defer end()
 	workflowIDs, err := UserFavoriteWorkflowIDs(db, userID)
 	if err != nil {
 		return err
@@ -684,6 +710,8 @@ func (dao WorkflowDAO) withFavorites(db gorp.SqlExecutor, ws *[]Workflow, userID
 }
 
 func (dao WorkflowDAO) Load(ctx context.Context, db gorp.SqlExecutor) (sdk.Workflow, error) {
+	ctx, end := telemetry.Span(ctx, "workflowDAO.Load")
+	defer end()
 	dao.Limit = 1
 	ws, err := dao.LoadAll(ctx, db)
 	if err != nil {
@@ -696,6 +724,8 @@ func (dao WorkflowDAO) Load(ctx context.Context, db gorp.SqlExecutor) (sdk.Workf
 }
 
 func (dao WorkflowDAO) LoadAll(ctx context.Context, db gorp.SqlExecutor) (sdk.Workflows, error) {
+	ctx, end := telemetry.Span(ctx, "workflowDAO.LoadAll")
+	defer end()
 	t0 := time.Now()
 
 	var workflows []Workflow

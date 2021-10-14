@@ -9,19 +9,19 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // LoadNodeRunJobInfo load infos (workflow_node_run_job_infos) for a job (workflow_node_run_job)
-func LoadNodeRunJobInfo(ctx context.Context, db gorp.SqlExecutor, jobID int64) ([]sdk.SpawnInfo, error) {
+func LoadNodeRunJobInfo(ctx context.Context, db gorp.SqlExecutor, nodeRunID int64, jobID int64) ([]sdk.SpawnInfo, error) {
 	res := []struct {
 		Bytes sql.NullString `db:"spawninfos"`
 	}{}
-	query := "SELECT spawninfos FROM workflow_node_run_job_info WHERE workflow_node_run_job_id = $1"
-	if _, err := db.Select(&res, query, jobID); err != nil {
+	query := "SELECT spawninfos FROM workflow_node_run_job_info WHERE workflow_node_run_id = $1 AND workflow_node_run_job_id = $2"
+	if _, err := db.Select(&res, query, nodeRunID, jobID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -33,7 +33,7 @@ func LoadNodeRunJobInfo(ctx context.Context, db gorp.SqlExecutor, jobID int64) (
 		spInfos := []sdk.SpawnInfo{}
 		if err := gorpmapping.JSONNullString(res[i].Bytes, &spInfos); err != nil {
 			// should never append, but log error
-			log.Warning(ctx, "wrong spawnInfos format: res: %v for id: %v err: %v", res[i].Bytes, jobID, err)
+			log.Warn(ctx, "wrong spawnInfos format: res: %v for id: %v err: %v", res[i].Bytes, jobID, err)
 			continue
 		}
 		spawnInfos = append(spawnInfos, spInfos...)
@@ -61,6 +61,6 @@ func insertNodeRunJobInfo(db gorp.SqlExecutor, info *sdk.WorkflowNodeJobRunInfo)
 		return sdk.WithStack(fmt.Errorf("unable to insert into workflow_node_run_job_info id = %d", info.WorkflowNodeJobRunID))
 	}
 
-	log.Debug("insertNodeRunJobInfo> on node run: %d (job run:%d)", info.WorkflowNodeRunID, info.WorkflowNodeJobRunID)
+	log.Debug(context.TODO(), "insertNodeRunJobInfo> on node run: %d (job run:%d)", info.WorkflowNodeRunID, info.WorkflowNodeJobRunID)
 	return nil
 }

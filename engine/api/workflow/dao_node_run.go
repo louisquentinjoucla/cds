@@ -8,15 +8,14 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
-	"github.com/lib/pq"
 	"github.com/ovh/venom"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/api/repositoriesmanager"
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -58,25 +57,8 @@ workflow_node_run.callback
 const nodeRunTestsField string = ", workflow_node_run.tests"
 const withLightNodeRunTestsField string = ", json_build_object('ko', workflow_node_run.tests->'ko', 'ok', workflow_node_run.tests->'ok', 'skipped', workflow_node_run.tests->'skipped', 'total', workflow_node_run.tests->'total') AS tests"
 
-func LoadNodeRunIDs(db gorp.SqlExecutor, wIDs []int64) ([]sdk.WorkflowNodeRunIdentifiers, error) {
-	query := `
-		SELECT workflow_run.id, workflow_run.workflow_id, workflow.name, workflow_run.num, workflow_node_run.id as node_run_id
-		FROM workflow_run
-		JOIN workflow ON workflow.id = workflow_run.workflow_id
-		JOIN workflow_node_run ON workflow_node_run.workflow_run_id = workflow_run.id
-		WHERE workflow_run.workflow_id = ANY($1)
-		ORDER BY workflow_id, id, node_run_id;
-	`
-
-	var ids []sdk.WorkflowNodeRunIdentifiers
-	if _, err := db.Select(&ids, query, pq.Int64Array(wIDs)); err != nil {
-		return nil, err
-	}
-	return ids, nil
-}
-
 //LoadNodeRun load a specific node run on a workflow
-func LoadNodeRun(db gorp.SqlExecutor, projectkey, workflowname string, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowNodeRun, error) {
+func LoadNodeRun(db gorp.SqlExecutor, projectkey, workflowname string, noderunID int64, loadOpts LoadRunOptions) (*sdk.WorkflowNodeRun, error) {
 	var rr = NodeRun{}
 	var testsField string
 	if loadOpts.WithTests {
@@ -94,8 +76,8 @@ func LoadNodeRun(db gorp.SqlExecutor, projectkey, workflowname string, id int64,
 	and workflow.name = $2
 	and workflow_node_run.id = $3`, nodeRunFields, testsField)
 
-	if err := db.SelectOne(&rr, query, projectkey, workflowname, id); err != nil {
-		return nil, sdk.WrapError(err, "Unable to load workflow_node_run proj=%s, workflow=%s, node=%d", projectkey, workflowname, id)
+	if err := db.SelectOne(&rr, query, projectkey, workflowname, noderunID); err != nil {
+		return nil, sdk.WrapError(err, "Unable to load workflow_node_run proj=%s, workflow=%s, noderun_id=%d", projectkey, workflowname, noderunID)
 	}
 
 	r, err := fromDBNodeRun(rr, loadOpts)
@@ -205,8 +187,7 @@ func LoadAndLockNodeRunByID(ctx context.Context, db gorp.SqlExecutor, id int64) 
 
 //LoadAndLockNodeRunByJobID load and lock a specific node run on a workflow
 func LoadAndLockNodeRunByJobID(ctx context.Context, db gorp.SqlExecutor, jobID int64) (*sdk.WorkflowNodeRun, error) {
-	var end func()
-	_, end = telemetry.Span(ctx, "workflow.LoadAndLockNodeRunByJobID")
+	_, end := telemetry.Span(ctx, "workflow.LoadAndLockNodeRunByJobID")
 	defer end()
 
 	var rr = NodeRun{}
@@ -227,7 +208,10 @@ func LoadAndLockNodeRunByJobID(ctx context.Context, db gorp.SqlExecutor, jobID i
 }
 
 //LoadNodeRunByID load a specific node run on a workflow
-func LoadNodeRunByID(db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowNodeRun, error) {
+func LoadNodeRunByID(ctx context.Context, db gorp.SqlExecutor, id int64, loadOpts LoadRunOptions) (*sdk.WorkflowNodeRun, error) {
+	_, end := telemetry.Span(ctx, "workflow.LoadNodeRunByID")
+	defer end()
+
 	var rr = NodeRun{}
 	var testsField string
 	if loadOpts.WithTests {
@@ -567,7 +551,7 @@ func UpdateNodeRunBuildParameters(db gorp.SqlExecutor, nodeID int64, buildParame
 
 //UpdateNodeRun updates in table workflow_node_run
 func UpdateNodeRun(db gorp.SqlExecutor, n *sdk.WorkflowNodeRun) error {
-	log.Debug("workflow.UpdateNodeRun> node.id=%d, status=%s", n.ID, n.Status)
+	log.Debug(context.TODO(), "workflow.UpdateNodeRun> node.id=%d, status=%s", n.ID, n.Status)
 	nodeRunDB, err := makeDBNodeRun(*n)
 	if err != nil {
 		return err
@@ -580,21 +564,24 @@ func UpdateNodeRun(db gorp.SqlExecutor, n *sdk.WorkflowNodeRun) error {
 
 // GetNodeRunBuildCommits gets commits for given node run and return current vcs info
 func GetNodeRunBuildCommits(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.Store, proj sdk.Project, wf sdk.Workflow, wNodeName string, number int64, nodeRun *sdk.WorkflowNodeRun, app *sdk.Application, env *sdk.Environment) ([]sdk.VCSCommit, sdk.BuildNumberAndHash, error) {
+	ctx, end := telemetry.Span(ctx, "workflow.GetNodeRunBuildCommits")
+	defer end()
+
 	var cur sdk.BuildNumberAndHash
 	if app == nil {
-		log.Debug("GetNodeRunBuildCommits> No app linked")
+		log.Debug(ctx, "GetNodeRunBuildCommits> No app linked")
 		return nil, cur, nil
 	}
 
 	if app.VCSServer == "" {
-		log.Debug("GetNodeRunBuildCommits> No repository linked")
+		log.Debug(ctx, "GetNodeRunBuildCommits> No repository linked")
 		return nil, cur, nil
 	}
 	cur.BuildNumber = number
 
 	vcsServer, err := repositoriesmanager.LoadProjectVCSServerLinkByProjectKeyAndVCSServerName(ctx, db, proj.Key, app.VCSServer)
 	if err != nil {
-		log.Debug("GetNodeRunBuildCommits> No vcsServer found: %v", err)
+		log.Debug(ctx, "GetNodeRunBuildCommits> No vcsServer found: %v", err)
 		return nil, cur, nil
 	}
 
@@ -614,21 +601,11 @@ func GetNodeRunBuildCommits(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 	}
 
 	if cur.Branch == "" && cur.Tag == "" {
-		branches, err := client.Branches(ctx, cur.Remote)
+		branch, err := repositoriesmanager.DefaultBranch(ctx, client, cur.Remote)
 		if err != nil {
 			return nil, cur, sdk.WrapError(err, "cannot load branches from vcs api remote %s", cur.Remote)
 		}
-		found := false
-		for _, br := range branches {
-			if br.Default {
-				cur.Branch = br.DisplayID
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, cur, sdk.WithStack(fmt.Errorf("cannot find default branch from vcs api"))
-		}
+		cur.Branch = branch.DisplayID
 	}
 
 	var envID int64
@@ -644,7 +621,7 @@ func GetNodeRunBuildCommits(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 	var lastCommit sdk.VCSCommit
 	if cur.Hash == "" && cur.Tag == "" && cur.Branch != "" {
 		//If we only have the current branch, search for the branch
-		br, err := client.Branch(ctx, repo, cur.Branch)
+		br, err := client.Branch(ctx, repo, sdk.VCSBranchFilters{BranchName: cur.Branch})
 		if err != nil {
 			return nil, cur, sdk.WrapError(err, "cannot get branch %s", cur.Branch)
 		}
@@ -670,15 +647,15 @@ func GetNodeRunBuildCommits(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 	}
 
 	if prev.Hash == "" {
-		log.Warning(ctx, "GetNodeRunBuildCommits> No previous build was found for branch %s", cur.Branch)
+		log.Warn(ctx, "GetNodeRunBuildCommits> No previous build was found for branch %s", cur.Branch)
 	}
 
 	if prev.Hash != "" && cur.Hash == prev.Hash {
-		log.Debug("GetNodeRunBuildCommits> there is not difference between the previous build and the current build for node %s", nodeRun.WorkflowNodeName)
+		log.Debug(ctx, "GetNodeRunBuildCommits> there is not difference between the previous build and the current build for node %s", nodeRun.WorkflowNodeName)
 	} else if prev.Hash != "" {
 		if cur.Tag == "" {
 			if cur.Hash == "" {
-				br, err := client.Branch(ctx, repo, cur.Branch)
+				br, err := client.Branch(ctx, repo, sdk.VCSBranchFilters{BranchName: cur.Branch})
 				if err != nil {
 					return nil, cur, sdk.WrapError(err, "Cannot get branch %s", cur.Branch)
 				}
@@ -721,7 +698,7 @@ func GetNodeRunBuildCommits(ctx context.Context, db gorpmapper.SqlExecutorWithTx
 		}
 	} else {
 		//If we only get current node run hash
-		log.Debug("GetNodeRunBuildCommits>  Looking for every commit until %s ", cur.Hash)
+		log.Debug(ctx, "GetNodeRunBuildCommits>  Looking for every commit until %s ", cur.Hash)
 		c, err := client.Commits(ctx, repo, cur.Branch, "", cur.Hash)
 		if err != nil {
 			return nil, cur, sdk.WrapError(err, "Cannot get commits")
@@ -789,11 +766,11 @@ func PreviousNodeRunVCSInfos(ctx context.Context, db gorp.SqlExecutor, projectKe
 		argPrevious = append(argPrevious, envID)
 		queryPrevious += "AND w_node_context.environment_id = $5"
 	}
-	queryPrevious += fmt.Sprintf(" ORDER BY workflow_node_run.num DESC LIMIT 1")
+	queryPrevious += " ORDER BY workflow_node_run.num DESC LIMIT 1"
 
 	errPrev := db.QueryRow(queryPrevious, argPrevious...).Scan(&prevBranch, &prevTag, &prevHash, &prevRepository, &previousBuildNumber)
 	if errPrev == sql.ErrNoRows {
-		log.Warning(ctx, "PreviousNodeRunVCSInfos> no result with previous %d %s , arguments %v", current.BuildNumber, nodeName, argPrevious)
+		log.Warn(ctx, "PreviousNodeRunVCSInfos> no result with previous %d %s , arguments %v", current.BuildNumber, nodeName, argPrevious)
 		return previous, nil
 	}
 	if errPrev != nil {
@@ -819,8 +796,11 @@ func PreviousNodeRunVCSInfos(ctx context.Context, db gorp.SqlExecutor, projectKe
 	return previous, nil
 }
 
-func updateNodeRunCommits(db gorp.SqlExecutor, id int64, commits []sdk.VCSCommit) error {
-	log.Debug("updateNodeRunCommits> Updating %d commits for workflow_node_run #%d", len(commits), id)
+func updateNodeRunCommits(ctx context.Context, db gorp.SqlExecutor, id int64, commits []sdk.VCSCommit) error {
+	ctx, end := telemetry.Span(ctx, "workflow.updateNodeRunCommits")
+	defer end()
+
+	log.Debug(ctx, "updateNodeRunCommits> Updating %d commits for workflow_node_run #%d", len(commits), id)
 	commitsBtes, errMarshal := json.Marshal(commits)
 	if errMarshal != nil {
 		return sdk.WrapError(errMarshal, "updateNodeRunCommits> Unable to marshal commits")
@@ -832,8 +812,8 @@ func updateNodeRunCommits(db gorp.SqlExecutor, id int64, commits []sdk.VCSCommit
 	return nil
 }
 
-// updateNodeRunStatusAndStage update just noderun status and stage
-func updateNodeRunStatusAndStage(db gorp.SqlExecutor, nodeRun *sdk.WorkflowNodeRun) error {
+// UpdateNodeRunStatusAndStage update just noderun status and stage
+func UpdateNodeRunStatusAndStage(db gorp.SqlExecutor, nodeRun *sdk.WorkflowNodeRun) error {
 	stagesBts, errMarshal := json.Marshal(nodeRun.Stages)
 	if errMarshal != nil {
 		return sdk.WrapError(errMarshal, "unable to marshal stages")
@@ -859,4 +839,17 @@ func RunExist(db gorp.SqlExecutor, projectKey string, workflowID int64, hash str
 
 	count, err := db.SelectInt(query, projectKey, workflowID, hash)
 	return count != 0, err
+}
+
+func LoadNodeRunDistinctExecutionIDs(db gorp.SqlExecutor) ([]string, error) {
+	query := `
+		SELECT DISTINCT execution_id
+    FROM workflow_node_run
+    WHERE execution_id <> '' AND execution_id IS NOT NULL;
+	`
+	var executionIDs []string
+	if _, err := db.Select(&executionIDs, query); err != nil {
+		return nil, sdk.WithStack(err)
+	}
+	return executionIDs, nil
 }

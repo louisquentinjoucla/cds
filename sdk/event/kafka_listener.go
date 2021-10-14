@@ -2,8 +2,8 @@ package event
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Shopify/sarama"
 
@@ -30,7 +30,7 @@ func ConsumeKafka(ctx context.Context, kafkaVersion, addr, topic, group, user, p
 		config.Version = sarama.V0_10_2_0
 	}
 
-	consumerGroup, err := sarama.NewConsumerGroup([]string{addr}, group, config)
+	consumerGroup, err := sarama.NewConsumerGroup(strings.Split(addr, ","), group, config)
 	if err != nil {
 		return fmt.Errorf("Error creating consumer: %s", err)
 	}
@@ -76,7 +76,7 @@ func (h *handler) Cleanup(sarama.ConsumerGroupSession) error {
 func (h *handler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for message := range claim.Messages() {
 		var event sdk.Event
-		json.Unmarshal(message.Value, &event)
+		sdk.JSONUnmarshal(message.Value, &event)
 		if err := h.processEventFunc(event); err != nil {
 			h.errorLogFunc("Error on ProcessEventFunc:%s", err)
 		}

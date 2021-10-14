@@ -18,35 +18,18 @@ import (
 	"github.com/ovh/cds/sdk"
 )
 
-func (api *API) getWorkflowNodeRunJobServiceLogHandler() service.Handler {
+func (api *API) getWorkflowNodeRunJobServiceLinkHandler() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		vars := mux.Vars(r)
-		runJobID, err := requestVarInt(r, "runJobID")
-		if err != nil {
-			return sdk.WrapError(err, "invalid run job id")
-		}
-		serviceName := vars["serviceName"]
-
-		logsService, err := workflow.LoadServiceLog(api.mustDB(), runJobID, serviceName)
-		if err != nil {
-			return sdk.WrapError(err, "cannot load service log for node run job id %d and name %s", runJobID, serviceName)
-		}
-
-		ls := &sdk.ServiceLog{}
-		if logsService != nil {
-			ls = logsService
-		}
-
-		return service.WriteJSON(w, ls, http.StatusOK)
+		return api.getWorkflowNodeRunJobLogLinkHandler(ctx, w, r, sdk.CDNTypeItemServiceLog)
 	}
 }
 
-func (api *API) getWorkflowNodeRunJobStepLogHandler() service.Handler {
+func (api *API) getWorkflowNodeRunJobStepLinksHandler() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 		vars := mux.Vars(r)
+
 		projectKey := vars["key"]
 		workflowName := vars["permWorkflowName"]
-
 		nodeRunID, err := requestVarInt(r, "nodeRunID")
 		if err != nil {
 			return sdk.NewErrorFrom(err, "invalid node run id")
@@ -55,62 +38,80 @@ func (api *API) getWorkflowNodeRunJobStepLogHandler() service.Handler {
 		if err != nil {
 			return sdk.NewErrorFrom(err, "invalid node job id")
 		}
-		stepOrder, err := requestVarInt(r, "stepOrder")
+
+		httpURL, err := services.GetCDNPublicHTTPAdress(ctx, api.mustDB())
 		if err != nil {
-			return sdk.NewErrorFrom(err, "invalid step order")
+			return err
 		}
 
-		// Check nodeRunID is link to workflow
 		nodeRun, err := workflow.LoadNodeRun(api.mustDB(), projectKey, workflowName, nodeRunID, workflow.LoadRunOptions{DisableDetailledNodeRun: true})
 		if err != nil {
 			return sdk.WrapError(err, "cannot find nodeRun %d for workflow %s in project %s", nodeRunID, workflowName, projectKey)
 		}
-
-		var stepStatus string
-		// Find job/step in nodeRun
-	stageLoop:
+		var runJob *sdk.WorkflowNodeJobRun
 		for _, s := range nodeRun.Stages {
 			for _, rj := range s.RunJobs {
-				if rj.ID != runJobID {
-					continue
+				if rj.ID == runJobID {
+					runJob = &rj
+					break
 				}
-				ss := rj.Job.StepStatus
-				for _, sss := range ss {
-					if int64(sss.StepOrder) == stepOrder {
-						stepStatus = sss.Status
-						break
-					}
-				}
-				break stageLoop
+			}
+			if runJob != nil {
+				break
 			}
 		}
-
-		if stepStatus == "" {
-			return sdk.WrapError(sdk.ErrStepNotFound, "cannot find step %d on job %d in nodeRun %d for workflow %s in project %s",
-				stepOrder, runJobID, nodeRunID, workflowName, projectKey)
+		if runJob == nil {
+			return sdk.NewErrorFrom(sdk.ErrNotFound, "cannot find run job for id %d", runJobID)
 		}
 
-		logs, err := workflow.LoadStepLogs(api.mustDB(), runJobID, stepOrder)
+		jobRun, err := workflow.LoadRunByID(ctx, api.mustDB(), nodeRun.WorkflowRunID, workflow.LoadRunOptions{
+			DisableDetailledNodeRun: true,
+		})
 		if err != nil {
-			return sdk.WrapError(err, "cannot load log for runJob %d on step %d", runJobID, stepOrder)
+			return err
 		}
 
-		ls := &sdk.Log{}
-		if logs != nil {
-			ls = logs
-		}
-		result := &sdk.BuildState{
-			Status:   stepStatus,
-			StepLogs: *ls,
+		refs := make([]sdk.CDNLogAPIRef, 0)
+		apiRef := sdk.CDNLogAPIRef{
+			ProjectKey:     projectKey,
+			WorkflowName:   jobRun.Workflow.Name,
+			WorkflowID:     jobRun.WorkflowID,
+			RunID:          jobRun.ID,
+			NodeRunName:    nodeRun.WorkflowNodeName,
+			NodeRunID:      nodeRun.ID,
+			NodeRunJobName: runJob.Job.Action.Name,
+			NodeRunJobID:   runJob.ID,
 		}
 
-		return service.WriteJSON(w, result, http.StatusOK)
-	}
-}
+		for _, s := range runJob.Job.StepStatus {
+			ref := apiRef
+			ref.StepName = runJob.Job.Action.Actions[int64(s.StepOrder)].Name
+			if runJob.Job.Action.Actions[int64(s.StepOrder)].StepName != "" {
+				ref.StepName = runJob.Job.Action.Actions[int64(s.StepOrder)].StepName
+			}
+			ref.StepOrder = int64(s.StepOrder)
+			refs = append(refs, ref)
+		}
 
-func (api *API) getWorkflowNodeRunJobServiceLinkHandler() service.Handler {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		return api.getWorkflowNodeRunJobLogLinkHandler(ctx, w, r, sdk.CDNTypeItemServiceLog)
+		datas := make([]sdk.CDNLogLinkData, 0, len(refs))
+
+		for _, r := range refs {
+			apiRefHashU, err := hashstructure.Hash(r, nil)
+			if err != nil {
+				return sdk.WithStack(err)
+			}
+			apiRefHash := strconv.FormatUint(apiRefHashU, 10)
+			datas = append(datas, sdk.CDNLogLinkData{
+				APIRef:    apiRefHash,
+				StepOrder: r.StepOrder,
+			})
+		}
+
+		return service.WriteJSON(w, sdk.CDNLogLinks{
+			CDNURL:   httpURL,
+			ItemType: sdk.CDNTypeItemStepLog,
+			Data:     datas,
+		}, http.StatusOK)
 	}
 }
 
@@ -124,13 +125,6 @@ func (api *API) getWorkflowNodeRunJobLogLinkHandler(ctx context.Context, w http.
 	vars := mux.Vars(r)
 
 	projectKey := vars["key"]
-	enabled := featureflipping.IsEnabled(ctx, gorpmapping.Mapper, api.mustDB(), "cdn-job-logs", map[string]string{
-		"project_key": projectKey,
-	})
-	if !enabled {
-		return sdk.NewErrorFrom(sdk.ErrNotFound, "cdn is not enable for project %s", projectKey)
-	}
-
 	workflowName := vars["permWorkflowName"]
 	nodeRunID, err := requestVarInt(r, "nodeRunID")
 	if err != nil {
@@ -166,11 +160,18 @@ func (api *API) getWorkflowNodeRunJobLogLinkHandler(ctx context.Context, w http.
 		return sdk.NewErrorFrom(sdk.ErrNotFound, "cannot find run job for id %d", runJobID)
 	}
 
+	jobRun, err := workflow.LoadRunByID(ctx, api.mustDB(), nodeRun.WorkflowRunID, workflow.LoadRunOptions{
+		DisableDetailledNodeRun: true,
+	})
+	if err != nil {
+		return err
+	}
+
 	apiRef := sdk.CDNLogAPIRef{
 		ProjectKey:     projectKey,
-		WorkflowName:   workflowName,
-		WorkflowID:     nodeRun.WorkflowID,
-		RunID:          nodeRun.WorkflowRunID,
+		WorkflowName:   jobRun.Workflow.Name,
+		WorkflowID:     jobRun.WorkflowID,
+		RunID:          jobRun.ID,
 		NodeRunName:    nodeRun.WorkflowNodeName,
 		NodeRunID:      nodeRun.ID,
 		NodeRunJobName: runJob.Job.Action.Name,
@@ -227,14 +228,23 @@ func (api *API) getWorkflowNodeRunJobLogLinkHandler(ctx context.Context, w http.
 	}, http.StatusOK)
 }
 
-func (api *API) getWorkflowLogAccessHandler() service.Handler {
+func (api *API) getWorkflowAccessHandler() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 		vars := mux.Vars(r)
 
 		projectKey := vars["key"]
-		enabled := featureflipping.IsEnabled(ctx, gorpmapping.Mapper, api.mustDB(), "cdn-job-logs", map[string]string{
-			"project_key": projectKey,
-		})
+		itemType := vars["type"]
+
+		var enabled bool
+		switch sdk.CDNItemType(itemType) {
+		case sdk.CDNTypeItemStepLog, sdk.CDNTypeItemServiceLog:
+			enabled = true
+		case sdk.CDNTypeItemRunResult:
+			_, enabled = featureflipping.IsEnabled(ctx, gorpmapping.Mapper, api.mustDB(), sdk.FeatureCDNArtifact, map[string]string{
+				"project_key": projectKey,
+			})
+		}
+
 		if !enabled {
 			return sdk.WrapError(sdk.ErrForbidden, "cdn is not enabled for project %s", projectKey)
 		}
@@ -243,14 +253,17 @@ func (api *API) getWorkflowLogAccessHandler() service.Handler {
 			return sdk.WrapError(sdk.ErrForbidden, "only CDN can call this route")
 		}
 
-		sessionID := r.Header.Get("X-CDS-Session-ID")
+		sessionID := r.Header.Get(sdk.CDSSessionID)
 		if sessionID == "" {
 			return sdk.WrapError(sdk.ErrForbidden, "missing session id header")
 		}
 
-		workflowName := vars["workflowName"]
+		workflowID, err := requestVarInt(r, "workflowID")
+		if err != nil {
+			return err
+		}
 
-		exists, err := workflow.Exists(api.mustDB(), projectKey, workflowName)
+		exists, err := workflow.ExistsID(ctx, api.mustDB(), projectKey, workflowID)
 		if err != nil {
 			return err
 		}
@@ -273,13 +286,14 @@ func (api *API) getWorkflowLogAccessHandler() service.Handler {
 
 		maintainerOrAdmin := consumer.Maintainer() || consumer.Admin()
 
-		perms, err := permission.LoadWorkflowMaxLevelPermission(ctx, api.mustDB(), projectKey, []string{workflowName}, consumer.GetGroupIDs())
+		perms, err := permission.LoadWorkflowMaxLevelPermissionByWorkflowIDs(ctx, api.mustDB(), []int64{workflowID}, consumer.GetGroupIDs())
 		if err != nil {
 			return sdk.NewErrorWithStack(err, sdk.ErrUnauthorized)
 		}
-		maxLevelPermission := perms.Level(workflowName)
+		workflowIDString := strconv.FormatInt(workflowID, 10)
+		maxLevelPermission := perms.Level(workflowIDString)
 		if maxLevelPermission < sdk.PermissionRead && !maintainerOrAdmin {
-			return sdk.WrapError(sdk.ErrUnauthorized, "not authorized for workflow %s/%s", projectKey, workflowName)
+			return sdk.WrapError(sdk.ErrUnauthorized, "not authorized for workflow %s/%s", projectKey, workflowIDString)
 		}
 
 		return service.WriteJSON(w, nil, http.StatusOK)

@@ -12,11 +12,11 @@ import (
 	"github.com/fsamin/go-dump"
 	"github.com/go-gorp/gorp"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/environment"
 	"github.com/ovh/cds/engine/api/event"
-	"github.com/ovh/cds/engine/api/integration"
 	"github.com/ovh/cds/engine/api/permission"
 	"github.com/ovh/cds/engine/api/pipeline"
 	"github.com/ovh/cds/engine/api/project"
@@ -26,7 +26,6 @@ import (
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // getWorkflowsHandler returns ID and name of workflows for a given project/user
@@ -89,9 +88,13 @@ func (api *API) setWorkflowURLs(w1 *sdk.Workflow) {
 
 	for j := range w1.Runs {
 		r1 := &w1.Runs[j]
-		r1.URLs.APIURL = api.Config.URL.API + api.Router.GetRoute("GET", api.getWorkflowRunHandler, map[string]string{"key": w1.ProjectKey, "permWorkflowName": w1.Name, "number": strconv.FormatInt(r1.Number, 10)})
-		r1.URLs.UIURL = api.Config.URL.UI + "/project/" + w1.ProjectKey + "/workflow/" + w1.Name + "/run/" + strconv.FormatInt(r1.Number, 10)
+		api.setWorkflowRunURLs(r1)
 	}
+}
+
+func (api *API) setWorkflowRunURLs(r1 *sdk.WorkflowRun) {
+	r1.URLs.APIURL = api.Config.URL.API + api.Router.GetRoute("GET", api.getWorkflowRunHandler, map[string]string{"key": r1.Workflow.ProjectKey, "permWorkflowName": r1.Workflow.Name, "number": strconv.FormatInt(r1.Number, 10)})
+	r1.URLs.UIURL = api.Config.URL.UI + "/project/" + r1.Workflow.ProjectKey + "/workflow/" + r1.Workflow.Name + "/run/" + strconv.FormatInt(r1.Number, 10)
 }
 
 func (api *API) getRetentionPolicySuggestionHandler() service.Handler {
@@ -106,7 +109,7 @@ func (api *API) getRetentionPolicySuggestionHandler() service.Handler {
 		}
 
 		varsPayload := make(map[string]string, 0)
-		run, err := workflow.LoadLastRun(api.mustDB(), key, name, workflow.LoadRunOptions{DisableDetailledNodeRun: true})
+		run, err := workflow.LoadLastRun(ctx, api.mustDB(), key, name, workflow.LoadRunOptions{DisableDetailledNodeRun: true})
 		if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
 			return err
 		}
@@ -151,7 +154,7 @@ func (api *API) getRetentionPolicySuggestionHandler() service.Handler {
 			}
 		}
 
-		retentionPolicySuggestion := purge.GetRetetionPolicyVariables()
+		retentionPolicySuggestion := purge.GetRetentionPolicyVariables()
 		for k := range varsPayload {
 			retentionPolicySuggestion = append(retentionPolicySuggestion, k)
 		}
@@ -190,7 +193,7 @@ func (api *API) postWorkflowRetentionPolicyDryRun() service.Handler {
 		wf.RetentionPolicy = request.RetentionPolicy
 
 		// Get the number of runs to analyze
-		_, _, _, count, err := workflow.LoadRunsSummaries(api.mustDB(), wf.ProjectKey, wf.Name, 0, 1, nil)
+		_, _, _, count, err := workflow.LoadRunsSummaries(ctx, api.mustDB(), wf.ProjectKey, wf.Name, 0, 1, nil)
 		if err != nil {
 			return err
 		}
@@ -198,9 +201,10 @@ func (api *API) postWorkflowRetentionPolicyDryRun() service.Handler {
 		u := getAPIConsumer(ctx)
 		api.GoRoutines.Exec(api.Router.Background, "workflow-retention-dryrun", func(ctx context.Context) {
 			if err := purge.ApplyRetentionPolicyOnWorkflow(ctx, api.Cache, api.mustDBWithCtx(ctx), *wf, purge.MarkAsDeleteOptions{DryRun: true}, u.AuthentifiedUser); err != nil {
-				log.ErrorWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
-				al := r.Header.Get("Accept-Language")
-				httpErr := sdk.ExtractHTTPError(err, al)
+				ctx = sdk.ContextWithStacktrace(ctx, err)
+				log.Error(ctx, err.Error())
+
+				httpErr := sdk.ExtractHTTPError(err)
 				event.PublishWorkflowRetentionDryRun(ctx, key, name, "ERROR", httpErr.Error(), nil, 0, u.AuthentifiedUser)
 			}
 		})
@@ -676,7 +680,7 @@ func (api *API) deleteWorkflowHandler() service.Handler {
 			return sdk.WrapError(errP, "Cannot load Project %s", key)
 		}
 
-		b, errW := workflow.Exists(api.mustDB(), key, name)
+		b, errW := workflow.Exists(ctx, api.mustDB(), key, name)
 		if errW != nil {
 			return sdk.WrapError(errW, "Cannot check Workflow %s", key)
 		}
@@ -695,8 +699,14 @@ func (api *API) deleteWorkflowHandler() service.Handler {
 		}
 		defer tx.Rollback() // nolint
 
-		if err := workflow.MarkAsDelete(ctx, tx, api.Cache, *p, wf); err != nil {
-			return err
+		if service.FormBool(r, "withDependencies") {
+			if err := workflow.MarkAsDeleteWithDependencies(ctx, tx, api.Cache, *p, wf); err != nil {
+				return err
+			}
+		} else {
+			if err := workflow.MarkAsDelete(ctx, tx, api.Cache, *p, wf); err != nil {
+				return err
+			}
 		}
 
 		if err := tx.Commit(); err != nil {
@@ -736,7 +746,7 @@ func (api *API) deleteWorkflowHandler() service.Handler {
 					log.Error(ctx, "deleteWorkflowHandler> Cannot commit transaction: %v", err)
 				}
 				event.PublishWorkflowDelete(ctx, key, oldW, consumer)
-			}, api.PanicDump())
+			})
 
 		return service.WriteJSON(w, nil, http.StatusOK)
 	}
@@ -766,7 +776,17 @@ func (api *API) deleteWorkflowEventsIntegrationHandler() service.Handler {
 			return sdk.WrapError(err, "cannot load Workflow %s", key)
 		}
 
-		if err := integration.RemoveFromWorkflow(db, wf.ID, prjIntegrationID); err != nil {
+		var integ *sdk.WorkflowProjectIntegration
+		for i := range wf.Integrations {
+			if wf.Integrations[i].ProjectIntegrationID == prjIntegrationID {
+				integ = &wf.Integrations[i]
+			}
+		}
+		if integ == nil {
+			return sdk.NewErrorFrom(sdk.ErrNotFound, "unable to find integration %d", prjIntegrationID)
+		}
+
+		if err := workflow.RemoveIntegrationFromWorkflow(db, *integ); err != nil {
 			return sdk.WrapError(err, "cannot remove integration id %d from workflow %s (id: %d)", prjIntegrationID, wf.Name, wf.ID)
 		}
 
@@ -831,7 +851,7 @@ func (api *API) getWorkflowNotificationsConditionsHandler() service.Handler {
 			Operators: sdk.WorkflowConditionsOperators,
 		}
 
-		wr, errr := workflow.LoadLastRun(api.mustDB(), key, name, workflow.LoadRunOptions{})
+		wr, errr := workflow.LoadLastRun(ctx, api.mustDB(), key, name, workflow.LoadRunOptions{})
 		if errr != nil {
 			if !sdk.ErrorIs(errr, sdk.ErrNotFound) {
 				return sdk.WrapError(errr, "getWorkflowTriggerConditionHandler> Unable to load last run workflow")
@@ -914,5 +934,96 @@ func (api *API) getSearchWorkflowHandler() service.Handler {
 		}
 
 		return service.WriteJSON(w, ws, http.StatusOK)
+	}
+}
+
+func (api *API) getWorkflowDependenciesHandler() service.Handler {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		vars := mux.Vars(r)
+		key := vars["key"]
+		name := vars["permWorkflowName"]
+
+		proj, err := project.Load(ctx, api.mustDB(), key)
+		if err != nil {
+			return err
+		}
+
+		var opts = workflow.LoadOptions{Minimal: true}
+
+		wf, err := workflow.Load(ctx, api.mustDB(), api.Cache, *proj, name, opts)
+		if err != nil {
+			return err
+		}
+
+		usage, err := loadWorkflowUsage(ctx, api.mustDB(), wf.ID)
+		if err != nil {
+			return err
+		}
+
+		var pips []sdk.IDName
+		var pipAsCodeUnlinked []sdk.IDName
+		for _, pip := range usage.Pipelines {
+			log.Debug(ctx, "checking pipeline %d %q %q", pip.ID, pip.Name, pip.FromRepository)
+			allWfs, err := workflow.LoadByPipelineName(ctx, api.mustDB(), key, pip.Name)
+			if err != nil {
+				return err
+			}
+			if len(allWfs) == 1 {
+				pips = append(pips, sdk.IDName{ID: pip.ID, Name: pip.Name})
+				continue
+			}
+			if wf.FromRepository != "" && pip.FromRepository == wf.FromRepository {
+				pipAsCodeUnlinked = append(pipAsCodeUnlinked, sdk.IDName{ID: pip.ID, Name: pip.Name})
+			}
+		}
+
+		var apps []sdk.IDName
+		var appAsCodeUnlinked []sdk.IDName
+		for _, app := range usage.Applications {
+			log.Debug(ctx, "checking application %d %q %q", app.ID, app.Name, app.FromRepository)
+			allWfs, err := workflow.LoadByApplicationName(ctx, api.mustDB(), key, app.Name)
+			if err != nil {
+				return err
+			}
+			if len(allWfs) == 1 {
+				apps = append(apps, sdk.IDName{ID: app.ID, Name: app.Name})
+				continue
+			}
+			if wf.FromRepository != "" && app.FromRepository == wf.FromRepository {
+				appAsCodeUnlinked = append(appAsCodeUnlinked, sdk.IDName{ID: app.ID, Name: app.Name})
+			}
+		}
+
+		var envs []sdk.IDName
+		var envsAsCodeUnlinked []sdk.IDName
+		for _, env := range usage.Environments {
+			log.Debug(ctx, "checking environment %d %q %q", env.ID, env.Name, env.FromRepository)
+			allWfs, err := workflow.LoadByEnvName(ctx, api.mustDB(), key, env.Name)
+			if err != nil {
+				return err
+			}
+			if len(allWfs) == 1 {
+				envs = append(envs, sdk.IDName{ID: env.ID, Name: env.Name})
+				continue
+			}
+			if wf.FromRepository != "" && env.FromRepository == wf.FromRepository {
+				envsAsCodeUnlinked = append(envsAsCodeUnlinked, sdk.IDName{ID: env.ID, Name: env.Name})
+			}
+		}
+
+		res := sdk.WorkflowDeleteDependencies{
+			DeletedDependencies: sdk.WorkflowDependencies{
+				Pipelines:    pips,
+				Applications: apps,
+				Environments: envs,
+			},
+			UnlinkedAsCodeDependencies: sdk.WorkflowDependencies{
+				Pipelines:    pipAsCodeUnlinked,
+				Applications: appAsCodeUnlinked,
+				Environments: envsAsCodeUnlinked,
+			},
+		}
+
+		return service.WriteJSON(w, res, http.StatusOK)
 	}
 }

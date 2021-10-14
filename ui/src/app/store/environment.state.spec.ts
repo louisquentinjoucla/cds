@@ -1,6 +1,6 @@
 import { HttpRequest } from '@angular/common/http';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
-import { async, TestBed } from '@angular/core/testing';
+import { TestBed, waitForAsync } from '@angular/core/testing';
 import { NgxsModule, Store } from '@ngxs/store';
 import { Environment } from 'app/model/environment.model';
 import { Project } from 'app/model/project.model';
@@ -19,22 +19,22 @@ import {
 } from 'app/store/environment.action';
 import { EnvironmentState, EnvironmentStateModel } from 'app/store/environment.state';
 import { cloneDeep } from 'lodash-es';
-import { ApplicationsState } from './applications.state';
-import { PipelinesState } from './pipelines.state';
-import * as ProjectAction from './project.action';
-import { ProjectState, ProjectStateModel } from './project.state';
-import { WorkflowState } from './workflow.state';
 import { PipelineService } from 'app/service/pipeline/pipeline.service';
 import { EnvironmentService } from 'app/service/environment/environment.service';
 import { ApplicationService } from 'app/service/application/application.service';
 import { RouterService } from 'app/service/router/router.service';
 import { RouterTestingModule } from '@angular/router/testing';
+import { ApplicationsState } from './applications.state';
+import { PipelinesState } from './pipelines.state';
+import * as ProjectAction from './project.action';
+import { ProjectState, ProjectStateModel } from './project.state';
+import { WorkflowState } from './workflow.state';
 
 describe('Environment', () => {
     let store: Store;
     let http: HttpTestingController;
 
-    beforeEach(async(() => {
+    beforeEach(waitForAsync(() => {
         TestBed.configureTestingModule({
             providers: [NavbarService, WorkflowService, WorkflowRunService, ProjectStore, RouterService,
                 ProjectService, PipelineService, EnvironmentService, ApplicationService, EnvironmentService],
@@ -49,14 +49,12 @@ describe('Environment', () => {
     }));
 
     //  ------- Environment --------- //
-    it('add environment in project', async(() => {
+    it('add environment in project', waitForAsync(() => {
         let project = new Project();
         project.name = 'proj1';
         project.key = 'test1';
         store.dispatch(new ProjectAction.AddProject(project));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project')).flush(<Project>{
             name: 'proj1',
             key: 'test1',
         });
@@ -64,9 +62,7 @@ describe('Environment', () => {
         let env = new Environment();
         env.name = 'prod';
         store.dispatch(new AddEnvironment({ projectKey: project.key, environment: env }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/environment';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/environment')).flush(<Project>{
             ...project,
             environments: [env]
         });
@@ -78,15 +74,13 @@ describe('Environment', () => {
         });
     }));
 
-    it('fetch environment in project', async(() => {
+    it('fetch environment in project', waitForAsync(() => {
         const http = TestBed.inject(HttpTestingController);
         let project = new Project();
         project.name = 'proj1';
         project.key = 'test1';
         store.dispatch(new ProjectAction.AddProject(project));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project')).flush(<Project>{
             name: 'proj1',
             key: 'test1',
         });
@@ -94,9 +88,7 @@ describe('Environment', () => {
         let env = new Environment();
         env.name = 'prod';
         store.dispatch(new FetchEnvironment({ projectKey: project.key, envName: env.name }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/environment/prod';
-        })).flush(env);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/environment/prod')).flush(env);
 
         store.selectOnce(EnvironmentState).subscribe((state: EnvironmentStateModel) => {
             expect(state.currentProjectKey).toEqual('test1');
@@ -105,7 +97,7 @@ describe('Environment', () => {
         });
     }));
 
-    it('update environment in project', async(() => {
+    it('update environment in project', waitForAsync(() => {
         let project = new Project();
         project.name = 'proj1';
         project.key = 'test1';
@@ -113,15 +105,13 @@ describe('Environment', () => {
         env.name = 'prod';
 
         store.dispatch(new ProjectAction.AddProject(project));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project')).flush(<Project>{
             name: 'proj1',
             key: 'test1',
             environments: [env]
         });
 
-        store.dispatch(new LoadEnvironment({projectKey: project.key, env: env}))
+        store.dispatch(new LoadEnvironment({projectKey: project.key, env}))
 
         env.name = 'dev';
         store.dispatch(new UpdateEnvironment({
@@ -129,9 +119,7 @@ describe('Environment', () => {
             environmentName: 'prod',
             changes: env
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/environment/prod';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/environment/prod')).flush(<Project>{
             ...project,
             environments: [env]
         });
@@ -143,14 +131,12 @@ describe('Environment', () => {
         });
     }));
 
-    it('add environment variable in project', async(() => {
+    it('add environment variable in project', waitForAsync(() => {
         let project = new Project();
         project.name = 'proj1';
         project.key = 'test1';
         store.dispatch(new ProjectAction.AddProject(project));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project')).flush(<Project>{
             name: 'proj1',
             key: 'test1',
             environments: [{ name: 'prod' }]
@@ -170,9 +156,7 @@ describe('Environment', () => {
             environmentName: env.name,
             variable
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/environment/prod/variable/testvar';
-        })).flush(variable);
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/environment/prod/variable/testvar')).flush(variable);
 
         store.selectOnce(EnvironmentState).subscribe((state: EnvironmentStateModel) => {
             expect(state.currentProjectKey).toEqual('test1');
@@ -184,7 +168,7 @@ describe('Environment', () => {
         });
     }));
 
-    it('update environment variable in project', async(() => {
+    it('update environment variable in project', waitForAsync(() => {
         let project = new Project();
         project.name = 'proj1';
         project.key = 'test1';
@@ -197,15 +181,13 @@ describe('Environment', () => {
         env.variables = [variable];
 
         store.dispatch(new ProjectAction.AddProject(project));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project')).flush(<Project>{
             name: 'proj1',
             key: 'test1',
             environments: [env]
         });
 
-        store.dispatch(new LoadEnvironment({projectKey: project.key, env: env}));
+        store.dispatch(new LoadEnvironment({projectKey: project.key, env}));
 
         variable.name = 'testvarbis';
         store.dispatch(new UpdateEnvironmentVariable({
@@ -214,9 +196,7 @@ describe('Environment', () => {
             variableName: 'testvar',
             changes: variable
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/environment/prod/variable/testvar';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/environment/prod/variable/testvar')).flush(<Project>{
             ...project,
             environments: [Object.assign({}, env, { variables: [variable] })]
         });
@@ -230,7 +210,7 @@ describe('Environment', () => {
         });
     }));
 
-    it('delete environment variable in project', async(() => {
+    it('delete environment variable in project', waitForAsync(() => {
         let project = new Project();
         project.name = 'proj1';
         project.key = 'test1';
@@ -243,24 +223,20 @@ describe('Environment', () => {
         env.variables = [variable];
 
         store.dispatch(new ProjectAction.AddProject(project));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project')).flush(<Project>{
             name: 'proj1',
             key: 'test1',
             environments: [env]
         });
 
-        store.dispatch(new LoadEnvironment({projectKey: project.key, env: env}));
+        store.dispatch(new LoadEnvironment({projectKey: project.key, env}));
 
         store.dispatch(new DeleteEnvironmentVariable({
             projectKey: project.key,
             environmentName: env.name,
             variable
         }));
-        http.expectOne(((req: HttpRequest<any>) => {
-            return req.url === '/project/test1/environment/prod/variable/testvar';
-        })).flush(<Project>{
+        http.expectOne(((req: HttpRequest<any>) => req.url === '/project/test1/environment/prod/variable/testvar')).flush(<Project>{
             ...project,
             environments: [Object.assign({}, env, { variables: [] })]
         });

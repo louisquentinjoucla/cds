@@ -9,12 +9,16 @@ import (
 	"strings"
 
 	"github.com/fsamin/go-repo"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 )
 
 func (s *Service) processPush(ctx context.Context, op *sdk.Operation) (globalErr error) {
+	ctx = context.WithValue(ctx, cdslog.Operation, op.UUID)
+	ctx = context.WithValue(ctx, cdslog.Repository, op.RepoFullName)
+
 	var missingAuth bool
 	if op.RepositoryStrategy.ConnectionType == "ssh" {
 		missingAuth = op.RepositoryStrategy.SSHKey == "" || op.RepositoryStrategy.SSHKeyContent == ""
@@ -94,7 +98,7 @@ func (s *Service) processPush(ctx context.Context, op *sdk.Operation) (globalErr
 
 	for k, v := range op.LoadFiles.Results {
 		fname := filepath.Join(path, ".cds", k)
-		log.Debug("Creating %s", fname)
+		log.Debug(ctx, "Creating %s", fname)
 		_ = os.Remove(fname)
 		fi, err := os.Create(fname)
 		if err != nil {
@@ -132,9 +136,12 @@ func (s *Service) processPush(ctx context.Context, op *sdk.Operation) (globalErr
 		if strings.Contains(err.Error(), "Pushing requires write access") {
 			return sdk.NewError(sdk.ErrForbidden, err)
 		}
-		return sdk.WrapError(err, "push %s", op.Setup.Push.FromBranch)
+		err = sdk.WithStack(err)
+		ctx = sdk.ContextWithStacktrace(ctx, err)
+		log.Error(ctx, "unable to push branch %q on repository %q: %v", op.Setup.Push.FromBranch, op.RepoFullName, err)
+		return err
 	}
 
-	log.Debug("processPush> %s : files pushed", op.UUID)
+	log.Debug(ctx, "processPush> %s : files pushed", op.UUID)
 	return nil
 }

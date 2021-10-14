@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/ovh/cds/sdk"
+	"github.com/ovh/cds/sdk/telemetry"
 )
 
 func (b *bitbucketClient) PullRequest(ctx context.Context, repo string, id string) (sdk.VCSPullRequest, error) {
+	ctx, end := telemetry.Span(ctx, "bitbucketserver.PullRequest", telemetry.Tag(telemetry.TagRepository, repo))
+	defer end()
 	project, slug, err := getRepo(repo)
 	if err != nil {
 		return sdk.VCSPullRequest{}, sdk.WithStack(err)
@@ -95,6 +98,11 @@ func (b *bitbucketClient) PullRequestComment(ctx context.Context, repo string, p
 	if err != nil {
 		return sdk.WithStack(err)
 	}
+
+	if len(prRequest.Message) >= 32768 {
+		prRequest.Message = prRequest.Message[0:32750] + "\n[truncated]"
+	}
+
 	payload := map[string]string{
 		"text": prRequest.Message,
 	}

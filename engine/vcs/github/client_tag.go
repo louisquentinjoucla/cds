@@ -2,13 +2,13 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // Tags returns list of tags for a repo
@@ -33,12 +33,12 @@ func (g *githubClient) Tags(ctx context.Context, fullname string) ([]sdk.VCSTag,
 		attempt++
 		status, body, headers, err := g.get(ctx, nextPage, opt)
 		if err != nil {
-			log.Warning(ctx, "githubClient.Tags> Error %s", err)
+			log.Warn(ctx, "githubClient.Tags> Error %s", err)
 			return nil, err
 		}
 		if status >= 400 {
 			if status == http.StatusNotFound {
-				log.Debug("githubClient.Tags> status 404 return nil because no tags found")
+				log.Debug(ctx, "githubClient.Tags> status 404 return nil because no tags found")
 				return nil, nil
 			}
 			return nil, sdk.NewError(sdk.ErrUnknownError, errorAPI(body))
@@ -60,8 +60,8 @@ func (g *githubClient) Tags(ctx context.Context, fullname string) ([]sdk.VCSTag,
 			noEtag = true
 			continue
 		} else {
-			if err := json.Unmarshal(body, &nextTags); err != nil {
-				log.Warning(ctx, "githubClient.Tags> Unable to parse github tags: %s", err)
+			if err := sdk.JSONUnmarshal(body, &nextTags); err != nil {
+				log.Warn(ctx, "githubClient.Tags> Unable to parse github tags: %s", err)
 				return nil, err
 			}
 		}

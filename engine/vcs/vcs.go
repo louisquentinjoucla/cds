@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api"
 	"github.com/ovh/cds/engine/cache"
@@ -17,16 +18,12 @@ import (
 	"github.com/ovh/cds/engine/vcs/gitlab"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // New returns a new service
 func New() *Service {
 	s := new(Service)
-	s.GoRoutines = sdk.NewGoRoutines()
-	s.Router = &api.Router{
-		Mux: mux.NewRouter(),
-	}
+	s.GoRoutines = sdk.NewGoRoutines(context.Background())
 	return s
 }
 
@@ -36,7 +33,10 @@ func (s *Service) Init(config interface{}) (cdsclient.ServiceConfig, error) {
 	if !ok {
 		return cfg, sdk.WithStack(fmt.Errorf("invalid vcs configuration"))
 	}
-
+	s.Router = &api.Router{
+		Mux:    mux.NewRouter(),
+		Config: sConfig.HTTP,
+	}
 	cfg.Host = sConfig.API.HTTP.URL
 	cfg.Token = sConfig.API.Token
 	cfg.InsecureSkipVerifyTLS = sConfig.API.HTTP.Insecure
@@ -59,7 +59,6 @@ func (s *Service) ApplyConfiguration(config interface{}) error {
 	s.ServiceType = sdk.TypeVCS
 	s.HTTPURL = s.Cfg.URL
 	s.MaxHeartbeatFailures = s.Cfg.API.MaxHeartbeatFailures
-	s.ServiceName = "cds-vcs"
 
 	return nil
 }
@@ -94,7 +93,7 @@ func (s *Service) getConsumer(name string) (sdk.VCSServer, error) {
 			serverCfg.URL,
 			serverCfg.Github.APIURL,
 			s.Cfg.API.HTTP.URL,
-			s.Cfg.UI.HTTP.URL,
+			s.UI.HTTP.URL,
 			serverCfg.Github.ProxyWebhook,
 			serverCfg.Github.Username,
 			serverCfg.Github.Token,
@@ -108,7 +107,7 @@ func (s *Service) getConsumer(name string) (sdk.VCSServer, error) {
 			[]byte(serverCfg.Bitbucket.PrivateKey),
 			serverCfg.URL,
 			s.Cfg.API.HTTP.URL,
-			s.Cfg.UI.HTTP.URL,
+			s.UI.HTTP.URL,
 			serverCfg.Bitbucket.ProxyWebhook,
 			serverCfg.Bitbucket.Username,
 			serverCfg.Bitbucket.Token,
@@ -120,7 +119,7 @@ func (s *Service) getConsumer(name string) (sdk.VCSServer, error) {
 		return bitbucketcloud.New(serverCfg.BitbucketCloud.ClientID,
 			serverCfg.BitbucketCloud.ClientSecret,
 			serverCfg.URL,
-			s.Cfg.UI.HTTP.URL,
+			s.UI.HTTP.URL,
 			serverCfg.BitbucketCloud.ProxyWebhook,
 			s.Cache,
 			serverCfg.BitbucketCloud.Status.Disable,
@@ -132,7 +131,7 @@ func (s *Service) getConsumer(name string) (sdk.VCSServer, error) {
 			serverCfg.Gitlab.Secret,
 			serverCfg.URL,
 			serverCfg.Gitlab.CallbackURL,
-			s.Cfg.UI.HTTP.URL,
+			s.UI.HTTP.URL,
 			serverCfg.Gitlab.ProxyWebhook,
 			s.Cache,
 			serverCfg.Gitlab.Status.Disable,
@@ -156,6 +155,13 @@ func (s *Service) getConsumer(name string) (sdk.VCSServer, error) {
 func (s *Service) Serve(c context.Context) error {
 	log.Info(c, "VCS> Starting service %s %s...", s.Cfg.Name, sdk.VERSION)
 	s.StartupTime = time.Now()
+
+	// Retrieve UI URL from API
+	cfgUser, err := s.Client.ConfigUser()
+	if err != nil {
+		return err
+	}
+	s.UI.HTTP.URL = cfgUser.URLUI
 
 	//Init the cache
 	var errCache error

@@ -7,7 +7,6 @@ import { Project } from 'app/model/project.model';
 import { WorkflowNodeRun } from 'app/model/workflow.run.model';
 import { RouterService } from 'app/service/router/router.service';
 import { AutoUnsubscribe } from 'app/shared/decorator/autoUnsubscribe';
-import { AuthenticationState } from 'app/store/authentication.state';
 import { ProjectState } from 'app/store/project.state';
 import { GetWorkflowNodeRun, GetWorkflowRun } from 'app/store/workflow.action';
 import { WorkflowState, WorkflowStateModel } from 'app/store/workflow.state';
@@ -45,8 +44,6 @@ export class WorkflowNodeRunComponent implements OnInit, OnDestroy {
     nodeRunsHistory = new Array<WorkflowNodeRun>();
     selectedTab: string;
 
-    isAdmin: boolean;
-
     nbVuln = 0;
     deltaVul = 0;
 
@@ -61,7 +58,6 @@ export class WorkflowNodeRunComponent implements OnInit, OnDestroy {
         private _cd: ChangeDetectorRef
     ) {
         this.project = this._store.selectSnapshot(ProjectState.projectSnapshot);
-        this.isAdmin = this._store.selectSnapshot(AuthenticationState.user).ring === 'ADMIN';
 
         // Tab selection
         this._activatedRoute.queryParams.subscribe(q => {
@@ -127,8 +123,15 @@ export class WorkflowNodeRunComponent implements OnInit, OnDestroy {
                     this.commitsLength = nr.commits.length;
                     refresh = true;
                 }
-                if (nr.artifacts && nr.artifacts.length !== this.artifactLength) {
-                    this.artifactLength = nr.artifacts.length;
+
+
+                let artiResultsLength = nr?.results?.length ?? 0
+                let oldArtiLength = 0;
+                if (nr.artifacts) {
+                    oldArtiLength = nr.artifacts.length;
+                }
+                if ((nr.artifacts || artiResultsLength > 0) && (oldArtiLength + artiResultsLength) !== this.artifactLength) {
+                    this.artifactLength = oldArtiLength + artiResultsLength;
                     refresh = true;
                 }
                 if (nr.tests && nr.tests.total !== this.nodeRunTests?.total) {

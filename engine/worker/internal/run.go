@@ -11,29 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rockbears/log"
 	"github.com/spf13/afero"
 
 	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/interpolate"
-	"github.com/ovh/cds/sdk/log"
 )
 
-func processVariablesAndParameters(action *sdk.Action, jobParameters []sdk.Parameter, jobSecrets []sdk.Variable) error {
-	if err := processJobParameter(jobParameters, jobSecrets); err != nil {
-		return err
-	}
-
-	if err := processActionVariables(action, nil, jobParameters, jobSecrets); err != nil {
-		return err
-	}
-	return nil
-}
-
-func processJobParameter(parameters []sdk.Parameter, secrets []sdk.Variable) error {
-	secretParam := sdk.VariablesToParameters("", secrets)
-	secretMap := sdk.ParametersToMap(secretParam)
-
+func processJobParameter(parameters []sdk.Parameter) error {
 	for i := range parameters {
 		var err error
 		var oldValue = parameters[i].Value
@@ -42,11 +28,6 @@ func processJobParameter(parameters []sdk.Parameter, secrets []sdk.Variable) err
 		for keepReplacing && x < 10 {
 			var paramMap = sdk.ParametersToMap(parameters)
 			parameters[i].Value, err = interpolate.Do(parameters[i].Value, paramMap)
-			if err != nil {
-				return sdk.WrapError(err, "Unable to interpolate job parameters")
-			}
-
-			parameters[i].Value, err = interpolate.Do(parameters[i].Value, secretMap)
 			if err != nil {
 				return sdk.WrapError(err, "Unable to interpolate job parameters")
 			}
@@ -67,18 +48,16 @@ func processJobParameter(parameters []sdk.Parameter, secrets []sdk.Variable) err
 // - Secrets from project, application and environment
 //
 // This function should be called ONLY from worker
-func processActionVariables(a *sdk.Action, parent *sdk.Action, jobParameters []sdk.Parameter, secrets []sdk.Variable) error {
+func processActionVariables(a *sdk.Action, parent *sdk.Action, jobParameters []sdk.Parameter) error {
 	// replaces placeholder in parameters with ActionBuild variables
 	// replaces placeholder in parameters with Parent params
-	secretParam := sdk.VariablesToParameters("", secrets)
-	secretMap := sdk.ParametersToMap(secretParam)
+
 	var parentParamMap = map[string]string{}
 	if parent != nil {
 		parentParamMap = sdk.ParametersToMap(parent.Parameters)
 	}
 	jobParamMap := sdk.ParametersToMap(jobParameters)
 	allParams := sdk.ParametersMapMerge(parentParamMap, jobParamMap)
-	allParams = sdk.ParametersMapMerge(allParams, secretMap)
 	for i := range a.Parameters {
 		var err error
 		a.Parameters[i].Value, err = interpolate.Do(a.Parameters[i].Value, allParams)
@@ -89,7 +68,7 @@ func processActionVariables(a *sdk.Action, parent *sdk.Action, jobParameters []s
 
 	// replaces placeholder in all children recursively
 	for i := range a.Actions {
-		// Do not interpolate yet cds.version for child because the value can change during job execution
+		// Do not interpolate yet cds.version variable for child because the value can change during job execution
 		filterJobParameters := make([]sdk.Parameter, 0, len(jobParameters))
 		for i := range jobParameters {
 			if jobParameters[i].Name != "cds.version" {
@@ -97,7 +76,7 @@ func processActionVariables(a *sdk.Action, parent *sdk.Action, jobParameters []s
 			}
 		}
 
-		if err := processActionVariables(&a.Actions[i], a, filterJobParameters, secrets); err != nil {
+		if err := processActionVariables(&a.Actions[i], a, filterJobParameters); err != nil {
 			return err
 		}
 	}
@@ -134,10 +113,13 @@ func (w *CurrentWorker) runJob(ctx context.Context, a *sdk.Action, jobID int64, 
 		// Reset step log line to 0
 		w.stepLogLine = 0
 
+		w.currentJob.currentStepIndex = jobStepIndex
 		ctx = workerruntime.SetStepOrder(ctx, jobStepIndex)
 		if step.StepName != "" {
+			w.currentJob.currentStepName = step.StepName
 			ctx = workerruntime.SetStepName(ctx, step.StepName)
 		} else {
+			w.currentJob.currentStepName = step.Name
 			ctx = workerruntime.SetStepName(ctx, step.Name)
 		}
 
@@ -151,7 +133,7 @@ func (w *CurrentWorker) runJob(ctx context.Context, a *sdk.Action, jobID int64, 
 			BuildID: jobID,
 		}
 		if nCriticalFailed == 0 || step.AlwaysExecuted {
-			stepResult = w.runAction(ctx, step, jobID, secrets, step.Name)
+			stepResult = w.runRootAction(ctx, step, jobID, secrets, step.Name)
 
 			// Check if all newVariables are in currentJob.params
 			// variable can be add in w.currentJob.newVariables by worker command export
@@ -201,15 +183,27 @@ func (w *CurrentWorker) runJob(ctx context.Context, a *sdk.Action, jobID int64, 
 	return jobResult
 }
 
-func (w *CurrentWorker) runAction(ctx context.Context, a sdk.Action, jobID int64, secrets []sdk.Variable, actionName string) sdk.Result {
-	log.Info(ctx, "runAction> start action %s %s %d", a.StepName, actionName, jobID)
-	defer func() { log.Info(ctx, "runAction> end action %s %s run %d", a.StepName, actionName, jobID) }()
-
+func (w *CurrentWorker) runRootAction(ctx context.Context, a sdk.Action, jobID int64, secrets []sdk.Variable, actionName string) sdk.Result {
 	w.SendLog(ctx, workerruntime.LevelInfo, fmt.Sprintf("Starting step %q", actionName))
 	defer func() {
 		w.SendTerminatedStepLog(ctx, workerruntime.LevelInfo, fmt.Sprintf("End of step %q", actionName))
 		w.gelfLogger.hook.Flush()
 	}()
+	return w.runAction(ctx, a, jobID, secrets, actionName)
+}
+
+func (w *CurrentWorker) runSubAction(ctx context.Context, a sdk.Action, jobID int64, secrets []sdk.Variable, actionName string) sdk.Result {
+	w.SendLog(ctx, workerruntime.LevelInfo, fmt.Sprintf("Starting sub step %q", actionName))
+	defer func() {
+		w.SendLog(ctx, workerruntime.LevelInfo, fmt.Sprintf("End of sub step %q", actionName))
+		w.gelfLogger.hook.Flush()
+	}()
+	return w.runAction(ctx, a, jobID, secrets, actionName)
+}
+
+func (w *CurrentWorker) runAction(ctx context.Context, a sdk.Action, jobID int64, secrets []sdk.Variable, actionName string) sdk.Result {
+	log.Info(ctx, "runAction> start action %s %s %d", a.StepName, actionName, jobID)
+	defer func() { log.Info(ctx, "runAction> end action %s %s run %d", a.StepName, actionName, jobID) }()
 
 	//If the action is disabled; skip it
 	if !a.Enabled || w.manualExit {
@@ -221,6 +215,13 @@ func (w *CurrentWorker) runAction(ctx context.Context, a sdk.Action, jobID int64
 
 	// Replace variable placeholder that may have been added by last step
 	if err := w.replaceVariablesPlaceholder(&a, w.currentJob.params); err != nil {
+		return sdk.Result{
+			Status:  sdk.StatusFail,
+			BuildID: jobID,
+			Reason:  err.Error(),
+		}
+	}
+	if err := processActionVariables(&a, nil, w.currentJob.params); err != nil {
 		return sdk.Result{
 			Status:  sdk.StatusFail,
 			BuildID: jobID,
@@ -293,7 +294,7 @@ func (w *CurrentWorker) runSteps(ctx context.Context, steps []sdk.Action, a sdk.
 		}
 
 		if !criticalStepFailed || child.AlwaysExecuted {
-			r = w.runAction(ctx, child, jobID, secrets, childName)
+			r = w.runSubAction(ctx, child, jobID, secrets, childName)
 			if r.Status != sdk.StatusSuccess && !child.Optional {
 				criticalStepFailed = true
 			}
@@ -347,7 +348,7 @@ func (w *CurrentWorker) updateStepStatus(ctx context.Context, buildID int64, ste
 		if ctx.Err() != nil {
 			return fmt.Errorf("updateStepStatus> step:%d job:%d worker is cancelled", stepOrder, buildID)
 		}
-		log.Warning(ctx, "updateStepStatus> Cannot send step %d result: err: %s - try: %d - new try in 15s", stepOrder, lasterr, try)
+		log.Warn(ctx, "updateStepStatus> Cannot send step %d result: err: %s - try: %d - new try in 15s", stepOrder, lasterr, try)
 		time.Sleep(15 * time.Second)
 	}
 	return fmt.Errorf("updateStepStatus> Could not send built result 10 times on step %d, giving up. job: %d", stepOrder, buildID)
@@ -355,7 +356,7 @@ func (w *CurrentWorker) updateStepStatus(ctx context.Context, buildID int64, ste
 
 // creates a working directory in $HOME/PROJECT/APP/PIP/BN
 func setupWorkingDirectory(ctx context.Context, fs afero.Fs, wd string) (afero.File, error) {
-	log.Debug("creating directory %s in Filesystem %s", wd, fs.Name())
+	log.Debug(ctx, "creating directory %s in Filesystem %s", wd, fs.Name())
 	if err := fs.MkdirAll(wd, 0755); err != nil {
 		return nil, err
 	}
@@ -406,7 +407,7 @@ func workingDirectory(ctx context.Context, fs afero.Fs, jobInfo sdk.WorkflowNode
 		return dir, sdk.WithStack(err)
 	}
 
-	log.Debug("defining working directory %s", dir)
+	log.Debug(ctx, "defining working directory %s", dir)
 	return dir, nil
 }
 
@@ -418,13 +419,13 @@ func (w *CurrentWorker) setupWorkingDirectory(ctx context.Context, jobInfo sdk.W
 
 	wdFile, err := setupWorkingDirectory(ctx, w.basedir, wd)
 	if err != nil {
-		log.Debug("processJob> setupWorkingDirectory error:%s", err)
+		log.Debug(ctx, "processJob> setupWorkingDirectory error:%s", err)
 		return nil, "", err
 	}
 
 	wdAbs, err := filepath.Abs(wdFile.Name())
 	if err != nil {
-		log.Debug("processJob> setupWorkingDirectory error:%s", err)
+		log.Debug(ctx, "processJob> setupWorkingDirectory error:%s", err)
 		return nil, "", err
 	}
 
@@ -437,7 +438,7 @@ func (w *CurrentWorker) setupWorkingDirectory(ctx context.Context, jobInfo sdk.W
 
 		wdAbs, err = filepath.Abs(wdAbs)
 		if err != nil {
-			log.Debug("processJob> setupWorkingDirectory error:%s", err)
+			log.Debug(ctx, "processJob> setupWorkingDirectory error:%s", err)
 			return nil, "", err
 		}
 	}
@@ -534,7 +535,7 @@ func (w *CurrentWorker) ProcessJob(jobInfo sdk.WorkflowNodeJobRunData) (res sdk.
 	ctx = workerruntime.SetJobID(ctx, jobInfo.NodeJobRun.ID)
 	ctx = workerruntime.SetStepOrder(ctx, 0)
 	defer func() {
-		log.Warning(ctx, "processJob> Status: %s | Reason: %s", res.Status, res.Reason)
+		log.Warn(ctx, "processJob> Status: %s | Reason: %s", res.Status, res.Reason)
 	}()
 
 	wdFile, wdAbs, err := w.setupWorkingDirectory(ctx, jobInfo)
@@ -545,7 +546,7 @@ func (w *CurrentWorker) ProcessJob(jobInfo sdk.WorkflowNodeJobRunData) (res sdk.
 		}
 	}
 	ctx = workerruntime.SetWorkingDirectory(ctx, wdFile)
-	log.Debug("processJob> Setup workspace - %s", wdFile.Name())
+	log.Debug(ctx, "processJob> Setup workspace - %s", wdFile.Name())
 
 	kdFile, _, err := w.setupKeysDirectory(ctx, jobInfo)
 	if err != nil {
@@ -555,7 +556,7 @@ func (w *CurrentWorker) ProcessJob(jobInfo sdk.WorkflowNodeJobRunData) (res sdk.
 		}
 	}
 	ctx = workerruntime.SetKeysDirectory(ctx, kdFile)
-	log.Debug("processJob> Setup key directory - %s", kdFile.Name())
+	log.Debug(ctx, "processJob> Setup key directory - %s", kdFile.Name())
 
 	tdFile, _, err := w.setupTmpDirectory(ctx, jobInfo)
 	if err != nil {
@@ -565,33 +566,25 @@ func (w *CurrentWorker) ProcessJob(jobInfo sdk.WorkflowNodeJobRunData) (res sdk.
 		}
 	}
 	ctx = workerruntime.SetTmpDirectory(ctx, tdFile)
-	log.Debug("processJob> Setup tmp directory - %s", tdFile.Name())
+	log.Debug(ctx, "processJob> Setup tmp directory - %s", tdFile.Name())
 
 	w.currentJob.context = ctx
 
-	var jobParameters = jobInfo.NodeJobRun.Parameters
+	w.currentJob.params = jobInfo.NodeJobRun.Parameters
 
 	//Add working directory as job parameter
-	jobParameters = append(jobParameters, sdk.Parameter{
+	w.currentJob.params = append(w.currentJob.params, sdk.Parameter{
 		Name:  "cds.workspace",
 		Type:  sdk.StringParameter,
 		Value: wdAbs,
 	})
 
 	// add cds.worker on parameters available
-	jobParameters = append(jobParameters, sdk.Parameter{
+	w.currentJob.params = append(w.currentJob.params, sdk.Parameter{
 		Name:  "cds.worker",
 		Type:  sdk.StringParameter,
 		Value: jobInfo.NodeJobRun.Job.WorkerName,
 	})
-
-	// REPLACE ALL VARIABLE EVEN SECRETS HERE
-	if err := processVariablesAndParameters(&jobInfo.NodeJobRun.Job.Action, jobParameters, jobInfo.Secrets); err != nil {
-		return sdk.Result{
-			Status: sdk.StatusFail,
-			Reason: fmt.Sprintf("unable to process job %s: %v", jobInfo.NodeJobRun.Job.Action.Name, err),
-		}
-	}
 
 	// Add secrets as string or password in ActionBuild.Args
 	// So they can be used by plugins
@@ -601,15 +594,21 @@ func (w *CurrentWorker) ProcessJob(jobInfo sdk.WorkflowNodeJobRunData) (res sdk.
 			Name:  s.Name,
 			Value: s.Value,
 		}
-		jobParameters = append(jobParameters, p)
+		w.currentJob.params = append(w.currentJob.params, p)
 	}
 
-	w.currentJob.params = jobParameters
+	// REPLACE ALL VARIABLE EVEN SECRETS HERE
+	if err := processJobParameter(w.currentJob.params); err != nil {
+		return sdk.Result{
+			Status: sdk.StatusFail,
+			Reason: fmt.Sprintf("unable to process job %s: %v", jobInfo.NodeJobRun.Job.Action.Name, err),
+		}
+	}
 
 	res = w.runJob(ctx, &jobInfo.NodeJobRun.Job.Action, jobInfo.NodeJobRun.ID, jobInfo.Secrets)
 
 	if len(res.NewVariables) > 0 {
-		log.Debug("processJob> new variables: %v", res.NewVariables)
+		log.Debug(ctx, "processJob> new variables: %v", res.NewVariables)
 	}
 
 	// Delete working directory

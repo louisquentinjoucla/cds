@@ -5,11 +5,11 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // UnsafeLoadCorruptedSessions should not be used
@@ -139,16 +139,6 @@ func InsertSession(ctx context.Context, db gorpmapper.SqlExecutorWithTx, as *sdk
 	s := authSession{AuthSession: *as}
 	if err := gorpmapping.InsertAndSign(ctx, db, &s); err != nil {
 		return sdk.WrapError(err, "unable to insert auth session")
-	}
-	*as = s.AuthSession
-	return nil
-}
-
-// UpdateSession in database.
-func UpdateSession(ctx context.Context, db gorpmapper.SqlExecutorWithTx, as *sdk.AuthSession) error {
-	s := authSession{AuthSession: *as}
-	if err := gorpmapping.UpdateAndSign(ctx, db, &s); err != nil {
-		return sdk.WrapError(err, "unable to update auth session with id: %s", s.ID)
 	}
 	*as = s.AuthSession
 	return nil

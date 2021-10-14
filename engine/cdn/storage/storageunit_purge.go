@@ -2,15 +2,25 @@ package storage
 
 import (
 	"context"
-	"fmt"
+
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
+const (
+	FieldAPIRef = log.Field("item_apiref")
+	FieldSize   = log.Field("item_size_num")
+	FielID      = log.Field("item_id")
+)
+
+func init() {
+	log.RegisterField(FieldAPIRef)
+}
+
 func (x *RunningStorageUnits) Purge(ctx context.Context, s Interface) error {
-	unitItems, err := LoadAllItemUnitsToDeleteByUnit(ctx, x.m, x.db, s.ID(), gorpmapper.GetOptions.WithDecryption)
+	unitItems, err := LoadAllItemUnitsToDeleteByUnit(ctx, x.m, x.db, s.ID(), x.config.PurgeNbElements, gorpmapper.GetOptions.WithDecryption)
 	if err != nil {
 		return err
 	}
@@ -20,33 +30,39 @@ func (x *RunningStorageUnits) Purge(ctx context.Context, s Interface) error {
 	}
 
 	for _, ui := range unitItems {
+		ctx = context.WithValue(ctx, FieldAPIRef, ui.Item.APIRefHash)
+		ctx = context.WithValue(ctx, FieldSize, ui.Item.Size)
+
 		exists, err := s.ItemExists(ctx, x.m, x.db, *ui.Item)
 		if err != nil {
-			return err
+			log.Error(ctx, "error on ItemExists: err:%s", err)
+			continue
 		}
-		if exists {
-			otherItemUnits, err := x.GetItemUnitByLocatorByUnit(ctx, ui.Locator, s.ID())
-			if err != nil {
-				return err
-			}
 
-			if len(otherItemUnits) > 0 {
-				log.Debug("cdn:purge:%s: item unit %s content will not be deleted because there is %d other item units with the same content ", s.Name(), ui.ID, len(otherItemUnits))
-			} else {
-				if err := s.Remove(ctx, ui); err != nil {
-					log.ErrorWithFields(ctx, log.Fields{
-						"item_apiref":   ui.Item.APIRefHash,
-						"item_size_num": ui.Item.Size,
-						"stack_trace":   fmt.Sprintf("%+v", err),
-					}, "unable to remote item %s on %s: %v", ui.ID, s.Name(), err)
-					continue
+		if exists {
+			var hasItemUnit bool
+			if _, hasLocator := s.(StorageUnitWithLocator); hasLocator {
+				var err error
+				hasItemUnit, err = x.GetItemUnitByLocatorByUnit(ui.Locator, s.ID(), ui.Type)
+				if err != nil {
+					return err
 				}
 			}
 
-			log.InfoWithFields(ctx, log.Fields{
-				"item_apiref":   ui.Item.APIRefHash,
-				"item_size_num": ui.Item.Size,
-			}, "item %s deleted on %s", ui.ID, s.Name())
+			if hasItemUnit {
+				log.Info(ctx, "item %s will not be deleted from %s", ui.ID, s.Name())
+			} else {
+				if err := s.Remove(ctx, ui); err != nil {
+					if sdk.ErrorIs(err, sdk.ErrNotFound) {
+						log.Info(ctx, "Item %s has already been deleted from %s", ui.ItemID, s.Name())
+						continue
+					}
+					ctx = sdk.ContextWithStacktrace(ctx, err)
+					log.Error(ctx, "unable to remove item %s on %s: %v", ui.ID, s.Name(), err)
+					continue
+				}
+				log.Info(ctx, "item %s deleted on %s", ui.ID, s.Name())
+			}
 		}
 
 		tx, err := x.db.Begin()
@@ -55,23 +71,18 @@ func (x *RunningStorageUnits) Purge(ctx context.Context, s Interface) error {
 		}
 
 		if err := DeleteItemUnit(x.m, tx, &ui); err != nil {
-			log.ErrorWithFields(ctx, log.Fields{
-				"item_apiref":   ui.Item.APIRefHash,
-				"item_size_num": ui.Item.Size,
-				"stack_trace":   fmt.Sprintf("%+v", err),
-			}, "unable to delete item unit %s: %v", ui.ID, err)
-			tx.Rollback() // nolint
+			ctx = sdk.ContextWithStacktrace(ctx, err)
+			log.Error(ctx, "unable to delete item unit %s: %v", ui.ID, err)
+			_ = tx.Rollback() // nolint
 			continue
 		}
 
 		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback() // nolint
 			return sdk.WithStack(err)
 		}
 
-		log.InfoWithFields(ctx, log.Fields{
-			"item_apiref":   ui.Item.APIRefHash,
-			"item_size_num": ui.Item.Size,
-		}, "item %s deleted on %s", ui.ID, s.Name())
+		log.Info(ctx, "item %s deleted on %s", ui.ID, s.Name())
 	}
 
 	return nil

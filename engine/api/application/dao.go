@@ -7,11 +7,11 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/lib/pq"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 type dbApplication struct {
@@ -306,4 +306,35 @@ func LoadAllNames(db gorp.SqlExecutor, projectKey string) (sdk.IDNames, error) {
 func LoadIcon(db gorp.SqlExecutor, appID int64) (string, error) {
 	icon, err := db.SelectStr("SELECT icon FROM application WHERE id = $1", appID)
 	return icon, sdk.WithStack(err)
+}
+
+// LoadAllNamesByFromRepository returns all application names for a repository
+func LoadAllNamesByFromRepository(db gorp.SqlExecutor, projID int64, fromRepository string) (sdk.IDNames, error) {
+	if fromRepository == "" {
+		return nil, sdk.WithData(sdk.ErrUnknownError, "could not call LoadAllNamesByFromRepository with empty fromRepository")
+	}
+	query := `SELECT application.id, application.name
+			  FROM application
+			  WHERE project_id = $1 AND from_repository = $2
+			  ORDER BY application.name`
+
+	var res sdk.IDNames
+	if _, err := db.Select(&res, query, projID, fromRepository); err != nil {
+		if err == sql.ErrNoRows {
+			return res, nil
+		}
+		return nil, sdk.WrapError(err, "application.LoadAllNamesByFromRepository")
+	}
+
+	return res, nil
+}
+
+// ResetFromRepository reset fromRepository for all applications using the same fromRepository in a given project
+func ResetFromRepository(db gorp.SqlExecutor, projID int64, fromRepository string) error {
+	if fromRepository == "" {
+		return sdk.WithData(sdk.ErrUnknownError, "could not call LoadAllNamesByFromRepository with empty fromRepository")
+	}
+	query := `UPDATE application SET from_repository='' WHERE project_id = $1 AND from_repository = $2`
+	_, err := db.Exec(query, projID, fromRepository)
+	return sdk.WithStack(err)
 }

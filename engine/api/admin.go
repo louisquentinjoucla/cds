@@ -9,15 +9,16 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/api/project"
 	"github.com/ovh/cds/engine/api/services"
 	"github.com/ovh/cds/engine/api/workflow"
+	"github.com/ovh/cds/engine/database"
 	"github.com/ovh/cds/engine/featureflipping"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (api *API) postMaintenanceHandler() service.Handler {
@@ -46,8 +47,7 @@ func (api *API) postMaintenanceHandler() service.Handler {
 
 func (api *API) getAdminServicesHandler() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		srvs := []sdk.Service{}
-
+		var srvs []sdk.Service
 		var err error
 		if r.FormValue("type") != "" {
 			srvs, err = services.LoadAllByType(ctx, api.mustDB(), r.FormValue("type"), services.LoadOptions.WithStatus)
@@ -137,7 +137,7 @@ func selectDeleteAdminServiceCallHandler(api *API, method string) service.Handle
 		}
 
 		query := r.FormValue("query")
-		btes, _, code, err := services.DoRequest(ctx, api.mustDB(), srvs, method, query, nil)
+		btes, _, code, err := services.DoRequest(ctx, srvs, method, query, nil)
 		if err != nil {
 			return sdk.NewError(sdk.Error{
 				Status:  code,
@@ -146,7 +146,7 @@ func selectDeleteAdminServiceCallHandler(api *API, method string) service.Handle
 		}
 		reader := bytes.NewReader(btes)
 
-		log.Debug("selectDeleteAdminServiceCallHandler> %s : %s", query, string(btes))
+		log.Debug(ctx, "selectDeleteAdminServiceCallHandler> %s : %s", query, string(btes))
 
 		if strings.HasPrefix(query, "/debug/pprof/") {
 			return service.Write(w, reader, code, "text/plain")
@@ -169,7 +169,7 @@ func putPostAdminServiceCallHandler(api *API, method string) service.Handler {
 		}
 		defer r.Body.Close()
 
-		btes, _, code, err := services.DoRequest(ctx, api.mustDB(), srvs, method, query, body)
+		btes, _, code, err := services.DoRequest(ctx, srvs, method, query, body)
 		if err != nil {
 			return sdk.NewError(sdk.Error{
 				Status:  code,
@@ -181,94 +181,40 @@ func putPostAdminServiceCallHandler(api *API, method string) service.Handler {
 	}
 }
 
+func (api *API) deleteDatabaseMigrationHandler() service.Handler {
+	return database.AdminDeleteDatabaseMigration(api.mustDB)
+}
+
+func (api *API) postDatabaseMigrationUnlockedHandler() service.Handler {
+	return database.AdminDatabaseMigrationUnlocked(api.mustDB)
+}
+
+func (api *API) getDatabaseMigrationHandler() service.Handler {
+	return database.AdminGetDatabaseMigration(api.mustDB)
+}
+
 func (api *API) getAdminDatabaseSignatureResume() service.Handler {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		var entities = gorpmapping.Mapper.ListSignedEntities()
-		var resume = make(sdk.CanonicalFormUsageResume, len(entities))
-
-		for _, e := range entities {
-			data, err := gorpmapping.Mapper.ListCanonicalFormsByEntity(api.mustDB(), e)
-			if err != nil {
-				return err
-			}
-			resume[e] = data
-		}
-
-		return service.WriteJSON(w, resume, http.StatusOK)
-	}
+	return database.AdminDatabaseSignatureResume(api.mustDB, gorpmapping.Mapper)
 }
 
 func (api *API) getAdminDatabaseSignatureTuplesBySigner() service.Handler {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		vars := mux.Vars(r)
-		entity := vars["entity"]
-		signer := vars["signer"]
-
-		pks, err := gorpmapping.Mapper.ListTupleByCanonicalForm(api.mustDB(), entity, signer)
-		if err != nil {
-			return err
-		}
-
-		return service.WriteJSON(w, pks, http.StatusOK)
-	}
+	return database.AdminDatabaseSignatureTuplesBySigner(api.mustDB, gorpmapping.Mapper)
 }
 
 func (api *API) postAdminDatabaseSignatureRollEntityByPrimaryKey() service.Handler {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		vars := mux.Vars(r)
-		entity := vars["entity"]
-		pk := vars["pk"]
-
-		tx, err := api.mustDBWithCtx(ctx).Begin()
-		if err != nil {
-			return sdk.WithStack(err)
-		}
-		defer tx.Rollback() // nolint
-
-		if err := gorpmapping.Mapper.RollSignedTupleByPrimaryKey(ctx, tx, entity, pk); err != nil {
-			return err
-		}
-
-		if err := tx.Commit(); err != nil {
-			return sdk.WithStack(err)
-		}
-
-		return nil
-	}
+	return database.AdminDatabaseSignatureRollEntityByPrimaryKey(api.mustDB, gorpmapping.Mapper)
 }
 
 func (api *API) getAdminDatabaseEncryptedEntities() service.Handler {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		return service.WriteJSON(w, gorpmapping.Mapper.ListEncryptedEntities(), http.StatusOK)
-	}
+	return database.AdminDatabaseEncryptedEntities(api.mustDB, gorpmapping.Mapper)
 }
 
 func (api *API) getAdminDatabaseEncryptedTuplesByEntity() service.Handler {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		vars := mux.Vars(r)
-		entity := vars["entity"]
-
-		pks, err := gorpmapping.Mapper.ListTuplesByEntity(api.mustDB(), entity)
-		if err != nil {
-			return err
-		}
-
-		return service.WriteJSON(w, pks, http.StatusOK)
-	}
+	return database.AdminDatabaseEncryptedTuplesByEntity(api.mustDB, gorpmapping.Mapper)
 }
 
 func (api *API) postAdminDatabaseRollEncryptedEntityByPrimaryKey() service.Handler {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-		vars := mux.Vars(r)
-		entity := vars["entity"]
-		pk := vars["pk"]
-
-		if err := gorpmapping.Mapper.RollEncryptedTupleByPrimaryKey(api.mustDB(), entity, pk); err != nil {
-			return err
-		}
-
-		return nil
-	}
+	return database.AdminDatabaseRollEncryptedEntityByPrimaryKey(api.mustDB, gorpmapping.Mapper)
 }
 
 func (api *API) getAdminFeatureFlipping() service.Handler {
@@ -284,7 +230,7 @@ func (api *API) getAdminFeatureFlipping() service.Handler {
 func (api *API) getAdminFeatureFlippingByName() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 		vars := mux.Vars(r)
-		name := vars["name"]
+		name := sdk.FeatureName(vars["name"])
 
 		f, err := featureflipping.LoadByName(ctx, gorpmapping.Mapper, api.mustDB(), name)
 		if err != nil {
@@ -311,7 +257,7 @@ func (api *API) postAdminFeatureFlipping() service.Handler {
 func (api *API) putAdminFeatureFlipping() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 		vars := mux.Vars(r)
-		name := vars["name"]
+		name := sdk.FeatureName(vars["name"])
 
 		var f sdk.Feature
 		if err := service.UnmarshalBody(r, &f); err != nil {
@@ -332,6 +278,8 @@ func (api *API) putAdminFeatureFlipping() service.Handler {
 			return err
 		}
 
+		featureflipping.InvalidateCache(ctx, f.Name)
+
 		return service.WriteJSON(w, f, http.StatusOK)
 	}
 }
@@ -339,16 +287,18 @@ func (api *API) putAdminFeatureFlipping() service.Handler {
 func (api *API) deleteAdminFeatureFlipping() service.Handler {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 		vars := mux.Vars(r)
-		name := vars["name"]
+		name := sdk.FeatureName(vars["name"])
 
-		oldF, err := featureflipping.LoadByName(ctx, gorpmapping.Mapper, api.mustDB(), name)
+		feature, err := featureflipping.LoadByName(ctx, gorpmapping.Mapper, api.mustDB(), name)
 		if err != nil {
 			return err
 		}
 
-		if err := featureflipping.Delete(api.mustDB(), oldF.ID); err != nil {
+		if err := featureflipping.Delete(api.mustDB(), feature.ID); err != nil {
 			return err
 		}
+
+		featureflipping.InvalidateCache(ctx, feature.Name)
 
 		return nil
 	}

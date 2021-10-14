@@ -15,19 +15,19 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 	"github.com/spf13/afero"
 
 	"github.com/ovh/cds/cli"
 	"github.com/ovh/cds/engine/api"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // New returns a new service
 func New() *Service {
 	s := new(Service)
-	s.GoRoutines = sdk.NewGoRoutines()
+	s.GoRoutines = sdk.NewGoRoutines(context.Background())
 	s.Router = &api.Router{
 		Mux: mux.NewRouter(),
 	}
@@ -40,7 +40,6 @@ func (s *Service) Init(config interface{}) (cdsclient.ServiceConfig, error) {
 	if !ok {
 		return cfg, sdk.WithStack(fmt.Errorf("invalid ui service configuration"))
 	}
-
 	cfg.Host = sConfig.API.HTTP.URL
 	cfg.Token = sConfig.API.Token
 	cfg.InsecureSkipVerifyTLS = sConfig.API.HTTP.Insecure
@@ -63,6 +62,7 @@ func (s *Service) ApplyConfiguration(config interface{}) error {
 	s.ServiceType = sdk.TypeUI
 	s.HTTPURL = s.Cfg.URL
 	s.MaxHeartbeatFailures = s.Cfg.API.MaxHeartbeatFailures
+	s.Router.Config = s.Cfg.HTTP
 
 	// HTMLDir must contains the ui dist directory.
 	// ui.tar.gz contains the dist directory
@@ -145,7 +145,7 @@ func (s *Service) Serve(ctx context.Context) error {
 	<-ctx.Done()
 	log.Info(ctx, "ui> Shutdown HTTP Server")
 	if err := s.Server.Shutdown(ctx); err != nil {
-		return fmt.Errorf("unable to shutdown server: %v", err)
+		return sdk.WrapError(err, "unable to shutdown server")
 	}
 
 	return ctx.Err()
@@ -156,7 +156,7 @@ func (s *Service) Serve(ctx context.Context) error {
 // filename;shar512values
 // for each line, we check that the files in dist have the same sha512
 func (s *Service) checkChecksumFiles() error {
-	log.Debug("ui> checking checksum files...")
+	log.Debug(context.Background(), "ui> checking checksum files...")
 
 	filesUI := filepath.Join(s.HTMLDir, "FILES_UI")
 	content, err := ioutil.ReadFile(filesUI)
@@ -178,7 +178,7 @@ func (s *Service) checkChecksumFiles() error {
 			return fmt.Errorf("file %s sha512:%s computed:%s", line[0], line[1], sha512sum)
 		}
 	}
-	log.Debug("ui> checking checksum files OK")
+	log.Debug(context.Background(), "ui> checking checksum files OK")
 	return nil
 }
 
@@ -186,7 +186,7 @@ func (s *Service) checkStaticFiles(ctx context.Context) error {
 	fs := http.Dir(s.HTMLDir)
 
 	if _, err := fs.Open("index.html"); os.IsNotExist(err) {
-		log.Warning(ctx, "ui> CDS UI static files were not found in directory %v", s.HTMLDir)
+		log.Warn(ctx, "ui> CDS UI static files were not found in directory %v", s.HTMLDir)
 
 		if err := s.askForGettingStaticFiles(ctx, sdk.VERSION); err != nil {
 			return err
@@ -240,8 +240,10 @@ func (s *Service) indexHTMLReplaceVar() error {
 		return sdk.WrapError(err, "cannot parse base href regex")
 	}
 	indexContent := regexBaseHref.ReplaceAllString(string(read), "<base href=\""+s.Cfg.BaseURL+"\">")
-	indexContent = strings.Replace(indexContent, "window.cds_sentry_url = '';", "window.cds_sentry_url = '"+s.Cfg.SentryURL+"';", -1)
 	indexContent = strings.Replace(indexContent, "window.cds_version = '';", "window.cds_version='"+sdk.VERSION+"';", -1)
+	if s.Cfg.SentryURL != "" {
+		indexContent = strings.Replace(indexContent, "window.cds_sentry_url = '';", "window.cds_sentry_url = '"+s.Cfg.SentryURL+"';", -1)
+	}
 	return ioutil.WriteFile(indexHTML, []byte(indexContent), 0)
 }
 
@@ -334,24 +336,20 @@ func (s *Service) downloadStaticFilesFromGitHub(ctx context.Context, version str
 	if _, err := os.Stat(s.Cfg.Staticdir); os.IsNotExist(err) {
 		log.Info(ctx, "ui> creating directory %s", s.Cfg.Staticdir)
 		if err := os.Mkdir(s.Cfg.Staticdir, 0740); err != nil {
-			return fmt.Errorf("Error while creating directory: %v", err)
+			return sdk.WrapError(err, "error while creating directory: %v", s.Cfg.Staticdir)
 		}
 	}
 
-	urlFiles := fmt.Sprintf("https://github.com/ovh/cds/releases/download/%s/ui.tar.gz", version)
-	if version == "latest" {
-		var err error
-		urlFiles, err = s.Client.DownloadURLFromGithub("ui.tar.gz")
-		if err != nil {
-			return fmt.Errorf("Error while getting ui.tar.gz from Github err:%s", err)
-		}
+	urlFiles, err := sdk.DownloadURLFromGithub("ui.tar.gz", version)
+	if err != nil {
+		return sdk.WrapError(err, "error while getting ui.tar.gz from GitHub")
 	}
 
 	log.Info(ctx, "ui> Downloading from %s...", urlFiles)
 
 	resp, err := http.Get(urlFiles)
 	if err != nil {
-		return fmt.Errorf("Error while getting ui.tar.gz from GitHub: %v", err)
+		return sdk.WrapError(err, "error while getting ui.tar.gz from GitHub")
 	}
 	defer resp.Body.Close()
 
@@ -360,7 +358,7 @@ func (s *Service) downloadStaticFilesFromGitHub(ctx context.Context, version str
 	}
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("Error while getting ui.tar.gz from GitHub - HTTP code: %d", resp.StatusCode)
+		return fmt.Errorf("error while getting ui.tar.gz from GitHub - HTTP code: %d", resp.StatusCode)
 	}
 
 	log.Info(ctx, "ui> Download successful, decompressing the archive file...")

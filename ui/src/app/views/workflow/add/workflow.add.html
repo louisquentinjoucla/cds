@@ -102,7 +102,7 @@
                                                             translate }}
                                                         </button>
                                                         <button class="ui right floated green button" type="button"
-                                                            (click)="goToNextStep()"
+                                                            (click)="goToNextStep(null)"
                                                             [disabled]="!workflow.name || name.invalid || duplicateWorkflowName"
                                                             [class.loading]="loading">{{ 'btn_next' | translate }}
                                                         </button>
@@ -187,9 +187,8 @@
                                                                         labelField="fullname" [isSearchable]="true"
                                                                         #repositorySelect>
                                                                         <sui-select-option
-                                                                            *ngFor="let r of repositorySelect.filteredOptions"
+                                                                            *ngFor="let r of repositorySelect.filteredOptions.slice(0, 100); trackBy: trackRepo"
                                                                             [value]="r">
-
                                                                         </sui-select-option>
                                                                     </sui-select>
                                                                 </ng-container>
@@ -211,7 +210,8 @@
                                                             </app-vcs-strategy>
                                                         </div>
                                                         <div class="right aligned field"
-                                                            *ngIf="!pollingResponse && selectedRepo">
+                                                            *ngIf="!pollingResponse && selectedRepo ||
+                                                            (selectedRepo && pollingResponse?.error_details?.message !== '')">
                                                             <button class="ui green button" type="button"
                                                                 [class.loading]="loading" [disabled]="loading"
                                                                 (click)="createWorkflowFromRepo()">{{
@@ -225,9 +225,8 @@
                                                             </ng-container>
 
                                                             <div class="ui error message"
-                                                                *ngIf="pollingResponse.status === 3">
-                                                                {{pollingResponse.error_details.message}} - 
-                                                                {{pollingResponse.error_details.from}}                                                            </div>
+                                                                *ngIf="pollingResponse.status === 3 && !loading">
+                                                                {{pollingResponse.error_details.message}} - {{pollingResponse.error_details.from}}                                                            </div>
                                                             <ng-container
                                                                 *ngIf="pollingResponse && pollingResponse.load_files && pollingResponse.load_files.results">
                                                                 {{ 'wizard_repo_files' | translate}}
@@ -316,7 +315,7 @@
 
                                     <!-- ######### WORKFLOW PIPELINE SECOND STEP ######### -->
                                     <ng-container *ngSwitchCase="1">
-                                        <app-workflow-node-add-wizard [project]="project" [loading]="loading" [canCreateFork]="true"
+                                        <app-workflow-node-add-wizard [project]="project" [loading]="loading" [canCreateFork]="true" [display]="true"
                                             (nodeCreated)="createWorkflow($event)"></app-workflow-node-add-wizard>
                                     </ng-container>
                                 </div>

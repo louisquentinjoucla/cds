@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output, ViewChild } from '@angular/core';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, EventEmitter, Input, Output, ViewChild } from '@angular/core';
 import { Store } from '@ngxs/store';
 import { ModalTemplate, SuiActiveModal, SuiModalService, TemplateModalConfig } from '@richardlt/ng2-semantic-ui';
 import { Application } from 'app/model/application.model';
@@ -21,7 +21,7 @@ import { WorkflowNodeAddWizardComponent } from 'app/shared/workflow/wizard/node-
 import { WorkflowWizardOutgoingHookComponent } from 'app/shared/workflow/wizard/outgoinghook/wizard.outgoinghook.component';
 import { WorkflowState } from 'app/store/workflow.state';
 import cloneDeep from 'lodash-es/cloneDeep';
-import { forkJoin, Observable } from 'rxjs';
+import { forkJoin, Observable, of } from 'rxjs';
 
 @Component({
     selector: 'app-workflow-trigger',
@@ -33,8 +33,8 @@ export class WorkflowTriggerComponent {
     @ViewChild('triggerModal')
     triggerModal: ModalTemplate<boolean, boolean, void>;
     modal: SuiActiveModal<boolean, boolean, void>;
-    @ViewChild('nodeWizard')
-    nodeWizard: WorkflowNodeAddWizardComponent;
+
+    @ViewChild('nodeWizard') nodeWizard: WorkflowNodeAddWizardComponent;
     @ViewChild('worklflowAddOutgoingHook')
     worklflowAddOutgoingHook: WorkflowWizardOutgoingHookComponent;
 
@@ -51,7 +51,7 @@ export class WorkflowTriggerComponent {
     isParent: boolean;
 
     constructor(private _modalService: SuiModalService, private _pipService: PipelineService, private _store: Store,
-                private _envService: EnvironmentService, private _appService: ApplicationService) { }
+                private _envService: EnvironmentService, private _appService: ApplicationService, private _cd: ChangeDetectorRef) { }
 
     show(t: string, isP: boolean): void {
         this.selectedType = t;
@@ -59,6 +59,7 @@ export class WorkflowTriggerComponent {
         const config = new TemplateModalConfig<boolean, boolean, void>(this.triggerModal);
         config.mustScroll = true;
         this.modal = this._modalService.open(config);
+        this._cd.detectChanges();
     }
 
     hide(): void {
@@ -183,41 +184,41 @@ export class WorkflowTriggerComponent {
     getApplication(w: Workflow): Observable<Application> {
         if (this.destNode.context.application_id) {
             if (w.applications && w.applications[this.destNode.context.application_id]) {
-                return Observable.of(w.applications[this.destNode.context.application_id]);
+                return of(w.applications[this.destNode.context.application_id]);
             }
             return this._appService
                 .getApplication(this.project.key, this.project.application_names
                     .find(a => a.id === this.destNode.context.application_id).name)
         }
-        return Observable.of(null);
+        return of(null);
     }
 
     getPipeline(w: Workflow): Observable<Pipeline> {
         if (this.destNode.context.pipeline_id) {
             if (w.pipelines && w.pipelines[this.destNode.context.pipeline_id]) {
-                return Observable.of(w.pipelines[this.destNode.context.pipeline_id]);
+                return of(w.pipelines[this.destNode.context.pipeline_id]);
             }
             return this._pipService.getPipeline(this.project.key, this.project.pipeline_names
                 .find(p => p.id === this.destNode.context.pipeline_id).name)
         }
-        return Observable.of(null);
+        return of(null);
     }
 
     getEnvironment(w: Workflow): Observable<Environment> {
         if (this.destNode.context.environment_id) {
             if (w.environments && w.environments[this.destNode.context.environment_id]) {
-                return Observable.of(w.environments[this.destNode.context.environment_id]);
+                return of(w.environments[this.destNode.context.environment_id]);
             }
             return this._envService.getEnvironment(this.project.key, this.project.environment_names
                 .find(e => e.id === this.destNode.context.environment_id).name);
         }
-        return Observable.of(null);
+        return of(null);
     }
 
     getProjectIntegration(w: Workflow): Observable<ProjectIntegration> {
         if (this.destNode.context.project_integration_id) {
-            return Observable.of(this.project.integrations.find(i => i.id === this.destNode.context.project_integration_id));
+            return of(this.project.integrations.find(i => i.id === this.destNode.context.project_integration_id));
         }
-        return Observable.of(null);
+        return of(null);
     }
 }

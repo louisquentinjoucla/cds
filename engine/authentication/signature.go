@@ -20,7 +20,7 @@ type Signer interface {
 	GetIssuerName() string
 	GetSigningKey() *rsa.PrivateKey
 	SignJWT(jwtToken *jwt.Token) (string, error)
-	SignJWS(content interface{}, duration time.Duration) (string, error)
+	SignJWS(content interface{}, now time.Time, duration time.Duration) (string, error)
 }
 
 type Verifier interface {
@@ -97,13 +97,13 @@ type signaturePayload struct {
 }
 
 // SignJWS returns a jws string using CDS signing key.
-func (s signer) SignJWS(content interface{}, duration time.Duration) (string, error) {
+func (s signer) SignJWS(content interface{}, now time.Time, duration time.Duration) (string, error) {
 	buf, err := json.Marshal(content)
 	if err != nil {
 		return "", sdk.WithStack(err)
 	}
 	var jsonData map[string]interface{}
-	if err := json.Unmarshal(buf, &jsonData); err != nil {
+	if err := sdk.JSONUnmarshal(buf, &jsonData); err != nil {
 		return "", sdk.WithStack(err)
 	}
 
@@ -112,7 +112,7 @@ func (s signer) SignJWS(content interface{}, duration time.Duration) (string, er
 		Data: jsonData,
 	}
 	if duration > 0 {
-		payload.Expire = time.Now().Add(duration).Unix()
+		payload.Expire = now.Add(duration).Unix()
 	}
 
 	signer, err := jws.NewSigner(s.signingKey)
@@ -141,7 +141,7 @@ func (s verifier) VerifyJWS(signature string, content interface{}) error {
 	if err != nil {
 		return sdk.WrapError(err, "unable to decode payload data")
 	}
-	if err := json.Unmarshal(buf, content); err != nil {
+	if err := sdk.JSONUnmarshal(buf, content); err != nil {
 		return sdk.WrapError(err, "unable to decode payload data")
 	}
 

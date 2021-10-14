@@ -2,20 +2,23 @@ package internal
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func keyInstallHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := workerruntime.SetJobID(ctx, wk.currentJob.wJob.ID)
+		ctx = workerruntime.SetStepOrder(ctx, wk.currentJob.currentStepIndex)
+		ctx = workerruntime.SetStepName(ctx, wk.currentJob.currentStepName)
+
 		vars := mux.Vars(r)
 		keyName := vars["key"]
 
@@ -29,7 +32,7 @@ func keyInstallHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc 
 
 		var mapBody = make(map[string]string)
 		if len(body) > 0 {
-			if err := json.Unmarshal(body, &mapBody); err != nil {
+			if err := sdk.JSONUnmarshal(body, &mapBody); err != nil {
 				writeError(w, r, sdk.NewError(sdk.ErrWrongRequest, err))
 				return
 			}
@@ -67,7 +70,7 @@ func keyInstallHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc 
 			}
 			return
 		}
-		log.Debug("key %s installed to %s", key.Name, response.PKey)
+		log.Debug(ctx, "key %s installed to %s", key.Name, response.PKey)
 		writeJSON(w, response, 200)
 	}
 }
@@ -77,12 +80,12 @@ func keyInstall(wk workerruntime.Runtime, filename string, key *sdk.Variable) (*
 		return wk.InstallKey(*key)
 	}
 
-	log.Debug("worker.keyInstall> installing key %s to %s", key.Name, filename)
+	log.Debug(context.Background(), "worker.keyInstall> installing key %s to %s", key.Name, filename)
 
 	if !sdk.PathIsAbs(filename) {
 		return nil, fmt.Errorf("unsupported relative path")
 	}
 
-	log.Debug("worker.keyInstall> destination: %s", filename)
+	log.Debug(context.TODO(), "worker.keyInstall> destination: %s", filename)
 	return wk.InstallKeyTo(*key, filename)
 }

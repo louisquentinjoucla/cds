@@ -12,7 +12,7 @@ import (
 	"github.com/fsamin/go-dump"
 )
 
-func newStep(act sdk.Action) Step {
+func NewStep(act sdk.Action) Step {
 	s := Step{
 		Name: act.StepName,
 	}
@@ -167,6 +167,20 @@ func newStep(act sdk.Action) Step {
 			if prefix != nil {
 				s.GitTag.Prefix = prefix.Value
 			}
+		case sdk.PromoteAction:
+			s.Promote = &StepPromote{}
+			artifacts := sdk.ParameterFind(act.Parameters, "artifacts")
+			if artifacts != nil {
+				s.Promote.Artifacts = artifacts.Value
+			}
+			srcMaturity := sdk.ParameterFind(act.Parameters, "srcMaturity")
+			if srcMaturity != nil {
+				s.Promote.SrcMaturity = srcMaturity.Value
+			}
+			destMaturity := sdk.ParameterFind(act.Parameters, "destMaturity")
+			if destMaturity != nil {
+				s.Promote.DestMaturity = destMaturity.Value
+			}
 		case sdk.ReleaseAction:
 			s.Release = &StepRelease{}
 			artifacts := sdk.ParameterFind(act.Parameters, "artifacts")
@@ -177,13 +191,31 @@ func newStep(act sdk.Action) Step {
 			if releaseNote != nil {
 				s.Release.ReleaseNote = releaseNote.Value
 			}
+			srcMaturity := sdk.ParameterFind(act.Parameters, "srcMaturity")
+			if srcMaturity != nil {
+				s.Release.SrcMaturity = srcMaturity.Value
+			}
+			destMaturity := sdk.ParameterFind(act.Parameters, "destMaturity")
+			if destMaturity != nil {
+				s.Release.DestMaturity = destMaturity.Value
+			}
+		case sdk.ReleaseVCSAction:
+			s.ReleaseVCS = &StepReleaseVCS{}
+			artifacts := sdk.ParameterFind(act.Parameters, "artifacts")
+			if artifacts != nil {
+				s.ReleaseVCS.Artifacts = artifacts.Value
+			}
+			releaseNote := sdk.ParameterFind(act.Parameters, "releaseNote")
+			if releaseNote != nil {
+				s.ReleaseVCS.ReleaseNote = releaseNote.Value
+			}
 			tag := sdk.ParameterFind(act.Parameters, "tag")
 			if tag != nil {
-				s.Release.Tag = tag.Value
+				s.ReleaseVCS.Tag = tag.Value
 			}
 			title := sdk.ParameterFind(act.Parameters, "title")
 			if title != nil {
-				s.Release.Title = title.Value
+				s.ReleaseVCS.Title = title.Value
 			}
 		case sdk.JUnitAction:
 			var step StepJUnitReport
@@ -214,6 +246,9 @@ func newStep(act sdk.Action) Step {
 				step := StepInstallKey(string(key.Value))
 				s.InstallKey = &step
 			}
+		case sdk.PushBuildInfo:
+			step := StepPushBuildInfo("{{.cds.workflow}}")
+			s.PushBuildInfo = &step
 		case sdk.DeployApplicationAction:
 			step := StepDeploy("{{.cds.application}}")
 			s.Deploy = &step
@@ -244,6 +279,8 @@ type StepParameters map[string]string
 
 // StepCustom represents exported custom step.
 type StepCustom map[string]StepParameters
+
+type StepPushBuildInfo string
 
 // StepCoverage represents exported coverage step.
 type StepCoverage struct {
@@ -289,8 +326,23 @@ type StepGitClone struct {
 	User       string `json:"user,omitempty" yaml:"user,omitempty"`
 }
 
+// StepPromote represents exported promote step.
+type StepPromote struct {
+	Artifacts    string `json:"artifacts,omitempty" yaml:"artifacts,omitempty"`
+	SrcMaturity  string `json:"srcMaturity,omitempty" yaml:"srcMaturity,omitempty"`
+	DestMaturity string `json:"destMaturity,omitempty" yaml:"destMaturity,omitempty"`
+}
+
 // StepRelease represents exported release step.
 type StepRelease struct {
+	Artifacts    string `json:"artifacts,omitempty" yaml:"artifacts,omitempty"`
+	ReleaseNote  string `json:"releaseNote,omitempty" yaml:"releaseNote,omitempty"`
+	SrcMaturity  string `json:"srcMaturity,omitempty" yaml:"srcMaturity,omitempty"`
+	DestMaturity string `json:"destMaturity,omitempty" yaml:"destMaturity,omitempty"`
+}
+
+// StepReleaseVCS represents exported release step.
+type StepReleaseVCS struct {
 	Artifacts   string `json:"artifacts,omitempty" yaml:"artifacts,omitempty"`
 	ReleaseNote string `json:"releaseNote,omitempty" yaml:"releaseNote,omitempty"`
 	Tag         string `json:"tag,omitempty" yaml:"tag,omitempty" jsonschema:"required"`
@@ -316,7 +368,7 @@ type StepCheckout string
 // StepInstallKey represents exported installKey step.
 type StepInstallKey interface{}
 
-// StepDeploy represents exported deploy step.
+// StepDeploy represents exported push build info step.
 type StepDeploy string
 
 // Step represents exported step used in a job.
@@ -329,13 +381,16 @@ type Step struct {
 	// step specific data, only one option should be set
 	StepCustom       `json:"-" yaml:",inline"`
 	Script           interface{}           `json:"script,omitempty" yaml:"script,omitempty" jsonschema:"oneof_type=string;array,oneof_required=actionScript" jsonschema_description:"Script.\nhttps://ovh.github.io/cds/docs/actions/builtin-script"`
+	PushBuildInfo    *StepPushBuildInfo    `json:"pushBuildInfo,omitempty" yaml:"pushBuildInfo,omitempty" jsonschema:"oneof_required=actionPushBuildInfo" jsonschema_description:"Push build info.\nhttps://ovh.github.io/cds/docs/actions/builtin-push-build-info"`
 	Coverage         *StepCoverage         `json:"coverage,omitempty" yaml:"coverage,omitempty" jsonschema:"oneof_required=actionCoverage" jsonschema_description:"Parse coverage report.\nhttps://ovh.github.io/cds/docs/actions/builtin-coverage"`
 	ArtifactDownload *StepArtifactDownload `json:"artifactDownload,omitempty" yaml:"artifactDownload,omitempty" jsonschema:"oneof_required=actionArtifactDownload" jsonschema_description:"Download artifacts in workspace.\nhttps://ovh.github.io/cds/docs/actions/builtin-artifact-download"`
 	ArtifactUpload   *StepArtifactUpload   `json:"artifactUpload,omitempty" yaml:"artifactUpload,omitempty" jsonschema:"oneof_required=actionArtifactUpload" jsonschema_description:"Upload artifacts from workspace.\nhttps://ovh.github.io/cds/docs/actions/builtin-artifact-upload"`
 	ServeStaticFiles *StepServeStaticFiles `json:"serveStaticFiles,omitempty" yaml:"serveStaticFiles,omitempty" jsonschema:"oneof_required=actionServeStaticFiles" jsonschema_description:"Serve static files.\nhttps://ovh.github.io/cds/docs/actions/builtin-serve-static-files"`
 	GitClone         *StepGitClone         `json:"gitClone,omitempty" yaml:"gitClone,omitempty" jsonschema:"oneof_required=actionGitClone" jsonschema_description:"Clone a git repository.\nhttps://ovh.github.io/cds/docs/actions/builtin-gitclone"`
 	GitTag           *StepGitTag           `json:"gitTag,omitempty" yaml:"gitTag,omitempty" jsonschema:"oneof_required=actionGitTag" jsonschema_description:"Create a git tag.\nhttps://ovh.github.io/cds/docs/actions/builtin-gittag"`
+	ReleaseVCS       *StepReleaseVCS       `json:"releaseVCS,omitempty" yaml:"releaseVCS,omitempty" jsonschema:"oneof_required=actionReleaseVCS" jsonschema_description:"Release an application.\nhttps://ovh.github.io/cds/docs/actions/builtin-releasevcs"`
 	Release          *StepRelease          `json:"release,omitempty" yaml:"release,omitempty" jsonschema:"oneof_required=actionRelease" jsonschema_description:"Release an application.\nhttps://ovh.github.io/cds/docs/actions/builtin-release"`
+	Promote          *StepPromote          `json:"promote,omitempty" yaml:"promote,omitempty" jsonschema:"oneof_required=actionPromote" jsonschema_description:"Promote artifacts.\nhttps://ovh.github.io/cds/docs/actions/builtin-promote"`
 	JUnitReport      *StepJUnitReport      `json:"jUnitReport,omitempty" yaml:"jUnitReport,omitempty" jsonschema:"oneof_required=actionJUNit" jsonschema_description:"Parse JUnit report.\nhttps://ovh.github.io/cds/docs/actions/builtin-junit"`
 	Checkout         *StepCheckout         `json:"checkout,omitempty" yaml:"checkout,omitempty" jsonschema:"oneof_required=actionCheckout" jsonschema_description:"Checkout repository for an application.\nhttps://ovh.github.io/cds/docs/actions/builtin-checkoutapplication"`
 	InstallKey       *StepInstallKey       `json:"installKey,omitempty" yaml:"installKey,omitempty" jsonschema:"oneof_required=actionInstallKey" jsonschema_description:"Install a key (GPG, SSH) in your current workspace.\nhttps://ovh.github.io/cds/docs/actions/builtin-installkey"`
@@ -357,7 +412,7 @@ func (s Step) MarshalJSON() ([]byte, error) {
 	}
 
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(b, &m); err != nil {
+	if err := sdk.JSONUnmarshal(b, &m); err != nil {
 		return nil, err
 	}
 
@@ -381,13 +436,13 @@ func (s Step) MarshalJSON() ([]byte, error) {
 func (s *Step) UnmarshalJSON(data []byte) error {
 	type StepAlias Step // prevent recursion
 	var sa StepAlias
-	if err := json.Unmarshal(data, &sa); err != nil {
+	if err := sdk.JSONUnmarshal(data, &sa); err != nil {
 		return err
 	}
 	*s = Step(sa)
 
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := sdk.JSONUnmarshal(data, &m); err != nil {
 		return err
 	}
 
@@ -405,7 +460,7 @@ func (s *Step) UnmarshalJSON(data []byte) error {
 	for k, v := range m {
 		if _, ok := jsonFields[k]; !ok {
 			var sp StepParameters
-			if err := json.Unmarshal(v, &sp); err != nil {
+			if err := sdk.JSONUnmarshal(v, &sp); err != nil {
 				return err
 			}
 			if s.StepCustom == nil {
@@ -441,6 +496,9 @@ func (s Step) IsValid() bool {
 	if s.isGitTag() {
 		count++
 	}
+	if s.isReleaseVCS() {
+		count++
+	}
 	if s.isRelease() {
 		count++
 	}
@@ -457,6 +515,9 @@ func (s Step) IsValid() bool {
 		count++
 	}
 	if s.isScript() {
+		count++
+	}
+	if s.isPushBuildInfo() {
 		count++
 	}
 	count += len(s.StepCustom)
@@ -483,6 +544,10 @@ func (s Step) toAction() (*sdk.Action, error) {
 		a, err = s.asGitClone()
 	} else if s.isGitTag() {
 		a, err = s.asGitTag()
+	} else if s.isReleaseVCS() {
+		a, err = s.asReleaseVCS()
+	} else if s.isPromote() {
+		a, err = s.asPromote()
 	} else if s.isRelease() {
 		a, err = s.asRelease()
 	} else if s.isCheckout() {
@@ -495,6 +560,8 @@ func (s Step) toAction() (*sdk.Action, error) {
 		a, err = s.asCoverage()
 	} else if s.isScript() {
 		a, err = s.asScript()
+	} else if s.isPushBuildInfo() {
+		a = s.asPushBuildInfo()
 	} else {
 		a = s.asAction()
 	}
@@ -622,6 +689,15 @@ func (s Step) asInstallKey() sdk.Action {
 
 func (s Step) isInstallKey() bool { return s.InstallKey != nil }
 
+func (s Step) isPushBuildInfo() bool { return s.PushBuildInfo != nil }
+
+func (s Step) asPushBuildInfo() sdk.Action {
+	return sdk.Action{
+		Name: sdk.PushBuildInfo,
+		Type: sdk.BuiltinAction,
+	}
+}
+
 func (s Step) isCoverage() bool { return s.Coverage != nil }
 
 func (s Step) asCoverage() (sdk.Action, error) {
@@ -711,6 +787,22 @@ func (s Step) asGitTag() (sdk.Action, error) {
 	return a, nil
 }
 
+func (s Step) isPromote() bool { return s.Promote != nil }
+
+func (s Step) asPromote() (sdk.Action, error) {
+	var a sdk.Action
+	m, err := stepToMap(s.Release)
+	if err != nil {
+		return a, err
+	}
+	a = sdk.Action{
+		Name:       sdk.PromoteAction,
+		Type:       sdk.BuiltinAction,
+		Parameters: sdk.ParametersFromMap(m),
+	}
+	return a, nil
+}
+
 func (s Step) isRelease() bool { return s.Release != nil }
 
 func (s Step) asRelease() (sdk.Action, error) {
@@ -721,6 +813,22 @@ func (s Step) asRelease() (sdk.Action, error) {
 	}
 	a = sdk.Action{
 		Name:       sdk.ReleaseAction,
+		Type:       sdk.BuiltinAction,
+		Parameters: sdk.ParametersFromMap(m),
+	}
+	return a, nil
+}
+
+func (s Step) isReleaseVCS() bool { return s.ReleaseVCS != nil }
+
+func (s Step) asReleaseVCS() (sdk.Action, error) {
+	var a sdk.Action
+	m, err := stepToMap(s.ReleaseVCS)
+	if err != nil {
+		return a, err
+	}
+	a = sdk.Action{
+		Name:       sdk.ReleaseVCSAction,
 		Type:       sdk.BuiltinAction,
 		Parameters: sdk.ParametersFromMap(m),
 	}
@@ -772,7 +880,7 @@ func stepToMap(i interface{}) (map[string]string, error) {
 		return nil, sdk.WithStack(err)
 	}
 	var m map[string]string
-	if err := json.Unmarshal(buf, &m); err != nil {
+	if err := sdk.JSONUnmarshal(buf, &m); err != nil {
 		return nil, sdk.WithStack(err)
 	}
 	return m, nil
@@ -780,7 +888,7 @@ func stepToMap(i interface{}) (map[string]string, error) {
 
 func (s Step) String() string {
 	buf := new(bytes.Buffer)
-	dump := dump.NewEncoder(buf)
-	_ = dump.Fdump(s)
+	dp := dump.NewEncoder(buf)
+	_ = dp.Fdump(s)
 	return buf.String()
 }

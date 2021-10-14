@@ -9,23 +9,35 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/cdn/storage"
 	"github.com/ovh/cds/engine/cdn/storage/encryption"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
-type Local struct {
+type AbstractLocal struct {
 	storage.AbstractUnit
-	encryption.ConvergentEncryption
-	config storage.LocalStorageConfiguration
-	size   int64
+	size     int64
+	path     string
+	isBuffer bool
 }
 
+type Local struct {
+	AbstractLocal
+	config storage.LocalStorageConfiguration
+	encryption.ConvergentEncryption
+}
+
+const driverName = "local"
+
 func init() {
-	storage.RegisterDriver("local", new(Local))
+	storage.RegisterDriver(driverName, new(Local))
+}
+
+func (s *Local) GetDriverName() string {
+	return driverName
 }
 
 func (s *Local) Init(ctx context.Context, cfg interface{}) error {
@@ -33,6 +45,7 @@ func (s *Local) Init(ctx context.Context, cfg interface{}) error {
 	if !is {
 		return sdk.WithStack(fmt.Errorf("invalid configuration: %T", cfg))
 	}
+	s.path = config.Path
 	s.config = *config
 	s.ConvergentEncryption = encryption.New(config.Encryption)
 
@@ -47,15 +60,21 @@ func (s *Local) Init(ctx context.Context, cfg interface{}) error {
 	return nil
 }
 
-func (s *Local) filename(i sdk.CDNItemUnit) (string, error) {
-	loc := i.Locator
-	if err := os.MkdirAll(filepath.Join(s.config.Path, loc[:3]), os.FileMode(0700)); err != nil {
-		return "", nil
+func (s *AbstractLocal) filename(i sdk.CDNItemUnit) (string, error) {
+	if !s.isBuffer {
+		loc := i.Locator
+		if err := os.MkdirAll(filepath.Join(s.path, loc[:3]), os.FileMode(0700)); err != nil {
+			return "", sdk.WithStack(err)
+		}
+		return filepath.Join(s.path, loc[:3], loc), nil
 	}
-	return filepath.Join(s.config.Path, loc[:3], loc), nil
+	if err := os.MkdirAll(filepath.Join(s.path, string(i.Type)), os.FileMode(0700)); err != nil {
+		return "", sdk.WithStack(err)
+	}
+	return filepath.Join(s.path, string(i.Type), i.Item.APIRefHash), nil
 }
 
-func (s *Local) ItemExists(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i sdk.CDNItem) (bool, error) {
+func (s *AbstractLocal) ItemExists(ctx context.Context, m *gorpmapper.Mapper, db gorp.SqlExecutor, i sdk.CDNItem) (bool, error) {
 	iu, err := s.ExistsInDatabase(ctx, m, db, i.ID)
 	if err != nil {
 		if sdk.ErrorIs(err, sdk.ErrNotFound) {
@@ -74,38 +93,39 @@ func (s *Local) ItemExists(ctx context.Context, m *gorpmapper.Mapper, db gorp.Sq
 	return !os.IsNotExist(err), nil
 }
 
-func (s *Local) NewWriter(_ context.Context, i sdk.CDNItemUnit) (io.WriteCloser, error) {
+func (s *AbstractLocal) NewWriter(ctx context.Context, i sdk.CDNItemUnit) (io.WriteCloser, error) {
 	// Open the file from the filesystem according to the locator
 	path, err := s.filename(i)
 	if err != nil {
 		return nil, err
 	}
-	log.Debug("[%T] writing to %s", s, path)
+	log.Debug(ctx, "[%T] writing to %s", s, path)
 	return os.OpenFile(path, os.O_CREATE|os.O_RDWR, os.FileMode(0640))
 }
 
-func (s *Local) NewReader(_ context.Context, i sdk.CDNItemUnit) (io.ReadCloser, error) {
+func (s *AbstractLocal) NewReader(ctx context.Context, i sdk.CDNItemUnit) (io.ReadCloser, error) {
 	// Open the file from the filesystem according to the locator
 	path, err := s.filename(i)
 	if err != nil {
-		return nil, err
+		return nil, sdk.WithStack(err)
 	}
-	log.Debug("[%T] reading from %s", s, path)
-	return os.Open(path)
+	log.Debug(ctx, "[%T] reading from %s", s, path)
+	f, err := os.Open(path)
+	return f, sdk.WithStack(err)
 }
 
-func (s *Local) Status(_ context.Context) []sdk.MonitoringStatusLine {
+func (s *AbstractLocal) Status(_ context.Context) []sdk.MonitoringStatusLine {
 	var lines []sdk.MonitoringStatusLine
-	if finfo, err := os.Stat(s.config.Path); os.IsNotExist(err) {
+	if finfo, err := os.Stat(s.path); os.IsNotExist(err) {
 		lines = append(lines, sdk.MonitoringStatusLine{
 			Component: "backend/" + s.Name(),
-			Value:     fmt.Sprintf("directory: %v does not exist", s.config.Path),
+			Value:     fmt.Sprintf("directory: %v does not exist", s.path),
 			Status:    sdk.MonitoringStatusAlert,
 		})
 	} else if !finfo.IsDir() {
 		lines = append(lines, sdk.MonitoringStatusLine{
 			Component: "backend/" + s.Name(),
-			Value:     fmt.Sprintf("%v is not a directory", s.config.Path),
+			Value:     fmt.Sprintf("%v is not a directory", s.path),
 			Status:    sdk.MonitoringStatusAlert,
 		})
 	}
@@ -124,7 +144,7 @@ func (s *Local) Status(_ context.Context) []sdk.MonitoringStatusLine {
 	return lines
 }
 
-func (s *Local) computeSize(ctx context.Context) {
+func (s *AbstractLocal) computeSize(ctx context.Context) {
 	tick := time.NewTicker(1 * time.Minute)
 	defer tick.Stop()
 	for {
@@ -136,7 +156,7 @@ func (s *Local) computeSize(ctx context.Context) {
 			return
 		case <-tick.C:
 			var err error
-			s.size, err = s.dirSize(s.config.Path)
+			s.size, err = s.dirSize(s.path)
 			if err != nil {
 				log.Error(ctx, "cdn:backend:local:computeSize:dirSize: %v", ctx.Err())
 				continue
@@ -145,7 +165,7 @@ func (s *Local) computeSize(ctx context.Context) {
 	}
 }
 
-func (s *Local) dirSize(path string) (int64, error) {
+func (s *AbstractLocal) dirSize(path string) (int64, error) {
 	var size int64
 	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -159,11 +179,21 @@ func (s *Local) dirSize(path string) (int64, error) {
 	return size, err
 }
 
-func (s *Local) Remove(_ context.Context, i sdk.CDNItemUnit) error {
+func (s *AbstractLocal) Remove(ctx context.Context, i sdk.CDNItemUnit) error {
 	path, err := s.filename(i)
 	if err != nil {
 		return err
 	}
-	log.Debug("[%T] remove %s", s, path)
-	return sdk.WithStack(os.Remove(path))
+	log.Debug(ctx, "[%T] remove %s", s, path)
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return sdk.ErrNotFound
+		}
+		return sdk.WithStack(err)
+	}
+	return nil
+}
+
+func (s *Local) ResyncWithDatabase(ctx context.Context, _ gorp.SqlExecutor, _ sdk.CDNItemType, _ bool) {
+	log.Error(ctx, "Resynchronization with database not implemented for local storage unit")
 }

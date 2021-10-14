@@ -3,6 +3,7 @@ import { Injectable } from '@angular/core';
 import { Group, GroupMember } from 'app/model/group.model';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import { IdName, Project } from 'app/model/project.model';
 
 @Injectable()
 export class GroupService {
@@ -20,9 +21,7 @@ export class GroupService {
         if (withoutDefault === true) {
             params = params.append('withoutDefault', 'true');
         }
-        return this._http.get<Group[]>('/group', { params: params }).map(gs => {
-            return gs.map(g => Object.assign(new Group(), g));
-        });
+        return this._http.get<Group[]>('/group', { params }).pipe(map(gs => gs.map(g => Object.assign(new Group(), g))));
     }
 
     create(group: Group): Observable<Group> {
@@ -34,9 +33,7 @@ export class GroupService {
     }
 
     delete(name: string): Observable<boolean> {
-        return this._http.delete(`/group/${name}`).pipe(map(() => {
-            return true;
-        }));
+        return this._http.delete(`/group/${name}`).pipe(map(() => true));
     }
 
     addMember(name: string, member: GroupMember): Observable<Group> {
@@ -49,5 +46,9 @@ export class GroupService {
 
     removeMember(name: string, member: GroupMember): Observable<Group> {
         return this._http.delete<Group>(`/group/${name}/user/${member.username}`);
+    }
+
+    getProjectsInGroup(name: string): Observable<Array<Project>> {
+        return this._http.get<Array<Project>>(`/group/${name}/project`)
     }
 }

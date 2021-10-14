@@ -1,7 +1,7 @@
-<div class="ui inverted fixed menu navbar">
+<div class="ui inverted menu navbar">
     <a href="#" [routerLink]="['/']"><img src="assets/images/cds.png" class="item"
             title="{{'navbar_home' | translate}}" /></a>
-    <ng-container *ngIf="currentUser">
+    <ng-container *ngIf="currentAuthSummary">
         <a class="item link" href="#" [routerLink]="['project', 'list', 'all']">
             {{ 'navbar_projects' | translate }}
         </a>
@@ -60,27 +60,46 @@
             </div>
         </div>
     </ng-container>
-    <a class="item link" href="#" [routerLink]="['/project']" *ngIf="currentUser">
+    <a class="item link" href="#" [routerLink]="['/project']" *ngIf="currentAuthSummary">
         {{ 'navbar_project_create' | translate }}
     </a>
     <div class="right menu details">
-        <div class="ui search"  suiPopup popupPlacement="bottom"
-            [popupTemplate]="popupSearchTemplate" popupTrigger="outsideClick" #popup="suiPopup">
+        <div class="ring" *ngIf="currentAuthSummary">
+            <div *ngIf="currentAuthSummary.isMaintainer() && currentAuthSummary.user.ring !== 'ADMIN'"
+                class="ui orange horizontal label">Maintainer</div>
+            <div *ngIf="currentAuthSummary.user.ring === 'ADMIN' && !currentAuthSummary.isAdmin()"
+                class="ui label orange">
+                Maintainer
+                <a class="detail" (click)="mfaLogin()" title="Elevate to admin"><i class="key icon"></i></a>
+            </div>
+            <div *ngIf="currentAuthSummary.isAdmin()" class="ui red horizontal label">Admin</div>
+        </div>
+
+        <div class="ui search" suiPopup popupPlacement="bottom" [popupTemplate]="popupSearchTemplate"
+            popupTrigger="outsideClick" #popup="suiPopup">
             <div class="ui icon input">
-                <input class="prompt" type="text" placeholder="{{'navbar_search' | translate}}" [(ngModel)]="searchValue" (blur)="search()" (click)="search()" (keyup)="search()">
+                <input class="prompt" type="text" placeholder="{{'navbar_search' | translate}}"
+                    [(ngModel)]="searchValue" (blur)="search()" (click)="search()" (keyup)="search()">
                 <i class="search icon"></i>
             </div>
         </div>
 
         <ng-template let-popup #popupSearchTemplate>
             <div class="content searchpopup">
-                <div class="ui right floated" suiPopup popupPlacement="left" [popupText]="'navbar_search_help_details' | translate"><i class="help icon"></i>
+                <div class="ui right floated" suiPopup popupPlacement="left"
+                    [popupText]="'navbar_search_help_details' | translate"><i class="help icon"></i>
                     {{ 'navbar_search_help' | translate }}
                 </div>
 
-                <div *ngIf="containsResult && isSearch"><div class="ui left"><i class="search icon"></i> {{'navbar_results' | translate}}</div></div>
-                <div *ngIf="containsResult && !isSearch"><div class="ui left"><i class="history icon"></i>{{'navbar_seen_recently' | translate}}</div></div>
-                <div *ngIf="!containsResult"><div class="ui center"><i class="search icon"></i>{{'navbar_no_result' | translate}}</div></div>
+                <div *ngIf="containsResult && isSearch">
+                    <div class="ui left"><i class="search icon"></i> {{'navbar_results' | translate}}</div>
+                </div>
+                <div *ngIf="containsResult && !isSearch">
+                    <div class="ui left"><i class="history icon"></i>{{'navbar_seen_recently' | translate}}</div>
+                </div>
+                <div *ngIf="!containsResult">
+                    <div class="ui center"><i class="search icon"></i>{{'navbar_no_result' | translate}}</div>
+                </div>
                 <div class="ui internally celled grid" *ngIf="containsResult">
                     <div class="four wide column">
                         <div class="ui secondary pointing menu">
@@ -104,7 +123,7 @@
                         <div class="ui secondary pointing menu" *ngFor="let el of searchProjects">
                             <div class="ui relaxed divided list">
                                 <div class="item">
-                                    <i class="pointing star icon favorite"  *ngIf="el.favorite"></i>
+                                    <i class="pointing star icon favorite" *ngIf="el.favorite"></i>
                                     <div class="content">
                                         <a class="header" (click)="$event.stopPropagation()"
                                             [routerLink]="['/project', el.projectKey]"
@@ -139,7 +158,7 @@
                         <div class="ui secondary pointing menu" *ngFor="let el of searchWorkflows">
                             <div class="ui relaxed divided list">
                                 <div class="item">
-                                    <i class="pointing star icon favorite"  *ngIf="el.favorite"></i>
+                                    <i class="pointing star icon favorite" *ngIf="el.favorite"></i>
                                     <div class="content">
                                         <a class="header" (click)="$event.stopPropagation()"
                                             [routerLink]="['/project', el.projectKey, 'workflow', el.title]"
@@ -169,7 +188,8 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="ui secondary pointing menu" *ngIf="!searchApplications || searchApplications.length <= 0">
+                        <div class="ui secondary pointing menu"
+                            *ngIf="!searchApplications || searchApplications.length <= 0">
                             <div class="ui relaxed divided list">
                                 <div class="item">
                                     <div class="content">
@@ -289,9 +309,9 @@
             </div>
         </ng-template>
 
-        <button *ngIf="help?.content?.length > 0"
-            class="ui icon button link item" suiPopup popupPlacement="bottom right"
-            [popupTemplate]="popupTemplateHelp" popupTrigger="outsideClick" #popup="suiPopup">
+        <button *ngIf="help?.content?.length > 0" class="ui icon button link item" suiPopup
+            popupPlacement="bottom right" [popupTemplate]="popupTemplateHelp" popupTrigger="outsideClick"
+            #popup="suiPopup">
             <div>
                 <i class="phone icon"></i>
             </div>
@@ -302,38 +322,33 @@
             </div>
         </ng-template>
 
-        <sm-select class="languageSelect" [options]="{'fullTextSearch': true}" [(model)]="currentCountry"
-            (modelChange)="changeCountry()">
-            <option value="fr"><i class="france flag"></i></option>
-            <option value="en"><i class="gb flag"></i></option>
-        </sm-select>
-
-        <sm-dropdown icon="settings" *ngIf="currentUser">
-            <a sm-item href="#"
-                [routerLink]="['settings', 'user', currentUser.username]">{{ 'navbar_profile' | translate }}</a>
+        <sm-dropdown icon="settings" *ngIf="currentAuthSummary">
+            <a sm-item href="#" [routerLink]="['settings', 'user', currentAuthSummary.user.username]">{{
+                'navbar_profile' | translate }}</a>
             <a sm-item href="#" [routerLink]="['settings', 'cdsctl']">{{ 'navbar_cdsctl' | translate }}</a>
             <a sm-item href="#" [routerLink]="['settings', 'action']">{{ 'navbar_actions' | translate }}</a>
             <a sm-item href="#" [routerLink]="['settings', 'user']">{{ 'navbar_users' | translate }}</a>
             <a sm-item href="#" [routerLink]="['settings', 'group']">{{ 'navbar_groups' | translate }}</a>
             <a sm-item href="#" [routerLink]="['settings', 'worker-model']">{{ 'navbar_worker_models' | translate }}</a>
-            <a sm-item href="#"
-                [routerLink]="['settings', 'workflow-template']">{{ 'navbar_workflow_templates' | translate }}</a>
+            <a sm-item href="#" [routerLink]="['settings', 'workflow-template']">{{ 'navbar_workflow_templates' |
+                translate }}</a>
             <div class="divider"></div>
             <a sm-item href="#" [routerLink]="['settings', 'queue']">{{ 'admin_queue_title' | translate }}</a>
             <div class="divider"></div>
             <a sm-item href="#" [routerLink]="['settings', 'downloads']">{{ 'navbar_downloads' | translate }}</a>
-            <a sm-item href="#" [routerLink]="['docs', '']" target="_blank" rel="noopener noreferrer">{{ 'navbar_documentation' | translate }}</a>
+            <a sm-item href="#" [routerLink]="['docs', '']" target="_blank" rel="noopener noreferrer">{{
+                'navbar_documentation' | translate }}</a>
             <div class="divider"></div>
-            <sm-checkbox class="theme-switch" name="switch-theme" [control]="themeSwitch" type="toggle"
-                label="{{'navbar_dark_mode' | translate}}" (change)="changeTheme()"></sm-checkbox>
+            <sui-checkbox class="toggle theme-switch" [ngModel]="darkActive" (ngModelChange)="changeTheme()">
+                {{'navbar_dark_mode' | translate}}</sui-checkbox>
             <div class="divider"></div>
             <a sm-item (click)="clickLogout()">{{ 'navbar_disconnect' | translate }}</a>
         </sm-dropdown>
 
-        <sm-dropdown icon="student" *ngIf="currentUser && currentUser.isMaintainer()">
+        <sm-dropdown icon="student" *ngIf="currentAuthSummary && currentAuthSummary.isMaintainer()">
             <a sm-item href="#" [routerLink]="['admin', 'broadcast']">{{ 'navbar_admin_broadcast' | translate }}</a>
-            <a sm-item href="#"
-                [routerLink]="['admin', 'worker-model-pattern']">{{ 'worker_model_pattern_title' | translate }}</a>
+            <a sm-item href="#" [routerLink]="['admin', 'worker-model-pattern']">{{ 'worker_model_pattern_title' |
+                translate }}</a>
             <a sm-item href="#" [routerLink]="['admin', 'hooks-tasks']">{{ 'hook_tasks_summary' | translate }}</a>
             <a sm-item href="#" [routerLink]="['admin', 'services']">{{ 'monitoring' | translate }}</a>
         </sm-dropdown>

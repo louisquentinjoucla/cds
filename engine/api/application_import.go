@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -45,7 +44,7 @@ func (api *API) postApplicationImportHandler() service.Handler {
 		var errapp error
 		switch contentType {
 		case "application/json":
-			errapp = json.Unmarshal(body, eapp)
+			errapp = sdk.JSONUnmarshal(body, eapp)
 		case "application/x-yaml", "text/x-yam":
 			errapp = yaml.Unmarshal(body, eapp)
 		default:
@@ -63,13 +62,13 @@ func (api *API) postApplicationImportHandler() service.Handler {
 		defer tx.Rollback() // nolint
 
 		newApp, _, msgList, globalError := application.ParseAndImport(ctx, tx, api.Cache, *proj, eapp, application.ImportOptions{Force: force}, project.DecryptWithBuiltinKey, getAPIConsumer(ctx))
-		msgListString := translate(r, msgList)
+		msgListString := translate(msgList)
 		if globalError != nil {
 			globalError = sdk.WrapError(globalError, "Unable to import application %s", eapp.Name)
 			if sdk.ErrorIsUnknown(globalError) {
 				return globalError
 			}
-			sdkErr := sdk.ExtractHTTPError(globalError, r.Header.Get("Accept-Language"))
+			sdkErr := sdk.ExtractHTTPError(globalError)
 			return service.WriteJSON(w, append(msgListString, sdkErr.Message), sdkErr.Status)
 		}
 

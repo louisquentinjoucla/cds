@@ -1,16 +1,24 @@
 package redis
 
 import (
+	"context"
 	"io"
 	"sort"
+	"strconv"
+	"strings"
+	"unicode"
 
+	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
 )
 
 var _ io.ReadCloser = new(Reader)
 
 type Reader struct {
-	ReadWrite
+	Store         cache.ScoredSetStore
+	ApiRefHash    string
+	ItemID        string
+	PrefixKey     string
 	nextIndex     uint
 	From          int64 // the offset that we want to use when reading lines from Redis, allows negative value to get last lines
 	Size          uint  // the count of lines that we want to read (0 means to the end)
@@ -18,6 +26,49 @@ type Reader struct {
 	Format        sdk.CDNReaderFormat
 	readEOF       bool
 	Sort          int64 // < 0 for latest logs first, >= 0 for older logs first
+}
+
+func (r *Reader) get(from uint, to uint) ([]Line, error) {
+	res, err := r.Store.ScoredSetScanWithScores(context.Background(), cache.Key(r.PrefixKey, r.ItemID), float64(from), float64(to))
+	if err != nil {
+		return nil, err
+	}
+
+	ls := make([]Line, len(res))
+	for i := range res {
+		ls[i].Number = int64(res[i].Score)
+
+		var value string
+		if err := sdk.JSONUnmarshal(res[i].Value, &value); err != nil {
+			return nil, sdk.WrapError(err, "cannot unmarshal line value from store")
+		}
+
+		// Trim to remove line number
+		value = strings.TrimPrefix(value, strconv.Itoa(int(res[i].Score)))
+
+		// Trim to remove line "since" value if exists
+		ls[i].Value = strings.TrimLeftFunc(value, unicode.IsNumber)
+		if len(value) > len(ls[i].Value) {
+			since := value[0 : len(value)-len(ls[i].Value)]
+			ls[i].Since, _ = strconv.ParseInt(since, 10, 64)
+		}
+
+		// Trim to remove separator
+		ls[i].Value = strings.TrimPrefix(ls[i].Value, "#")
+
+	}
+	return ls, nil
+}
+
+func (r *Reader) maxScore() (float64, error) {
+	res, err := r.Store.ScoredSetScanMaxScore(context.Background(), cache.Key(r.PrefixKey, r.ItemID))
+	if err != nil {
+		return 0, err
+	}
+	if res == nil {
+		return 0, nil
+	}
+	return res.Score, nil
 }
 
 func (r *Reader) loadMoreLines() error {
@@ -36,7 +87,7 @@ func (r *Reader) loadMoreLines() error {
 		}
 	}
 
-	maxLinesToRead := uint(lineCount) - uint(r.From)
+	maxLinesToRead := lineCount - uint(r.From)
 	if r.Size == 0 || r.Size > maxLinesToRead {
 		r.Size = maxLinesToRead
 	}
@@ -65,7 +116,7 @@ func (r *Reader) loadMoreLines() error {
 
 	// Read 100 lines if possible or only the missing lines if less than 100
 	alreadyReadLinesLength := r.nextIndex - uint(r.From)
-	linesLeftToRead := uint(r.Size) - alreadyReadLinesLength
+	linesLeftToRead := r.Size - alreadyReadLinesLength
 	if linesLeftToRead == 0 {
 		if !r.readEOF {
 			r.readEOF = true
@@ -86,15 +137,15 @@ func (r *Reader) loadMoreLines() error {
 		from = r.nextIndex
 		to = newNextIndex - 1
 	} else {
-		if uint(lineCount) < newNextIndex {
+		if lineCount < newNextIndex {
 			from = 0
 		} else {
-			from = uint(lineCount) - newNextIndex
+			from = lineCount - newNextIndex
 		}
-		if uint(lineCount) < r.nextIndex {
-			to = uint(lineCount) - 1
+		if lineCount < r.nextIndex {
+			to = lineCount - 1
 		} else {
-			to = uint(lineCount) - (r.nextIndex + 1)
+			to = lineCount - (r.nextIndex + 1)
 		}
 	}
 	lines, err := r.get(from, to)
@@ -127,6 +178,10 @@ func (r *Reader) loadMoreLines() error {
 }
 
 func (r *Reader) Read(p []byte) (n int, err error) {
+	if r.readEOF {
+		return 0, io.EOF
+	}
+
 	lengthToRead := len(p)
 
 	// If we don't have enough bytes in current buffer we will load some line from Redis
@@ -151,4 +206,9 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 	}
 
 	return copy(p, buffer), nil
+}
+
+// Close is declared ot match buffer unit interface
+func (r *Reader) Close() error {
+	return nil
 }

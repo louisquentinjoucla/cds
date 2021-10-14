@@ -25,7 +25,8 @@ export class WorkflowStore {
 
     /**
      * Get recent workflow.
-     * @returns {Observable<List<Workflow>>}
+     *
+     * @returns
      */
     getRecentWorkflows(): Observable<List<NavbarRecentData>> {
         return new Observable<List<NavbarRecentData>>(fn => this._recentWorkflows.subscribe(fn));
@@ -33,6 +34,7 @@ export class WorkflowStore {
 
     /**
      * Update recent workflow viewed.
+     *
      * @param key Project unique key
      * @param workflow Workflow to add
      */
@@ -69,6 +71,9 @@ export class WorkflowStore {
     }
 
     setDirection(key: string, name: string, o: string) {
+        if (!key || !name) {
+            return;
+        }
         let ls = localStorage.getItem(this.WORKFLOW_ORIENTATION_KEY);
         let j = {};
         if (ls) {

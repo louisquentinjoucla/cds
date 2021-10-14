@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/api/authentication"
 	"github.com/ovh/cds/engine/api/authentication/local"
 	"github.com/ovh/cds/engine/api/group"
@@ -13,7 +15,6 @@ import (
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // postAuthLocalSignupHandler creates a new registration that need to be verified to create a new user.
@@ -112,7 +113,7 @@ func initBuiltinConsumersFromStartupConfig(ctx context.Context, tx gorpmapper.Sq
 		return sdk.NewErrorWithStack(err, sdk.NewErrorFrom(sdk.ErrWrongRequest, "invalid given init token"))
 	}
 
-	log.Warning(ctx, "Magic token detected !: %s", initToken)
+	log.Warn(ctx, "Magic token detected !: %s", initToken)
 
 	if startupConfig.IAT == 0 || startupConfig.IAT > time.Now().Unix() {
 		return sdk.NewErrorFrom(sdk.ErrWrongRequest, "invalid given init token, issued at value should be set and can not be in the future")
@@ -126,13 +127,17 @@ func initBuiltinConsumersFromStartupConfig(ctx context.Context, tx gorpmapper.Sq
 		case StartupConfigConsumerTypeHatchery:
 			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeHatchery, sdk.AuthConsumerScopeRunExecution, sdk.AuthConsumerScopeWorkerModel)
 		case StartupConfigConsumerTypeHooks:
-			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeHooks, sdk.AuthConsumerScopeProject, sdk.AuthConsumerScopeRun)
+			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeProject, sdk.AuthConsumerScopeRun, sdk.AuthConsumerScopeHooks)
 		case StartupConfigConsumerTypeCDN:
 			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeWorker, sdk.AuthConsumerScopeRunExecution)
 		case StartupConfigConsumerTypeCDNStorageCDS:
-			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeWorker, sdk.AuthConsumerScopeRunExecution)
-		default:
 			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeProject, sdk.AuthConsumerScopeRun)
+		case StartupConfigConsumerTypeVCS:
+			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeProject, sdk.AuthConsumerScopeRun)
+		case StartupConfigConsumerTypeRepositories:
+			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService, sdk.AuthConsumerScopeProject, sdk.AuthConsumerScopeRun)
+		default:
+			scopes = sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService)
 		}
 
 		var c = sdk.AuthConsumer{
@@ -145,7 +150,7 @@ func initBuiltinConsumersFromStartupConfig(ctx context.Context, tx gorpmapper.Sq
 			Data:               map[string]string{},
 			GroupIDs:           []int64{group.SharedInfraGroup.ID},
 			ScopeDetails:       scopes,
-			IssuedAt:           time.Unix(startupConfig.IAT, 0),
+			ValidityPeriods:    sdk.NewAuthConsumerValidityPeriod(time.Unix(startupConfig.IAT, 0), 2*365*24*time.Hour), // Default validity period is two years
 		}
 
 		if err := authentication.InsertConsumer(ctx, tx, &c); err != nil {
@@ -199,13 +204,20 @@ func (api *API) postAuthLocalSigninHandler() service.Handler {
 		}
 
 		// Generate a new session for consumer
-		session, err := authentication.NewSession(ctx, tx, consumer, driver.GetSessionDuration(), false)
+		session, err := authentication.NewSession(ctx, tx, consumer, driver.GetSessionDuration())
 		if err != nil {
 			return err
 		}
 
+		// Store the last authentication date on the consumer
+		now := time.Now()
+		consumer.LastAuthentication = &now
+		if err := authentication.UpdateConsumerLastAuthentication(ctx, tx, consumer); err != nil {
+			return err
+		}
+
 		// Generate a jwt for current session
-		jwt, err := authentication.NewSessionJWT(session)
+		jwt, err := authentication.NewSessionJWT(session, "")
 		if err != nil {
 			return err
 		}
@@ -215,7 +227,7 @@ func (api *API) postAuthLocalSigninHandler() service.Handler {
 		}
 
 		// Set a cookie with the jwt token
-		api.SetCookie(w, service.JWTCookieName, jwt, session.ExpireAt)
+		api.SetCookie(w, service.JWTCookieName, jwt, session.ExpireAt, true)
 
 		// Prepare http response
 		resp := sdk.AuthConsumerSigninResponse{
@@ -307,8 +319,10 @@ func (api *API) postAuthLocalVerifyHandler() service.Handler {
 			return err
 		}
 
-		if err := group.CheckUserInDefaultGroup(ctx, tx, newUser.ID); err != nil {
-			return err
+		if !api.Config.Auth.DisableAddUserInDefaultGroup {
+			if err := group.CheckUserInDefaultGroup(ctx, tx, newUser.ID); err != nil {
+				return err
+			}
 		}
 
 		// Create new local consumer for new user, set this consumer as pending validation
@@ -324,14 +338,21 @@ func (api *API) postAuthLocalVerifyHandler() service.Handler {
 			}
 		}
 
+		// Store the last authentication date on the consumer
+		now := time.Now()
+		consumer.LastAuthentication = &now
+		if err := authentication.UpdateConsumerLastAuthentication(ctx, tx, consumer); err != nil {
+			return err
+		}
+
 		// Generate a new session for consumer
-		session, err := authentication.NewSession(ctx, tx, consumer, driver.GetSessionDuration(), false)
+		session, err := authentication.NewSession(ctx, tx, consumer, driver.GetSessionDuration())
 		if err != nil {
 			return err
 		}
 
 		// Generate a jwt for current session
-		jwt, err := authentication.NewSessionJWT(session)
+		jwt, err := authentication.NewSessionJWT(session, "")
 		if err != nil {
 			return err
 		}
@@ -348,7 +369,7 @@ func (api *API) postAuthLocalVerifyHandler() service.Handler {
 		local.CleanVerifyConsumerToken(api.Cache, consumer.ID)
 
 		// Set a cookie with the jwt token
-		api.SetCookie(w, service.JWTCookieName, jwt, session.ExpireAt)
+		api.SetCookie(w, service.JWTCookieName, jwt, session.ExpireAt, true)
 
 		// Prepare http response
 		resp := sdk.AuthConsumerSigninResponse{
@@ -397,7 +418,7 @@ func (api *API) postAuthLocalAskResetHandler() service.Handler {
 		if err != nil {
 			// If there is no contact for given email, return ok to prevent email exploration
 			if sdk.ErrorIs(err, sdk.ErrNotFound) {
-				log.Warning(ctx, "api.postAuthLocalAskResetHandler> no contact found for email %s: %v", email, err)
+				log.Warn(ctx, "api.postAuthLocalAskResetHandler> no contact found for email %s: %v", email, err)
 				return service.WriteJSON(w, nil, http.StatusOK)
 			}
 			return err
@@ -487,19 +508,23 @@ func (api *API) postAuthLocalResetHandler() service.Handler {
 			return err
 		}
 
+		// Store the last authentication date on the consumer
+		now := time.Now()
+		consumer.LastAuthentication = &now
+
 		consumer.Data["hash"] = string(hash)
 		if err := authentication.UpdateConsumer(ctx, tx, consumer); err != nil {
 			return err
 		}
 
 		// Generate a new session for consumer
-		session, err := authentication.NewSession(ctx, tx, consumer, driver.GetSessionDuration(), false)
+		session, err := authentication.NewSession(ctx, tx, consumer, driver.GetSessionDuration())
 		if err != nil {
 			return err
 		}
 
 		// Generate a jwt for current session
-		jwt, err := authentication.NewSessionJWT(session)
+		jwt, err := authentication.NewSessionJWT(session, "")
 		if err != nil {
 			return err
 		}
@@ -516,7 +541,7 @@ func (api *API) postAuthLocalResetHandler() service.Handler {
 		local.CleanResetConsumerToken(api.Cache, consumer.ID)
 
 		// Set a cookie with the jwt token
-		api.SetCookie(w, service.JWTCookieName, jwt, session.ExpireAt)
+		api.SetCookie(w, service.JWTCookieName, jwt, session.ExpireAt, true)
 
 		// Prepare http response
 		resp := sdk.AuthConsumerSigninResponse{

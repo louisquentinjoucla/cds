@@ -1,16 +1,15 @@
 package sdk
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"runtime"
 	"strings"
 
+	cdslog "github.com/ovh/cds/sdk/log"
 	"github.com/pkg/errors"
-	"golang.org/x/text/language"
 )
 
 // Existing CDS errors
@@ -64,7 +63,6 @@ var (
 	ErrInvalidSecretFormat                           = Error{ID: 50, Status: http.StatusInternalServerError}
 	ErrNoPreviousSuccess                             = Error{ID: 52, Status: http.StatusNotFound}
 	ErrNoPermExecution                               = Error{ID: 53, Status: http.StatusForbidden}
-	ErrSessionNotFound                               = Error{ID: 54, Status: http.StatusUnauthorized}
 	ErrInvalidSecretValue                            = Error{ID: 55, Status: http.StatusBadRequest}
 	ErrPipelineHasApplication                        = Error{ID: 56, Status: http.StatusBadRequest}
 	ErrNoDirectSecretUse                             = Error{ID: 57, Status: http.StatusForbidden}
@@ -201,6 +199,9 @@ var (
 	ErrRepoAnalyzeFailed                             = Error{ID: 191, Status: http.StatusInternalServerError}
 	ErrConflictData                                  = Error{ID: 192, Status: http.StatusConflict}
 	ErrWebsocketUpgrade                              = Error{ID: 193, Status: http.StatusUpgradeRequired}
+	ErrMFARequired                                   = Error{ID: 194, Status: http.StatusForbidden}
+	ErrHatcheryNoResourceAvailable                   = Error{ID: 195, Status: http.StatusInternalServerError}
+	ErrRegionNotAllowed                              = Error{ID: 196, Status: http.StatusInternalServerError}
 )
 
 var errorsAmericanEnglish = map[int]string{
@@ -217,7 +218,7 @@ var errorsAmericanEnglish = map[int]string{
 	ErrForbidden.ID:                                     "forbidden",
 	ErrPipelineNotFound.ID:                              "pipeline does not exist",
 	ErrPipelineNotAttached.ID:                           "pipeline is not attached to application",
-	ErrNoEnvironmentProvided.ID:                         "deployment and testing pipelines require an environnement",
+	ErrNoEnvironmentProvided.ID:                         "deployment and testing pipelines require an environment",
 	ErrEnvironmentProvided.ID:                           "build pipeline are not compatible with environment usage",
 	ErrUnknownEnv.ID:                                    "unknown environment",
 	ErrEnvironmentExist.ID:                              "environment already exists",
@@ -252,7 +253,6 @@ var errorsAmericanEnglish = map[int]string{
 	ErrCommitsFetchFailed.ID:                            "unable to retrieves commits",
 	ErrInvalidGoPath.ID:                                 "invalid gopath",
 	ErrInvalidSecretFormat.ID:                           "cannot decrypt secret, invalid format",
-	ErrSessionNotFound.ID:                               "invalid session",
 	ErrNoPreviousSuccess.ID:                             "there is no previous success version for this pipeline",
 	ErrNoPermExecution.ID:                               "you don't have execution right",
 	ErrInvalidSecretValue.ID:                            "secret value not specified",
@@ -384,189 +384,9 @@ var errorsAmericanEnglish = map[int]string{
 	ErrRepoAnalyzeFailed.ID:                             "Unable to analyse repository",
 	ErrConflictData.ID:                                  "Data conflict",
 	ErrWebsocketUpgrade.ID:                              "Websocket upgrade required",
-}
-
-var errorsFrench = map[int]string{
-	ErrUnknownError.ID:                                  "erreur interne",
-	ErrActionAlreadyUpdated.ID:                          "le status de l'action a déjà été mis à jour",
-	ErrNoAction.ID:                                      "l'action n'existe pas",
-	ErrActionLoop.ID:                                    "la définition de l'action contient une boucle récursive",
-	ErrInvalidID.ID:                                     "l'ID doit être un nombre entier",
-	ErrInvalidProject.ID:                                "projet manquant",
-	ErrInvalidProjectKey.ID:                             "la clef de project doit uniquement contenir des lettres majuscules et des chiffres",
-	ErrProjectHasPipeline.ID:                            "le project contient un pipeline",
-	ErrProjectHasApplication.ID:                         "le project contient une application",
-	ErrUnauthorized.ID:                                  "authentification invalide",
-	ErrForbidden.ID:                                     "accès refusé",
-	ErrPipelineNotFound.ID:                              "le pipeline n'existe pas",
-	ErrPipelineNotAttached.ID:                           "le pipeline n'est pas lié à l'application",
-	ErrNoEnvironmentProvided.ID:                         "les pipelines de déploiement et de tests requièrent un environnement",
-	ErrEnvironmentProvided.ID:                           "une pipeline de build ne nécessite pas d'environnement",
-	ErrUnknownEnv.ID:                                    "environnement inconnu",
-	ErrEnvironmentExist.ID:                              "l'environnement existe",
-	ErrNoPipelineBuild.ID:                               "ce build n'existe pas",
-	ErrInvalidUsername.ID:                               "nom d'utilisateur invalide",
-	ErrUsernamePresent.ID:                               "le nom d'utilisateur est déjà présent",
-	ErrInvalidEmail.ID:                                  "addresse email invalide",
-	ErrGroupPresent.ID:                                  "le groupe est déjà présent",
-	ErrInvalidName.ID:                                   "le nom est invalide",
-	ErrInvalidUser.ID:                                   "mauvaise combinaison compte/mot de passe utilisateur",
-	ErrBuildArchived.ID:                                 "impossible de relancer ce build car il a été archivé",
-	ErrNoEnvironment.ID:                                 "l'environement n'existe pas",
-	ErrModelNameExist.ID:                                "le nom du modèle de worker est déjà utilisé",
-	ErrNoProject.ID:                                     "le projet n'existe pas",
-	ErrVariableExists.ID:                                "la variable existe déjà",
-	ErrInvalidGroupPattern.ID:                           "nom de groupe invalide '^[a-zA-Z0-9.-_-]{1,}$'",
-	ErrGroupExists.ID:                                   "le groupe existe déjà",
-	ErrNotEnoughAdmin.ID:                                "pas assez d'admin restant",
-	ErrInvalidProjectName.ID:                            "nom de project vide non autorisé",
-	ErrInvalidApplicationPattern.ID:                     "nom de l'application invalide '^[a-zA-Z0-9.-_-]{1,}$'",
-	ErrInvalidWorkerModelNamePattern.ID:                 "nom du worker model invalide '^[a-zA-Z0-9.-_-]{1,}$'",
-	ErrInvalidPipelinePattern.ID:                        "nom du pipeline invalide '^[a-zA-Z0-9.-_-]{1,}$'",
-	ErrNotFound.ID:                                      "la ressource n'existe pas",
-	ErrNoHook.ID:                                        "le hook n'existe pas",
-	ErrNoAttachedPipeline.ID:                            "le pipeline n'est pas lié à l'application",
-	ErrNoReposManager.ID:                                "le gestionnaire de dépôt n'existe pas",
-	ErrNoReposManagerAuth.ID:                            "connexion de CDS au gestionnaire de dépôt refusée, merci de contacter l'administrateur",
-	ErrNoReposManagerClientAuth.ID:                      "connexion au gestionnaire de dépôts refusée, merci de détacher et ré-attacher le repository manager sur votre projet CDS",
-	ErrRepoNotFound.ID:                                  "le dépôt n'existe pas",
-	ErrSecretStoreUnreachable.ID:                        "impossible de contacter vault",
-	ErrSecretKeyFetchFailed.ID:                          "erreur pendnat la récuperation de la clef de chiffrement",
-	ErrCommitsFetchFailed.ID:                            "impossible de retrouver les changements",
-	ErrInvalidGoPath.ID:                                 "le gopath n'est pas valide",
-	ErrInvalidSecretFormat.ID:                           "impossibe de dechiffrer le secret, format invalide",
-	ErrSessionNotFound.ID:                               "session invalide",
-	ErrNoPreviousSuccess.ID:                             "il n'y a aucune précédente version en succès pour ce pipeline",
-	ErrNoPermExecution.ID:                               "vous n'avez pas les droits d'éxécution",
-	ErrInvalidSecretValue.ID:                            "valeur du secret non specifiée",
-	ErrPipelineHasApplication.ID:                        "le pipeline est utilisé par une application",
-	ErrNoDirectSecretUse.ID:                             "l'utilisation du type de paramêtre 'password' est impossible",
-	ErrNoBranch.ID:                                      "la branche est introuvable dans le dépôt",
-	ErrLDAPConn.ID:                                      "erreur de connexion au serveur LDAP",
-	ErrServiceUnavailable.ID:                            "service temporairement indisponible ou en maintenance",
-	ErrParseUserNotification.ID:                         "notification non reconnue",
-	ErrNotSupportedUserNotification.ID:                  "notification non supportée",
-	ErrGroupNeedAdmin.ID:                                "il faut au moins 1 administrateur",
-	ErrGroupNeedWrite.ID:                                "il faut au moins 1 groupe avec les droits d'écriture",
-	ErrNoVariable.ID:                                    "la variable n'existe pas",
-	ErrPluginInvalid.ID:                                 "plugin non valide",
-	ErrApplicationExist.ID:                              "une application du même nom existe déjà",
-	ErrBranchNameNotProvided.ID:                         "le paramètre git.branch ou git.tag est obligatoire",
-	ErrInfiniteTriggerLoop.ID:                           "création d'une boucle de trigger infinie interdite",
-	ErrInvalidResetUser.ID:                              "mauvaise combinaison compte/mail utilisateur",
-	ErrUserConflict.ID:                                  "cet utilisateur existe deja",
-	ErrWrongRequest.ID:                                  "la requête est incorrecte",
-	ErrAlreadyExist.ID:                                  "conflit",
-	ErrInvalidType.ID:                                   "type non valide",
-	ErrParentApplicationAndPipelineMandatory.ID:         "application et pipeline parents obligatoires",
-	ErrNoParentBuildFound.ID:                            "aucun build parent n'a pu être trouvé",
-	ErrParameterExists.ID:                               "le paramètre existe déjà",
-	ErrNoHatchery.ID:                                    "La hatchery n'existe pas",
-	ErrInvalidWorkerStatus.ID:                           "Le status du worker est incorrect",
-	ErrInvalidToken.ID:                                  "Token non valide",
-	ErrAppBuildingPipelines.ID:                          "Impossible de supprimer l'application, il y a pipelines en cours",
-	ErrInvalidTimezone.ID:                               "Fuseau horaire invalide",
-	ErrEnvironmentCannotBeDeleted.ID:                    "L'environement ne peut etre supprimé. Il est encore utilisé.",
-	ErrInvalidPipeline.ID:                               "Pipeline invalide",
-	ErrKeyNotFound.ID:                                   "Clé introuvable",
-	ErrPipelineAlreadyExists.ID:                         "Le pipeline existe déjà",
-	ErrJobAlreadyBooked.ID:                              "Le job est déjà réservé",
-	ErrPipelineBuildNotFound.ID:                         "Le pipeline build n'a pu être trouvé",
-	ErrAlreadyTaken.ID:                                  "Ce job est déjà en cours de traitement par un autre worker",
-	ErrWorkflowNodeNotFound.ID:                          "Noeud de Workflow introuvable",
-	ErrWorkflowInvalidRoot.ID:                           "Racine de Workflow invalide",
-	ErrWorkflowNodeRef.ID:                               "Référence de noeud de workflow invalide",
-	ErrWorkflowInvalid.ID:                               "Workflow invalide",
-	ErrWorkflowNodeJoinNotFound.ID:                      "Jointure introuvable",
-	ErrInvalidJobRequirement.ID:                         "Pré-requis de Job invalide",
-	ErrNotImplemented.ID:                                "La fonctionnalité n'est pas implémentée",
-	ErrParameterNotExists.ID:                            "Ce paramètre n'existe pas",
-	ErrUnknownKeyType.ID:                                "Le type de clé n'est pas connu",
-	ErrInvalidKeyPattern.ID:                             "le nom de la clé doit respecter le pattern suivant; '^[a-zA-Z0-9.-_-]{1,}$'",
-	ErrWebhookConfigDoesNotMatch.ID:                     "la configuration du webhook ne correspond pas",
-	ErrPipelineUsedByWorkflow.ID:                        "Le pipeline est utilisé par un workflow",
-	ErrMethodNotAllowed.ID:                              "La méthode n'est pas autorisée",
-	ErrInvalidNodeNamePattern.ID:                        "Le nom du noeud du workflow doit respecter le pattern suivant; '^[a-zA-Z0-9.-_-]{1,}$'",
-	ErrWorkflowNodeParentNotRun.ID:                      "Il est interdit de lancer un noeuds si ses parents n'ont jamais été lancés",
-	ErrDefaultGroupPermission.ID:                        "Le groupe par défaut ne peut être utilisé qu'en lecture seule",
-	ErrLastGroupWithWriteRole.ID:                        "Le dernier groupe doit avoir les droits d'écriture",
-	ErrInvalidEmailDomain.ID:                            "Domaine invalide",
-	ErrWorkflowNodeRunJobNotFound.ID:                    "Job non trouvé",
-	ErrBuiltinKeyNotFound.ID:                            "Clé de chiffrage introuvable",
-	ErrStepNotFound.ID:                                  "Step introuvable",
-	ErrWorkerModelAlreadyBooked.ID:                      "Le modèle de worker est déjà réservé",
-	ErrConditionsNotOk.ID:                               "Impossible de démarrer ce pipeline car les conditions de lancement ne sont pas respectées",
-	ErrDownloadInvalidOS.ID:                             "OS invalide. L'OS doit être linux, darwin, freebsd ou windows",
-	ErrDownloadInvalidArch.ID:                           "Architecture invalide. L'architecture doit être 386, i386, i686, amd64, x86_64 ou arm (dépendant de l'OS)",
-	ErrDownloadInvalidName.ID:                           "Nom invalide",
-	ErrDownloadDoesNotExist.ID:                          "Le fichier n'existe pas",
-	ErrTokenNotFound.ID:                                 "Le token n'existe pas",
-	ErrWorkflowNotificationNodeRef.ID:                   "Une référence de noeud de workflow est invalide dans vos notifications (si vous souhaitez supprimer un pipeline vérifiez qu'il ne soit plus référencé dans la liste de vos notifications)",
-	ErrInvalidJobRequirementDuplicateModel.ID:           "Pré-requis de job invalides: vous ne pouvez pas séléctionnez plusieurs modèles de worker",
-	ErrInvalidJobRequirementDuplicateHostname.ID:        "Pré-requis de job invalides: vous ne pouvez pas séléctionnez plusieurs hostname",
-	ErrInvalidKeyName.ID:                                "Nom de clé invalide. Les clés d'application doivent être préfixées par 'app-', les clés d'environnement doivent être préfixées par 'env-'",
-	ErrRepoOperationTimeout.ID:                          "L'analyse du dépôt a pris trop de temps",
-	ErrInvalidGitBranch.ID:                              "Valeur git.branch invalide, vous ne pouvez pas avoir de valeur git.branch avec une string vide dans votre payload par défaut",
-	ErrInvalidFavoriteType.ID:                           "Type de favori invalide: doit être 'projet' ou 'workflow'",
-	ErrUnsupportedOSArchPlugin.ID:                       "OS/Architecture non supporté pour ce plugin",
-	ErrNoBroadcast.ID:                                   "Information invalide",
-	ErrBroadcastNotFound.ID:                             "Information non trouvée",
-	ErrInvalidPatternModel.ID:                           "Pattern de modèle de worker invalide: le nom, type et commande principale sont requis",
-	ErrWorkerModelNoAdmin.ID:                            "Accès refusé: vous n'êtes ni un administrateur CDS ni un administrateur du groupe pour lequel vous tentez de créer votre modèle",
-	ErrWorkerModelNoPattern.ID:                          "Accès refusé: vous devez obligatoirement sélectionner un pattern de script de configuration. Si vous souhaitez ajouter un pattern particulier, veuillez contacter un administrateur CDS",
-	ErrJobNotBooked.ID:                                  "Le job est déjà libéré",
-	ErrUserNotFound.ID:                                  "Utilisateur non trouvé",
-	ErrInvalidNumber.ID:                                 "Nombre non valide",
-	ErrKeyAlreadyExist.ID:                               "La clé existe déjà",
-	ErrPipelineNameImport.ID:                            "Le nom du pipeline dans le code ne correspond pas au nom du pipeline que vous voulez éditer",
-	ErrWorkflowNameImport.ID:                            "Le nom du workflow dans le code ne correspond pas au nom du workflow que vous voulez éditer",
-	ErrIconBadFormat.ID:                                 "Mauvais format d'icône, doit être une image",
-	ErrIconBadSize.ID:                                   "Taille de l'icône trop importante. (max 100Ko)",
-	ErrWorkflowConditionBadOperator.ID:                  "Opérateur de condition de lancement incorrect",
-	ErrColorBadFormat.ID:                                "Format de la couleur incorrect. Vous devez utiliser le format hexadécimal (exemple: #FFFF)",
-	ErrInvalidHookConfiguration.ID:                      "Configuration de hook invalide",
-	ErrInvalidData.ID:                                   "Impossible de valider les données",
-	ErrInvalidGroupAdmin.ID:                             "L'utilisateur n'est pas administrateur du groupe",
-	ErrInvalidGroupMember.ID:                            "L'utilisateur n'est pas membre du groupe",
-	ErrWorkflowNotGenerated.ID:                          "Le workflow n'a pas été généré par un template",
-	ErrInvalidNodeDefaultPayload.ID:                     "Le workflow est incorrect. Un payload par défaut ne peut pas être sur un pipeline autre que le premier du workflow",
-	ErrInvalidApplicationRepoStrategy.ID:                "La stratégie de dépôt (vcs) de l'application n'est pas correcte",
-	ErrWorkflowNodeRootUpdate.ID:                        "Impossible de mettre à jour ou supprimer le noeud racine du workflow",
-	ErrWorkflowAlreadyAsCode.ID:                         "Le workflow est déjà as-code ou il y a déjà une pull-request pour le transformer",
-	ErrNoDBMigrationID.ID:                               "Cet id n'existe pas dans la table gorp_migrations",
-	ErrCannotParseTemplate.ID:                           "Impossible de parser le modèle de workflow",
-	ErrGroupNotFoundInProject.ID:                        "Impossible d'ajouter ce groupe dans vos permissions de workflow car ce groupe n'est pas présent dans les permissions de votre projet",
-	ErrGroupNotFoundInWorkflow.ID:                       "Impossible d'ajouter ce groupe dans vos permissions de noeud du workflow car ce groupe n'est pas présent dans les permissions de votre workflow",
-	ErrWorkflowPermInsufficient.ID:                      "Impossible d'ajouter ce groupe dans vos permissions du workflow car ce groupe a des droits inférieurs (< RWX) à celui du workflow",
-	ErrApplicationUsedByWorkflow.ID:                     "L'application est utilisée par un workflow",
-	ErrLocked.ID:                                        "La ressource est verrouillée",
-	ErrInvalidJobRequirementWorkerModelPermission.ID:    "Pré-requis de job invalide: Modèle de worker inutilisable en raison des permissions",
-	ErrInvalidJobRequirementWorkerModelCapabilitites.ID: "Pré-requis de job invalide: Le modèle de worker ne dispose pas de binaires suffisants",
-	ErrMalformattedStep.ID:                              "Étape malformée",
-	ErrVCSUsedByApplication.ID:                          "Le gestionnaire de dépot est encore utilisé par une application",
-	ErrApplicationAsCodeOverride.ID:                     "Vous ne pouvez pas importer l'application depuis ce dépôt",
-	ErrPipelineAsCodeOverride.ID:                        "Vous ne pouvez pas importer le pipeline depuis ce dépôt",
-	ErrEnvironmentAsCodeOverride.ID:                     "Vous ne pouvez pas importer l'environment depuis ce dépôt",
-	ErrWorkflowAsCodeOverride.ID:                        "Vous ne pouvez pas importer le workflow depuis ce dépôt",
-	ErrProjectSecretDataUnknown.ID:                      "Donnée chiffrée non valide",
-	ErrApplicationMandatoryOnWorkflowAsCode.ID:          "Une application liée à un dépôt git est obligatoire à la racine du workflow",
-	ErrInvalidPayloadVariable.ID:                        "Le payload du workflow ne peut pas contenir de clés nommées cds.*",
-	ErrInvalidPassword.ID:                               "Votre valeur de type mot de passe n'est pas correct",
-	ErrRepositoryUsedByHook.ID:                          "Il y a encore un repository webhook sur ce dépôt",
-	ErrResourceNotInProject.ID:                          "La ressource n'est pas lié au projet",
-	ErrEnvironmentNotFound.ID:                           "L'environnement n'existe pas",
-	ErrIntegrationtNotFound.ID:                          "L'intégration n'existe pas",
-	ErrSignupDisabled.ID:                                "La création de compte est désactivée pour ce mode d'authentification.",
-	ErrBadBrokerConfiguration.ID:                        "Impossible de se connecter à votre intégration de type évènement. Veuillez vérifier votre configuration",
-	ErrInvalidJobRequirementNetworkAccess.ID:            "Pré-requis de job invalide: Le pré-requis network doit contenir un ':'. Exemple: golang.org:http, golang.org:443",
-	ErrWorkflowAsCodeResync.ID:                          "Impossible de resynchroniser un workflow en mode as-code",
-	ErrWorkflowNodeNameDuplicate.ID:                     "Vous ne pouvez pas avoir plusieurs fois le même nom de pipeline dans votre workflow",
-	ErrUnsupportedMediaType.ID:                          "Le format de la requête est invalide",
-	ErrNothingToPush.ID:                                 "Aucune modification à pousser",
-	ErrWorkerErrorCommand.ID:                            "Commande du worker en erreur",
-	ErrRepoAnalyzeFailed.ID:                             "L'analyse du repository a echoué",
-	ErrConflictData.ID:                                  "Donnée en conflit",
-	ErrWebsocketUpgrade.ID:                              "Websocket upgrade requis",
+	ErrMFARequired.ID:                                   "Multi factor authentication is required",
+	ErrHatcheryNoResourceAvailable.ID:                   "No enough resource available to start worker",
+	ErrRegionNotAllowed.ID:                              "Region not allowed",
 }
 
 // Error type.
@@ -590,8 +410,17 @@ func (e Error) Error() string {
 		message = errorsAmericanEnglish[ErrUnknownError.ID]
 	}
 	if e.From != "" {
-		message = fmt.Sprintf("%s (from: %s)", message, e.From)
+		if e.RequestID != "" {
+			message = fmt.Sprintf("%s (from: %s, request_id: %s)", message, e.From, e.RequestID)
+		} else {
+			message = fmt.Sprintf("%s (from: %s)", message, e.From)
+		}
+	} else {
+		if e.RequestID != "" {
+			message = fmt.Sprintf("%s (request_id: %s)", message, e.RequestID)
+		}
 	}
+
 	return message
 }
 
@@ -610,24 +439,8 @@ func (e Error) printLight() string {
 	return message
 }
 
-func (e Error) Translate(al string) string {
-	acceptedLanguages, _, err := language.ParseAcceptLanguage(al)
-	if err != nil {
-		acceptedLanguages = []language.Tag{language.AmericanEnglish}
-	}
-
-	// try to get error message for accepted language and error ID, else use unknown error message
-	tag, _, _ := matcher.Match(acceptedLanguages...)
-	var msg string
-	var ok bool
-	switch tag {
-	case language.French:
-		msg, ok = errorsFrench[e.ID]
-	case language.AmericanEnglish:
-		msg, ok = errorsAmericanEnglish[e.ID]
-	default:
-		msg, ok = errorsAmericanEnglish[e.ID]
-	}
+func (e Error) Translate() string {
+	msg, ok := errorsAmericanEnglish[e.ID]
 	if !ok {
 		return errorsAmericanEnglish[ErrUnknownError.ID]
 	}
@@ -646,15 +459,14 @@ func NewErrorWithStack(root error, err error) error {
 	case Error:
 		errWithStack.httpError = e
 	default:
-		errWithStack.httpError = ExtractHTTPError(err, "")
+		errWithStack.httpError = ExtractHTTPError(err)
 	}
 
 	return errWithStack
 }
 
 type errorWithStack struct {
-	root      error  // root error should be wrapped with stack
-	stack     *stack // used to generate inline call stack
+	root      error // root error should be wrapped with stack
 	httpError Error
 }
 
@@ -662,9 +474,12 @@ func (w errorWithStack) Error() string {
 	var cause string
 	root := w.root.Error()
 	if root != "" && root != w.httpError.From && root != w.httpError.Error() {
-		cause = fmt.Sprintf(" (caused by: %s)", w.root)
+		cause = fmt.Sprintf("(caused by: %s)", w.root)
 	}
-	return fmt.Sprintf("%s: %s%s", w.stack.String(), w.httpError, cause)
+	if cause == "" {
+		return w.httpError.Error()
+	}
+	return fmt.Sprintf("%s %s", w.httpError, cause)
 }
 
 func (w errorWithStack) Format(s fmt.State, verb rune) {
@@ -689,54 +504,17 @@ func ErrorWithFallback(err error, httpError Error, from string, args ...interfac
 	return err
 }
 
+func ContextWithStacktrace(ctx context.Context, err error) context.Context {
+	if IsErrorWithStack(err) {
+		return context.WithValue(ctx, cdslog.Stacktrace, fmt.Sprintf("%+v", err))
+	}
+	return ctx
+}
+
 // IsErrorWithStack returns true if given error is an errorWithStack.
 func IsErrorWithStack(err error) bool {
 	_, ok := err.(errorWithStack)
 	return ok
-}
-
-type stack []uintptr
-
-func (s *stack) String() string {
-	var names []string
-	for _, pc := range *s {
-		name := runtime.FuncForPC(pc).Name()
-		if strings.HasPrefix(name, "github.com/ovh/cds/vendor") {
-			continue
-		}
-		if strings.HasPrefix(name, "github.com/ovh/cds") {
-			sp := strings.Split(name, "/")
-			sp = strings.Split(sp[len(sp)-1], ".")
-			var name string
-			// check if it's a struct or package func
-			if strings.HasPrefix(sp[1], "(") {
-				name = sp[2]
-			} else {
-				name = sp[1]
-			}
-			ignoredNames := StringSlice{"NewError", "NewErrorFrom", "WithStack", "WrapError", "Append", "NewErrorWithStack"}
-			if !ignoredNames.Contains(name) {
-				names = append(names, name)
-			}
-		}
-	}
-	reverse(names)
-	return strings.Join(names, ">")
-}
-
-func reverse(ss []string) {
-	last := len(ss) - 1
-	for i := 0; i < len(ss)/2; i++ {
-		ss[i], ss[last-i] = ss[last-i], ss[i]
-	}
-}
-
-func callers() *stack {
-	const depth = 32
-	var pcs [depth]uintptr
-	n := runtime.Callers(3, pcs[:])
-	var st stack = pcs[0:n]
-	return &st
 }
 
 // NewError returns a merge of given err with new http error.
@@ -756,7 +534,7 @@ func NewError(httpError Error, err error) error {
 	if e, ok := err.(*MultiError); ok {
 		var ss []string
 		for i := range *e {
-			ss = append(ss, ExtractHTTPError((*e)[i], "").printLight())
+			ss = append(ss, ExtractHTTPError((*e)[i]).printLight())
 		}
 		httpError.From = strings.Join(ss, ", ")
 	} else {
@@ -766,7 +544,6 @@ func NewError(httpError Error, err error) error {
 	// if it's a library error create a new error with stack
 	return errorWithStack{
 		root:      errors.WithStack(err),
-		stack:     callers(),
 		httpError: httpError,
 	}
 }
@@ -806,7 +583,6 @@ func WrapError(err error, format string, args ...interface{}) error {
 	if e, ok := err.(Error); ok {
 		return errorWithStack{
 			root:      errors.WithStack(fmt.Errorf(format, args...)),
-			stack:     callers(),
 			httpError: e,
 		}
 	}
@@ -816,14 +592,13 @@ func WrapError(err error, format string, args ...interface{}) error {
 	if e, ok := err.(*MultiError); ok {
 		var ss []string
 		for i := range *e {
-			ss = append(ss, ExtractHTTPError((*e)[i], "").printLight())
+			ss = append(ss, ExtractHTTPError((*e)[i]).printLight())
 		}
 		httpError.From = strings.Join(ss, ", ")
 	}
 
 	return errorWithStack{
 		root:      errors.Wrap(err, m),
-		stack:     callers(),
 		httpError: httpError,
 	}
 }
@@ -848,15 +623,13 @@ func WithStack(err error) error {
 	// if it's a Error wrap it in error with stack
 	if e, ok := err.(Error); ok {
 		return errorWithStack{
-			root:      errors.New(e.Translate("")),
-			stack:     callers(),
+			root:      errors.New(e.Translate()),
 			httpError: e,
 		}
 	}
 
 	return errorWithStack{
 		root:      errors.WithStack(err),
-		stack:     callers(),
 		httpError: ErrUnknownError,
 	}
 }
@@ -871,7 +644,7 @@ func WithData(err error, data interface{}) error {
 
 // ExtractHTTPError tries to recognize given error and return http error
 // with message in a language matching Accepted-Language.
-func ExtractHTTPError(source error, al string) Error {
+func ExtractHTTPError(source error) Error {
 	var httpError Error
 
 	// try to recognize http error from source
@@ -880,7 +653,7 @@ func ExtractHTTPError(source error, al string) Error {
 		httpError = ErrUnknownError
 		var ss []string
 		for i := range *e {
-			ss = append(ss, ExtractHTTPError((*e)[i], al).printLight())
+			ss = append(ss, ExtractHTTPError((*e)[i]).printLight())
 		}
 		httpError.Message = strings.Join(ss, ", ")
 	case errorWithStack:
@@ -899,9 +672,8 @@ func ExtractHTTPError(source error, al string) Error {
 	// if error's message is not empty do not override (custom message)
 	// else set message for given accepted languages.
 	if httpError.Message == "" {
-		httpError.Message = httpError.Translate(al)
+		httpError.Message = httpError.Translate()
 	}
-
 	return httpError
 }
 
@@ -918,7 +690,7 @@ func Exit(format string, args ...interface{}) {
 func DecodeError(data []byte) error {
 	var e Error
 
-	if err := json.Unmarshal(data, &e); err != nil {
+	if err := JSONUnmarshal(data, &e); err != nil {
 		return nil
 	}
 
@@ -929,13 +701,18 @@ func DecodeError(data []byte) error {
 	return e
 }
 
+type errorWithCause interface {
+	Cause() error
+}
+
 // ErrorIs returns true if error match the target error.
 func ErrorIs(err error, target Error) bool {
 	if err == nil {
 		return false
 	}
-
 	switch e := err.(type) {
+	case errorWithCause: // Fetch the root error with the stacktrace from errors.WithStack
+		return ErrorIs(e.Cause(), target)
 	case errorWithStack:
 		return e.httpError.ID == target.ID
 	case Error:

@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/cdn/item"
 	"github.com/ovh/cds/engine/cdn/redis"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 var (
@@ -38,8 +38,14 @@ func NewRedisLRU(db *gorp.DbMap, maxSize int64, host string, password string) (*
 
 // Exist returns true is the item ID exists
 func (r *Redis) Exist(itemID string) (bool, error) {
-	itemKey := cache.Key(redisLruItemCacheKey, itemID)
-	return r.store.Exist(itemKey)
+	s, err := r.store.ScoredSetGetScore(redisLruKeyCacheKey, itemID)
+	if err != nil {
+		if err.Error() == "redis: nil" {
+			return false, nil
+		}
+		return false, err
+	}
+	return s > 0, nil
 }
 
 // Remove remove an itemID
@@ -116,29 +122,26 @@ func (r *Redis) Clear() error {
 
 // NewWriter instanciates a new writer
 func (r *Redis) NewWriter(itemID string) io.WriteCloser {
-	return &redis.Writer{
-		ReadWrite: redis.ReadWrite{
+	return &writer{
+		redis.Writer{
 			Store:     r.store,
 			ItemID:    itemID,
 			PrefixKey: redisLruItemCacheKey,
-			UsageKey:  redisLruKeyCacheKey,
 		},
 	}
 }
 
 // NewReader instanciates a new reader
-func (r *Redis) NewReader(itemID string, format sdk.CDNReaderFormat, from int64, size uint, sort int64) io.ReadCloser {
+func (r *Redis) NewReader(item sdk.CDNItem, format sdk.CDNReaderFormat, from int64, size uint, sort int64) io.ReadCloser {
 	return &redis.Reader{
-		ReadWrite: redis.ReadWrite{
-			Store:     r.store,
-			ItemID:    itemID,
-			PrefixKey: redisLruItemCacheKey,
-			UsageKey:  redisLruKeyCacheKey,
-		},
-		Size:   size,
-		From:   from,
-		Format: format,
-		Sort:   sort,
+		Store:      r.store,
+		ItemID:     item.ID,
+		ApiRefHash: item.APIRefHash,
+		PrefixKey:  redisLruItemCacheKey,
+		Size:       size,
+		From:       from,
+		Format:     format,
+		Sort:       sort,
 	}
 }
 

@@ -6,7 +6,7 @@ import { Store } from '@ngxs/store';
 import { Transition, TransitionController, TransitionDirection } from '@richardlt/ng2-semantic-ui';
 import { AuthConsumer, AuthDriverManifest, AuthDriverManifests, AuthSession } from 'app/model/authentication.model';
 import { Group } from 'app/model/group.model';
-import { AuthentifiedUser, UserContact } from 'app/model/user.model';
+import { AuthentifiedUser, AuthSummary, UserContact } from 'app/model/user.model';
 import { AuthenticationService } from 'app/service/authentication/authentication.service';
 import { UserService } from 'app/service/user/user.service';
 import { PathItem } from 'app/shared/breadcrumb/breadcrumb.component';
@@ -14,8 +14,9 @@ import { Item } from 'app/shared/menu/menu.component';
 import { Column, ColumnType, Filter } from 'app/shared/table/data-table.component';
 import { ToastService } from 'app/shared/toast/ToastService';
 import { AuthenticationState } from 'app/store/authentication.state';
-import { forkJoin } from 'rxjs/internal/observable/forkJoin';
-import { finalize } from 'rxjs/operators/finalize';
+import * as moment from 'moment';
+import { forkJoin } from 'rxjs';
+import { finalize } from 'rxjs/operators';
 import { CloseEventType, ConsumerCreateModalComponent } from '../consumer-create-modal/consumer-create-modal.component';
 import {
     CloseEvent,
@@ -32,7 +33,7 @@ const defaultMenuItems = [<Item>{
     key: 'groups'
 }];
 
-const usernamePattern: RegExp = new RegExp('^[a-zA-Z0-9._-]{1,}$');
+const usernamePattern = new RegExp('^[a-zA-Z0-9._-]{1,}$');
 
 @Component({
     selector: 'app-user-edit',
@@ -57,7 +58,7 @@ export class UserEditComponent implements OnInit {
     groupsAdmin: Array<Group>;
     userPatternError = false;
     username: string;
-    currentUser: AuthentifiedUser;
+    currentAuthSummary: AuthSummary;
     editable: boolean;
     path: Array<PathItem>;
     menuItems: Array<Item>;
@@ -94,7 +95,7 @@ export class UserEditComponent implements OnInit {
         private _toast: ToastService,
         private _cd: ChangeDetectorRef
     ) {
-        this.currentUser = this._store.selectSnapshot(AuthenticationState.user);
+        this.currentAuthSummary = this._store.selectSnapshot(AuthenticationState.summary);
 
         this.menuItems = [].concat(defaultMenuItems);
 
@@ -102,12 +103,10 @@ export class UserEditComponent implements OnInit {
             <Column<Group>>{
                 type: ColumnType.ROUTER_LINK,
                 name: 'common_name',
-                selector: (g: Group) => {
-                    return {
-                        link: '/settings/group/' + g.name,
-                        value: g.name
-                    };
-                }
+                selector: (g: Group) => ({
+                    link: '/settings/group/' + g.name,
+                    value: g.name
+                })
             },
             <Column<Group>>{
                 name: 'user_group_role',
@@ -145,14 +144,12 @@ export class UserEditComponent implements OnInit {
 
         this.filterConsumers = f => {
             const lowerFilter = f.toLowerCase();
-            return (c: AuthConsumer) => {
-                return c.name.toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    c.description.toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    c.id.toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    c.scope_details.map(s => s.scope).join(' ').toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    (c.groups && c.groups.map(g => g.name).join(' ').toLowerCase().indexOf(lowerFilter) !== -1) ||
-                    (!c.groups && lowerFilter === '*');
-            }
+            return (c: AuthConsumer) => c.name.toLowerCase().indexOf(lowerFilter) !== -1 ||
+                c.description.toLowerCase().indexOf(lowerFilter) !== -1 ||
+                c.id.toLowerCase().indexOf(lowerFilter) !== -1 ||
+                c.scope_details.map(s => s.scope).join(' ').toLowerCase().indexOf(lowerFilter) !== -1 ||
+                (c.groups && c.groups.map(g => g.name).join(' ').toLowerCase().indexOf(lowerFilter) !== -1) ||
+                (!c.groups && lowerFilter === '*')
         };
 
         this.columnsConsumers = [
@@ -213,27 +210,58 @@ export class UserEditComponent implements OnInit {
                 }
             },
             <Column<AuthConsumer>>{
+                name: 'End of token validity',
+                selector: (c: AuthConsumer) => {
+                    if (!c.validity_periods) {
+                        return '';
+                    }
+
+                    c.validity_periods.sort((x, y) => {
+                        let dX = moment(x.issued_at).toDate();
+                        let dY = moment(y.issued_at).toDate();
+                        return dY.getTime() - dX.getTime();
+                    });
+
+                    let period = c.validity_periods[0];
+                    if (period.duration === 0) {
+                        return '';
+                    }
+
+                    let d = moment(period.issued_at).toDate();
+                    d.setTime(d.getTime() + (period.duration / 1000000));
+
+                    return moment(d).fromNow();
+                }
+            },
+            <Column<AuthConsumer>>{
+                name: 'Last authentication',
+                selector: (c: AuthConsumer) => {
+                    if (!c.last_authentication) {
+                        return 'never';
+                    }
+                    return moment(c.last_authentication).fromNow();
+                }
+            },
+            <Column<AuthConsumer>>{
                 type: ColumnType.BUTTON,
                 name: 'common_action',
                 class: 'two right aligned',
-                selector: (c: AuthConsumer) => {
-                    return {
-                        title: 'common_details',
-                        click: () => { this.clickConsumerDetails(c) }
-                    };
-                }
+                selector: (c: AuthConsumer) => ({
+                    title: 'common_details',
+                    click: () => {
+                        this.clickConsumerDetails(c)
+                    }
+                })
             }
         ];
 
         this.filterSessions = f => {
             const lowerFilter = f.toLowerCase();
-            return (s: AuthSession) => {
-                return s.consumer.name.toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    s.id.toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    s.consumer_id.toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    s.created.toLowerCase().indexOf(lowerFilter) !== -1 ||
-                    s.expire_at.toLowerCase().indexOf(lowerFilter) !== -1;
-            }
+            return (s: AuthSession) => s.consumer.name.toLowerCase().indexOf(lowerFilter) !== -1 ||
+                s.id.toLowerCase().indexOf(lowerFilter) !== -1 ||
+                s.consumer_id.toLowerCase().indexOf(lowerFilter) !== -1 ||
+                s.created.toLowerCase().indexOf(lowerFilter) !== -1 ||
+                s.expire_at.toLowerCase().indexOf(lowerFilter) !== -1
         };
 
         this.columnsSessions = [
@@ -274,6 +302,15 @@ export class UserEditComponent implements OnInit {
                         icons.push(icon);
                     }
 
+                    if (s.mfa) {
+                        const lastActivity = s.last_activity ? `Last activity: ${s.last_activity}.` : 'Expired.';
+                        icons.push({
+                            label: `MFA. ${lastActivity}`,
+                            title: `MFA. ${lastActivity}`,
+                            class: ['key', 'icon']
+                        });
+                    }
+
                     return {
                         value: s.consumer.name,
                         icons
@@ -311,13 +348,13 @@ export class UserEditComponent implements OnInit {
                 name: 'common_action',
                 class: 'two right aligned',
                 disabled: true,
-                selector: (s: AuthSession) => {
-                    return {
-                        title: 'user_auth_revoke_btn',
-                        color: 'red',
-                        click: () => { this.clickSessionRevoke(s) }
-                    };
-                }
+                selector: (s: AuthSession) => ({
+                    title: 'user_auth_revoke_btn',
+                    color: 'red',
+                    click: () => {
+                        this.clickSessionRevoke(s)
+                    }
+                })
             }
         ];
     }
@@ -401,7 +438,7 @@ export class UserEditComponent implements OnInit {
 
             });
         } else {
-            this._userService.deleteSession(this.currentUser.username, s.id).subscribe(() => {
+            this._userService.deleteSession(this.currentAuthSummary.user.username, s.id).subscribe(() => {
                 this.getAuthData();
             });
         }
@@ -492,9 +529,9 @@ export class UserEditComponent implements OnInit {
     }
 
     setDataFromUser(): void {
-        this.editable = this.user.id === this.currentUser.id || this.currentUser.isAdmin();
+        this.editable = this.user.id === this.currentAuthSummary.user.id || this.currentAuthSummary.isAdmin();
 
-        if (this.user.id === this.currentUser.id || this.currentUser.isMaintainer()) {
+        if (this.user.id === this.currentAuthSummary.user.id || this.currentAuthSummary.isMaintainer()) {
             this.menuItems = defaultMenuItems.concat([<Item>{
                 translate: 'user_contacts_btn',
                 key: 'contacts'

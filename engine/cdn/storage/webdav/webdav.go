@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 	"github.com/studio-b12/gowebdav"
 
 	"github.com/ovh/cds/engine/cdn/storage"
 	"github.com/ovh/cds/engine/cdn/storage/encryption"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 type Webdav struct {
@@ -28,11 +28,17 @@ var (
 	_ storage.StorageUnit = new(Webdav)
 )
 
+const driverName = "webdav"
+
 func init() {
-	storage.RegisterDriver("webdav", new(Webdav))
+	storage.RegisterDriver(driverName, new(Webdav))
 }
 
-func (s *Webdav) Init(ctx context.Context, cfg interface{}) error {
+func (s *Webdav) GetDriverName() string {
+	return driverName
+}
+
+func (s *Webdav) Init(_ context.Context, cfg interface{}) error {
 	config, is := cfg.(*storage.WebdavStorageConfiguration)
 	if !is {
 		return sdk.WithStack(fmt.Errorf("invalid configuration: %T", cfg))
@@ -77,7 +83,7 @@ func (s *Webdav) NewWriter(ctx context.Context, i sdk.CDNItemUnit) (io.WriteClos
 		return nil, err
 	}
 	pr, pw := io.Pipe()
-	gr := sdk.NewGoRoutines()
+	gr := sdk.NewGoRoutines(ctx)
 	gr.Exec(ctx, "webdav.newWriter", func(ctx context.Context) {
 		if err := s.client.WriteStream(f, pr, os.FileMode(0600)); err != nil {
 			log.Error(context.Background(), "unable to write stream %s: %v", f, err)
@@ -113,4 +119,8 @@ func (s *Webdav) Remove(ctx context.Context, i sdk.CDNItemUnit) error {
 		return err
 	}
 	return sdk.WithStack(s.client.Remove(f))
+}
+
+func (s *Webdav) ResyncWithDatabase(ctx context.Context, _ gorp.SqlExecutor, _ sdk.CDNItemType, _ bool) {
+	log.Error(ctx, "Resynchronization with database not implemented for webdav storage unit")
 }

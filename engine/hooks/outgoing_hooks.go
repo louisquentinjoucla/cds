@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,11 +14,11 @@ import (
 
 	dump "github.com/fsamin/go-dump"
 	"github.com/mitchellh/hashstructure"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
 	"github.com/ovh/cds/sdk/interpolate"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (s *Service) nodeRunToTask(nr sdk.WorkflowNodeRun) (sdk.Task, error) {
@@ -102,7 +101,7 @@ func (s *Service) startOutgoingWebHookTask(t *sdk.Task) (*sdk.TaskExecution, err
 	}
 
 	s.Dao.SaveTaskExecution(exec) //We don't push in queue, we will the scheduler to run it
-	log.Debug("Hooks> Outgoing hook task  %s ready", t.UUID)
+	log.Debug(context.TODO(), "Hooks> Outgoing hook task  %s ready", t.UUID)
 
 	return exec, nil
 }
@@ -120,7 +119,7 @@ func (s *Service) startOutgoingWorkflowTask(t *sdk.Task) (*sdk.TaskExecution, er
 	}
 
 	s.Dao.SaveTaskExecution(exec) //We don't push in queue, we will the scheduler to run it
-	log.Debug("Hooks> Outgoing hook task  %s ready", t.UUID)
+	log.Debug(context.TODO(), "Hooks> Outgoing hook task  %s ready", t.UUID)
 
 	return exec, nil
 }
@@ -135,7 +134,7 @@ func (s *Service) doOutgoingWorkflowExecution(ctx context.Context, t *sdk.TaskEx
 	targetWorkflow := t.Config[sdk.HookConfigTargetWorkflow].Value
 	targetHook := t.Config[sdk.HookConfigTargetHook].Value
 
-	log.Debug("Hooks> Processing outgoing workflow hook %s %s (%s/%s #%s) => (%s/%s/%s)",
+	log.Debug(ctx, "Hooks> Processing outgoing workflow hook %s %s (%s/%s #%s) => (%s/%s/%s)",
 		t.UUID, t.Type, pkey, workflow, run, targetProject, targetWorkflow, targetHook)
 
 	runNumber, err := strconv.ParseInt(run, 10, 64)
@@ -197,7 +196,7 @@ func (s *Service) doOutgoingWorkflowExecution(ctx context.Context, t *sdk.TaskEx
 
 		var payloadInt interface{}
 		if payloadstr != "" {
-			if err := json.Unmarshal([]byte(payloadstr), &payloadInt); err == nil {
+			if err := sdk.JSONUnmarshal([]byte(payloadstr), &payloadInt); err == nil {
 				e := dump.NewDefaultEncoder()
 				e.Formatters = []dump.KeyFormatterFunc{dump.WithDefaultLowerCaseFormatter()}
 				e.ExtraFields.DetailedMap = false
@@ -251,7 +250,7 @@ func (s *Service) doOutgoingWebHookExecution(ctx context.Context, t *sdk.TaskExe
 	workflow := t.Config[sdk.HookConfigWorkflow].Value
 	run := t.Config[ConfigNumber].Value
 	hookRunID := t.Config[ConfigHookRunID].Value
-	log.Debug("Hooks> Processing outgoing webhook %s %s (%s/%s #%s)", t.UUID, t.Type, pkey, workflow, run)
+	log.Debug(ctx, "Hooks> Processing outgoing webhook %s %s (%s/%s #%s)", t.UUID, t.Type, pkey, workflow, run)
 	irun, _ := strconv.ParseInt(run, 10, 64)
 
 	// Checkin if the workflow is still waiting for the callback
@@ -327,7 +326,7 @@ func (s *Service) doOutgoingWebHookExecution(ctx context.Context, t *sdk.TaskExe
 		return sdk.WrapError(handleError(ctx, err), "Unable to interpolate body")
 	}
 
-	req, err := http.NewRequest(method, urls, bytes.NewBuffer([]byte(body)))
+	req, err := http.NewRequest(method, urls, bytes.NewBufferString(body))
 	if err != nil {
 		return sdk.WrapError(handleError(ctx, err), "Unable to create request")
 	}

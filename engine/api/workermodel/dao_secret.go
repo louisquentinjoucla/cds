@@ -5,11 +5,11 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // LoadSecretsByModelID retrieves all worker model secrets for given model id.
@@ -95,8 +95,8 @@ func UpdateSecret(ctx context.Context, db gorpmapper.SqlExecutorWithTx, s *sdk.W
 	return nil
 }
 
-// DeleteSecretRegistryPasswordForModelID remove registry secret from database for given model.
-func DeleteSecretRegistryPasswordForModelID(db gorp.SqlExecutor, workerModelID int64) error {
-	_, err := db.Exec("DELETE FROM worker_model_secret WHERE worker_model_id = $1 AND name = $2", workerModelID, registryPasswordSecretName)
-	return sdk.WrapError(err, "unable to remove worker model secret for docker registry with worker model id %d", workerModelID)
+// DeleteSecretForModelID remove registry secret from database for given model.
+func DeleteSecretForModelID(db gorp.SqlExecutor, workerModelID int64, field string) error {
+	_, err := db.Exec("DELETE FROM worker_model_secret WHERE worker_model_id = $1 AND name = $2", workerModelID, field)
+	return sdk.WrapError(err, "unable to remove worker model secret for worker model id %d", workerModelID)
 }

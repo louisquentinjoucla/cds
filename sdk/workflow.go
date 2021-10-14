@@ -28,39 +28,40 @@ type WorkflowName struct {
 
 //Workflow represents a pipeline based workflow
 type Workflow struct {
-	ID                      int64                        `json:"id" db:"id" cli:"-"`
-	Name                    string                       `json:"name" db:"name" cli:"name,key"`
-	Description             string                       `json:"description,omitempty" db:"description" cli:"description"`
-	Icon                    string                       `json:"icon,omitempty" db:"icon" cli:"-"`
-	LastModified            time.Time                    `json:"last_modified" db:"last_modified" mapstructure:"-"`
-	ProjectID               int64                        `json:"project_id,omitempty" db:"project_id" cli:"-"`
-	ProjectKey              string                       `json:"project_key" db:"-" cli:"-"`
-	Groups                  []GroupPermission            `json:"groups,omitempty" db:"-" cli:"-"`
-	Permissions             Permissions                  `json:"permissions" db:"-" cli:"-"`
-	Metadata                Metadata                     `json:"metadata,omitempty" yaml:"metadata" db:"metadata"`
-	Usage                   *Usage                       `json:"usage,omitempty" db:"-" cli:"-"`
-	HistoryLength           int64                        `json:"history_length" db:"history_length" cli:"-"`
-	PurgeTags               PurgeTags                    `json:"purge_tags,omitempty" db:"purge_tags" cli:"-"`
-	RetentionPolicy         string                       `json:"retention_policy,omitempty" db:"retention_policy" cli:"-"`
-	MaxRuns                 int64                        `json:"max_runs,omitempty" db:"max_runs" cli:"-"`
-	Notifications           []WorkflowNotification       `json:"notifications,omitempty" db:"-" cli:"-"`
-	FromRepository          string                       `json:"from_repository,omitempty" db:"from_repository" cli:"from"`
-	DerivedFromWorkflowID   int64                        `json:"derived_from_workflow_id,omitempty" db:"derived_from_workflow_id" cli:"-"`
-	DerivedFromWorkflowName string                       `json:"derived_from_workflow_name,omitempty" db:"derived_from_workflow_name" cli:"-"`
-	DerivationBranch        string                       `json:"derivation_branch,omitempty" db:"derivation_branch" cli:"-"`
-	Audits                  []AuditWorkflow              `json:"audits,omitempty" db:"-"`
-	Pipelines               map[int64]Pipeline           `json:"pipelines,omitempty" db:"-" cli:"-"  mapstructure:"-"`
-	Applications            map[int64]Application        `json:"applications,omitempty" db:"-" cli:"-"  mapstructure:"-"`
-	Environments            map[int64]Environment        `json:"environments,omitempty" db:"-" cli:"-"  mapstructure:"-"`
-	ProjectIntegrations     map[int64]ProjectIntegration `json:"project_integrations,omitempty" db:"-" cli:"-"  mapstructure:"-"`
-	HookModels              map[int64]WorkflowHookModel  `json:"hook_models,omitempty" db:"-" cli:"-"  mapstructure:"-"`
-	OutGoingHookModels      map[int64]WorkflowHookModel  `json:"outgoing_hook_models,omitempty" db:"-" cli:"-"  mapstructure:"-"`
-	Labels                  []Label                      `json:"labels,omitempty" db:"-" cli:"labels"`
-	ToDelete                bool                         `json:"to_delete" db:"to_delete" cli:"-"`
-	Favorite                bool                         `json:"favorite" db:"-" cli:"favorite"`
-	WorkflowData            WorkflowData                 `json:"workflow_data" db:"workflow_data" cli:"-"`
-	EventIntegrations       []ProjectIntegration         `json:"event_integrations,omitempty" db:"-" cli:"-"`
-	AsCodeEvent             []AsCodeEvent                `json:"as_code_events,omitempty" db:"-" cli:"-"`
+	ID                       int64                        `json:"id" db:"id" cli:"-"`
+	Name                     string                       `json:"name" db:"name" cli:"name,key"`
+	Description              string                       `json:"description,omitempty" db:"description" cli:"description"`
+	Icon                     string                       `json:"icon,omitempty" db:"icon" cli:"-"`
+	LastModified             time.Time                    `json:"last_modified" db:"last_modified" mapstructure:"-"`
+	ProjectID                int64                        `json:"project_id,omitempty" db:"project_id" cli:"-"`
+	ProjectKey               string                       `json:"project_key" db:"-" cli:"-"`
+	Groups                   []GroupPermission            `json:"groups,omitempty" db:"-" cli:"-"`
+	Permissions              Permissions                  `json:"permissions" db:"-" cli:"-"`
+	Metadata                 Metadata                     `json:"metadata,omitempty" yaml:"metadata" db:"metadata"`
+	Usage                    *Usage                       `json:"usage,omitempty" db:"-" cli:"-"`
+	HistoryLength            int64                        `json:"history_length" db:"history_length" cli:"-"`
+	PurgeTags                PurgeTags                    `json:"purge_tags,omitempty" db:"purge_tags" cli:"-"`
+	RetentionPolicy          string                       `json:"retention_policy,omitempty" db:"retention_policy" cli:"-"`
+	MaxRuns                  int64                        `json:"max_runs,omitempty" db:"max_runs" cli:"-"`
+	Notifications            []WorkflowNotification       `json:"notifications,omitempty" db:"-" cli:"-"`
+	FromRepository           string                       `json:"from_repository,omitempty" db:"from_repository" cli:"from"`
+	DerivedFromWorkflowID    int64                        `json:"derived_from_workflow_id,omitempty" db:"derived_from_workflow_id" cli:"-"`
+	DerivedFromWorkflowName  string                       `json:"derived_from_workflow_name,omitempty" db:"derived_from_workflow_name" cli:"-"`
+	DerivationBranch         string                       `json:"derivation_branch,omitempty" db:"derivation_branch" cli:"-"`
+	Audits                   []AuditWorkflow              `json:"audits,omitempty" db:"-"`
+	Pipelines                map[int64]Pipeline           `json:"pipelines,omitempty" db:"-" cli:"-"  mapstructure:"-"`
+	Applications             map[int64]Application        `json:"applications,omitempty" db:"-" cli:"-"  mapstructure:"-"`
+	Environments             map[int64]Environment        `json:"environments,omitempty" db:"-" cli:"-"  mapstructure:"-"`
+	ProjectIntegrations      map[int64]ProjectIntegration `json:"project_integrations,omitempty" db:"-" cli:"-"  mapstructure:"-"`
+	HookModels               map[int64]WorkflowHookModel  `json:"hook_models,omitempty" db:"-" cli:"-"  mapstructure:"-"`
+	OutGoingHookModels       map[int64]WorkflowHookModel  `json:"outgoing_hook_models,omitempty" db:"-" cli:"-"  mapstructure:"-"`
+	Labels                   []Label                      `json:"labels,omitempty" db:"-" cli:"labels"`
+	ToDelete                 bool                         `json:"to_delete" db:"to_delete" cli:"-"`
+	ToDeleteWithDependencies *bool                        `json:"to_delete_with_dependencies" db:"to_delete_with_dependencies" cli:"-"`
+	Favorite                 bool                         `json:"favorite" db:"-" cli:"favorite"`
+	WorkflowData             WorkflowData                 `json:"workflow_data" db:"workflow_data" cli:"-"`
+	Integrations             []WorkflowProjectIntegration `json:"integrations,omitempty" db:"-" cli:"-"`
+	AsCodeEvent              []AsCodeEvent                `json:"as_code_events,omitempty" db:"-" cli:"-"`
 	// aggregates
 	TemplateInstance *WorkflowTemplateInstance `json:"template_instance,omitempty" db:"-" cli:"-"`
 	FromTemplate     string                    `json:"from_template,omitempty" db:"-" cli:"-"`
@@ -82,7 +83,7 @@ func (w *Workflow) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, w), "cannot unmarshal Workflow")
+	return WrapError(JSONUnmarshal(source, w), "cannot unmarshal Workflow")
 }
 
 type PurgeTags []string
@@ -102,7 +103,7 @@ func (a *PurgeTags) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, a), "cannot unmarshal PurgeTags")
+	return WrapError(JSONUnmarshal(source, a), "cannot unmarshal PurgeTags")
 }
 
 // Value returns driver.Value from WorkflowData.
@@ -120,7 +121,7 @@ func (a *WorkflowData) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, a), "cannot unmarshal WorkflowData")
+	return WrapError(JSONUnmarshal(source, a), "cannot unmarshal WorkflowData")
 }
 
 type Workflows []Workflow
@@ -188,10 +189,13 @@ type WorkflowNotification struct {
 	Integration    string                   `json:"integration,omitempty" db:"-"`
 }
 
-// ResetIDs resets all nodes and joins ids
+// ResetIDs resets all nodes, joins, integration ids
 func (w *Workflow) ResetIDs() {
 	for _, n := range w.WorkflowData.Array() {
 		n.ID = 0
+	}
+	for i := range w.Integrations {
+		w.Integrations[i].ID = 0
 	}
 }
 
@@ -368,6 +372,16 @@ func (w *Workflow) ValidateType() error {
 	return nil
 }
 
+func (w *Workflow) GetEventIntegration() []WorkflowProjectIntegration {
+	eventsIntegrations := make([]WorkflowProjectIntegration, 0)
+	for _, i := range w.Integrations {
+		if i.ProjectIntegration.Model.Event {
+			eventsIntegrations = append(eventsIntegrations, i)
+		}
+	}
+	return eventsIntegrations
+}
+
 //WorkflowNodeConditions is either an array of WorkflowNodeCondition or a lua script
 type WorkflowNodeConditions struct {
 	PlainConditions []WorkflowNodeCondition `json:"plain,omitempty" yaml:"check,omitempty"`
@@ -389,7 +403,7 @@ func (w *WorkflowNodeConditions) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, w), "cannot unmarshal WorkflowNodeConditions")
+	return WrapError(JSONUnmarshal(source, w), "cannot unmarshal WorkflowNodeConditions")
 }
 
 //WorkflowNodeCondition represents a condition to trigger ot not a pipeline in a workflow. Operator can be =, !=, regex
@@ -438,7 +452,7 @@ func (label *Label) IsValid() error {
 		}
 		label.Color = "#" + hex.EncodeToString(bytes)
 	} else {
-		if !ColorRegexp.Match([]byte(label.Color)) {
+		if !ColorRegexp.MatchString(label.Color) {
 			return WithStack(ErrIconBadFormat)
 		}
 	}
@@ -466,4 +480,45 @@ func WorkflowToIDs(ws []*Workflow) []int64 {
 		ids[i] = ws[i].ID
 	}
 	return ids
+}
+
+type WorkflowProjectIntegration struct {
+	ID                   int64              `json:"id" db:"id"`
+	WorkflowID           int64              `json:"workflow_id" db:"workflow_id"`
+	ProjectIntegrationID int64              `json:"project_integration_id" db:"project_integration_id"`
+	ProjectIntegration   ProjectIntegration `json:"project_integration" db:"-"`
+	Config               IntegrationConfig  `json:"config" db:"config"`
+}
+
+func (wpi *WorkflowProjectIntegration) MergeWithModel(model IntegrationModel) {
+	if model.AdditionalDefaultConfig != nil {
+		if wpi.Config == nil {
+			wpi.Config = model.AdditionalDefaultConfig.Clone()
+		} else {
+			// Merge params
+			for k, v := range model.AdditionalDefaultConfig {
+				if _, has := wpi.Config[k]; !has {
+					wpi.Config[k] = v
+				}
+			}
+			// remove old params
+			for k := range wpi.Config {
+				if _, has := model.AdditionalDefaultConfig[k]; !has {
+					delete(wpi.Config, k)
+				}
+			}
+		}
+
+	}
+}
+
+type WorkflowDependencies struct {
+	Pipelines    []IDName `json:"pipelines"`
+	Applications []IDName `json:"applications"`
+	Environments []IDName `json:"environments"`
+}
+
+type WorkflowDeleteDependencies struct {
+	DeletedDependencies        WorkflowDependencies `json:"deleted_dependencies"`
+	UnlinkedAsCodeDependencies WorkflowDependencies `json:"unlinked_as_code_dependencies"`
 }

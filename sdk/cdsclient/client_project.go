@@ -2,7 +2,6 @@ package cdsclient
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -73,9 +72,17 @@ func (c *client) ProjectGroupsImport(projectKey string, content io.Reader, mods 
 		return proj, err
 	}
 
-	if err := json.Unmarshal(btes, &proj); err != nil {
+	if err := sdk.JSONUnmarshal(btes, &proj); err != nil {
 		return proj, err
 	}
 
 	return proj, nil
+}
+
+func (c *client) ProjectAccess(ctx context.Context, projectKey, sessionID string, itemType sdk.CDNItemType) error {
+	url := fmt.Sprintf("/project/%s/type/%s/access", projectKey, itemType)
+	if _, err := c.GetJSON(ctx, url, nil, SetHeader(sdk.CDSSessionID, sessionID)); err != nil {
+		return err
+	}
+	return nil
 }

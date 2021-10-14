@@ -9,8 +9,9 @@ import (
 	"time"
 
 	dump "github.com/fsamin/go-dump"
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func fillPayload(ctx context.Context, pushEvent sdk.VCSPushEvent) map[string]string {
@@ -40,7 +41,7 @@ func fillPayload(ctx context.Context, pushEvent sdk.VCSPushEvent) map[string]str
 }
 
 func (s *Service) doPollerTaskExecution(ctx context.Context, task *sdk.Task, taskExec *sdk.TaskExecution) ([]sdk.WorkflowNodeRunHookEvent, error) {
-	log.Debug("Hooks> Processing polling task %s:%d", taskExec.UUID, taskExec.Timestamp)
+	log.Debug(ctx, "Hooks> Processing polling task %s:%d", taskExec.UUID, taskExec.Timestamp)
 
 	tExecs, errF := s.Dao.FindAllTaskExecutions(ctx, task)
 	if errF != nil {
@@ -68,7 +69,7 @@ func (s *Service) doPollerTaskExecution(ctx context.Context, task *sdk.Task, tas
 	payloadValues := map[string]string{}
 	if payload, ok := task.Config["payload"]; ok && payload.Value != "{}" {
 		var payloadInt interface{}
-		if err := json.Unmarshal([]byte(payload.Value), &payloadInt); err == nil {
+		if err := sdk.JSONUnmarshal([]byte(payload.Value), &payloadInt); err == nil {
 			e := dump.NewDefaultEncoder()
 			e.Formatters = []dump.KeyFormatterFunc{dump.WithDefaultLowerCaseFormatter()}
 			e.ExtraFields.DetailedMap = false

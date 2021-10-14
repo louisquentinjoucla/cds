@@ -2,16 +2,21 @@ package internal
 
 import (
 	"context"
-	"encoding/json"
 	"io/ioutil"
 	"net/http"
 
+	"github.com/rockbears/log"
+
+	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func addBuildVarHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := workerruntime.SetJobID(ctx, wk.currentJob.wJob.ID)
+		ctx = workerruntime.SetStepOrder(ctx, wk.currentJob.currentStepIndex)
+		ctx = workerruntime.SetStepName(ctx, wk.currentJob.currentStepName)
+
 		// Get body
 		data, errra := ioutil.ReadAll(r.Body)
 		if errra != nil {
@@ -21,7 +26,7 @@ func addBuildVarHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc
 		}
 
 		var v sdk.Variable
-		if err := json.Unmarshal(data, &v); err != nil {
+		if err := sdk.JSONUnmarshal(data, &v); err != nil {
 			log.Error(ctx, "addBuildVarHandler> Cannot Unmarshal err: %s", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -29,6 +34,6 @@ func addBuildVarHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc
 		v.Name = "cds.build." + v.Name
 
 		wk.currentJob.newVariables = append(wk.currentJob.newVariables, v)
-		log.Debug("Variable %s added to %+v", v.Name, wk.currentJob.newVariables)
+		log.Debug(ctx, "Variable %s added to %+v", v.Name, wk.currentJob.newVariables)
 	}
 }

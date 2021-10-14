@@ -1,13 +1,13 @@
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, EventEmitter, Input, OnDestroy, OnInit, Output, ViewChild } from '@angular/core';
 import { Group } from 'app/model/group.model';
-import { AuthentifiedUser } from 'app/model/user.model';
+import { AuthSummary } from 'app/model/user.model';
 import { ModelPattern, WorkerModel } from 'app/model/worker-model.model';
 import { ThemeStore } from 'app/service/theme/theme.store';
 import { WorkerModelService } from 'app/service/worker-model/worker-model.service';
 import { AutoUnsubscribe } from 'app/shared/decorator/autoUnsubscribe';
 import { SharedService } from 'app/shared/shared.service';
 import omit from 'lodash-es/omit';
-import { finalize } from 'rxjs/operators/finalize';
+import { finalize } from 'rxjs/operators';
 import { Subscription } from 'rxjs/Subscription';
 
 @Component({
@@ -29,8 +29,10 @@ export class WorkerModelFormComponent implements OnInit, OnDestroy {
             }
         }
     }
-    get workerModel(): WorkerModel { return this._workerModel; }
-    @Input() currentUser: AuthentifiedUser;
+    get workerModel(): WorkerModel {
+        return this._workerModel;
+    }
+    @Input() currentAuthSummary: AuthSummary;
     @Input() loading: boolean;
     @Input() types: Array<string>;
     @Input() groups: Array<Group>;
@@ -64,7 +66,7 @@ export class WorkerModelFormComponent implements OnInit, OnDestroy {
         };
     }
 
-    ngOnDestroy(): void {} // Should be set to use @AutoUnsubscribe with AOT
+    ngOnDestroy(): void { } // Should be set to use @AutoUnsubscribe with AOT
 
     ngOnInit(): void {
         this.themeSubscription = this._theme.get().subscribe(t => {

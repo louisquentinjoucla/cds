@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -19,17 +18,33 @@ func adminCdn() *cobra.Command {
 	return cli.NewCommand(adminCdnCmd, nil, []*cobra.Command{
 		adminCdnCache(),
 		adminCdnItem(),
+		adminCdnUnit(),
 		cli.NewListCommand(adminCdnStatusCmd, adminCdnStatusRun, nil),
+		cli.NewCommand(adminCdnMigFromCDSCmd, adminCdnMigFromCDS, nil),
+		cli.NewCommand(adminCdnSyncBufferCmd, adminCdnSyncBuffer, nil),
 	})
 }
 
-var adminCdnStatusCmd = cli.Command{
-	Name:    "status",
-	Short:   "display the status of cdn",
-	Example: "cdsctl admin cdn status",
+var adminCdnSyncBufferCmd = cli.Command{
+	Name:    "sync-buffer",
+	Short:   "run synchronization of cdn buffer",
+	Example: "cdsctl admin cdn sync-buffer",
 }
 
-func adminCdnStatusRun(v cli.Values) (cli.ListResult, error) {
+func adminCdnSyncBuffer(_ cli.Values) error {
+	if _, err := client.ServiceCallPOST(sdk.TypeCDN, "/sync/buffer", nil); err != nil {
+		return err
+	}
+	return nil
+}
+
+var adminCdnMigFromCDSCmd = cli.Command{
+	Name:    "migrate",
+	Short:   "run migration from cds to cdn",
+	Example: "cdsctl admin cdn migrate",
+}
+
+func adminCdnStatusRun(_ cli.Values) (cli.ListResult, error) {
 	services, err := client.ServicesByType(sdk.TypeCDN)
 	if err != nil {
 		return nil, err
@@ -39,6 +54,19 @@ func adminCdnStatusRun(v cli.Values) (cli.ListResult, error) {
 		status.Lines = append(status.Lines, srv.MonitoringStatus.Lines...)
 	}
 	return cli.AsListResult(status.Lines), nil
+}
+
+var adminCdnStatusCmd = cli.Command{
+	Name:    "status",
+	Short:   "display the status of cdn",
+	Example: "cdsctl admin cdn status",
+}
+
+func adminCdnMigFromCDS(_ cli.Values) error {
+	if _, err := client.ServiceCallPOST(sdk.TypeCDN, "/sync/projects", nil); err != nil {
+		return err
+	}
+	return nil
 }
 
 var adminCdnCacheCmd = cli.Command{
@@ -60,7 +88,7 @@ var adminCdnCacheLogClearCmd = cli.Command{
 	Example: "cdsctl admin cdn cache clear",
 }
 
-func adminCdnCacheLogClearRun(v cli.Values) error {
+func adminCdnCacheLogClearRun(_ cli.Values) error {
 	return client.ServiceCallDELETE(sdk.TypeCDN, "/cache")
 }
 
@@ -70,13 +98,13 @@ var adminCdnCacheLogStatusCmd = cli.Command{
 	Example: "cdsctl admin cdn cache status",
 }
 
-func adminCdnCacheLogStatusRun(v cli.Values) (cli.ListResult, error) {
+func adminCdnCacheLogStatusRun(_ cli.Values) (cli.ListResult, error) {
 	btes, err := client.ServiceCallGET(sdk.TypeCDN, "/cache/status")
 	if err != nil {
 		return nil, err
 	}
 	ts := []sdk.MonitoringStatusLine{}
-	if err := json.Unmarshal(btes, &ts); err != nil {
+	if err := sdk.JSONUnmarshal(btes, &ts); err != nil {
 		return nil, err
 	}
 	return cli.AsListResult(ts), nil

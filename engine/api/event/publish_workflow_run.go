@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 type publishWorkflowRunData struct {
@@ -20,14 +21,14 @@ type publishWorkflowRunData struct {
 	workflowRunSubNum int64
 	status            string
 	workflowRunTags   []sdk.WorkflowRunTag
-	eventIntegrations []sdk.ProjectIntegration
+	eventIntegrations []sdk.WorkflowProjectIntegration
 	workflowNodeRunID int64
 }
 
 func publishRunWorkflow(ctx context.Context, payload interface{}, data publishWorkflowRunData) {
 	eventIntegrationsID := make([]int64, len(data.eventIntegrations))
 	for i, eventIntegration := range data.eventIntegrations {
-		eventIntegrationsID[i] = eventIntegration.ID
+		eventIntegrationsID[i] = eventIntegration.ProjectIntegrationID
 	}
 
 	bts, _ := json.Marshal(payload)
@@ -72,7 +73,7 @@ func PublishWorkflowRun(ctx context.Context, wr sdk.WorkflowRun, projectKey stri
 		workflowRunSubNum: wr.LastSubNumber,
 		status:            wr.Status,
 		workflowRunTags:   wr.Tags,
-		eventIntegrations: wr.Workflow.EventIntegrations,
+		eventIntegrations: wr.Workflow.GetEventIntegration(),
 	}
 	publishRunWorkflow(ctx, e, data)
 }
@@ -118,7 +119,7 @@ func PublishWorkflowNodeRun(ctx context.Context, nr sdk.WorkflowNodeRun, w sdk.W
 	// check on workflow data
 	wnode := w.WorkflowData.NodeByID(nr.WorkflowNodeID)
 	if wnode == nil {
-		log.Warning(ctx, "PublishWorkflowNodeRun> Unable to publish event on node %d", nr.WorkflowNodeID)
+		log.Warn(ctx, "PublishWorkflowNodeRun> Unable to publish event on node %d", nr.WorkflowNodeID)
 		return
 	}
 	nodeName = wnode.Name
@@ -189,7 +190,7 @@ func PublishWorkflowNodeRun(ctx context.Context, nr sdk.WorkflowNodeRun, w sdk.W
 		workflowRunNum:    nr.Number,
 		workflowRunSubNum: nr.SubNumber,
 		status:            nr.Status,
-		eventIntegrations: w.EventIntegrations,
+		eventIntegrations: w.GetEventIntegration(),
 		workflowNodeRunID: nr.ID,
 	}
 	publishRunWorkflow(ctx, e, data)
@@ -213,7 +214,7 @@ func PublishWorkflowNodeJobRun(ctx context.Context, pkey string, wr sdk.Workflow
 		workflowRunSubNum: wr.LastSubNumber,
 		status:            jr.Status,
 		workflowRunTags:   wr.Tags,
-		eventIntegrations: wr.Workflow.EventIntegrations,
+		eventIntegrations: wr.Workflow.GetEventIntegration(),
 		workflowNodeRunID: jr.WorkflowNodeRunID,
 	}
 	publishRunWorkflow(ctx, e, data)

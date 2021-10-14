@@ -15,7 +15,7 @@ doc:
 ifndef GEN_PATH
 	$(error GEN_PATH is undefined)
 endif
-    # export GEN_PATH=$HOME/src/github.com/ovh/cds/docs/content/docs/components
+	# GEN_PATH=./docs/content/docs/components
 	$(TARGET_CDSCTL) doc $(GEN_PATH)
 	$(TARGET_WORKER) doc $(GEN_PATH)
 	$(TARGET_ENGINE) doc $(GEN_PATH) ./
@@ -23,9 +23,6 @@ endif
 
 modclean:
 	@echo "cleaning modcache... " && GO111MODULE=off go clean -modcache || true
-
-mod:
-	@echo "running go mod tidy... " && GO111MODULE=on go mod tidy
 
 
 ENGINE_DIST = $(wildcard engine/dist/*)
@@ -42,10 +39,6 @@ ALL_DIST := $(ALL_DIST) $(CLI_DIST)
 ALL_DIST := $(ALL_DIST) $(UI_DIST)
 ALL_DIST := $(ALL_DIST) $(CONTRIB_DIST)
 ALL_TARGETS := $(foreach DIST,$(ALL_DIST),$(addprefix $(TARGET_DIR),$(notdir $(DIST))))
-
-
-goinstall:
-	go install $$(go list ./...)
 
 build:
 	$(info Building CDS Components for $(TARGET_OS) - $(TARGET_ARCH))
@@ -110,3 +103,13 @@ tar: target/cds-engine.tar.gz
 target/cds-engine.tar.gz: $(TARGET_DIR)/config.toml.sample $(TARGET_DIR)/tmpl-config
 	mkdir -p target
 	tar -czvf target/cds-engine.tar.gz -C $(TARGET_DIR) .
+
+PLUGINS := `ls -d contrib/grpcplugins/action/plugin-*`
+
+tidy:
+	@echo "Running tidy on cds main project"
+	@go mod tidy
+	@for P in $(PLUGINS); do \
+		echo "Running tidy on $$P"; \
+		(cd $$P && go mod tidy); \
+	done;

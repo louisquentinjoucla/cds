@@ -24,16 +24,19 @@ type APIServiceConfiguration struct {
 	MaxHeartbeatFailures int    `toml:"maxHeartbeatFailures" default:"10" json:"maxHeartbeatFailures"`
 }
 
+type HTTPRouterConfiguration struct {
+	Addr                string `toml:"addr" default:"" commented:"true" comment:"Listen HTTP address without port, example: 127.0.0.1" json:"addr"`
+	Port                int    `toml:"port" default:"8081" json:"port"`
+	HeaderXForwardedFor string `toml:"headerXForwardedFor" commented:"true" comment:"Forward source addr from given header, let empty to use request addr." default:"X-Forwarded-For" json:"header_w_forwarded_for"`
+}
+
 // HatcheryCommonConfiguration is the base configuration for all hatcheries
 type HatcheryCommonConfiguration struct {
-	Name          string `toml:"name" default:"" comment:"Name of Hatchery" json:"name"`
-	RSAPrivateKey string `toml:"rsaPrivateKey" default:"" comment:"The RSA Private Key used by the hatchery.\nThis is mandatory." json:"-"`
-	HTTP          struct {
-		Addr string `toml:"addr" default:"" commented:"true" comment:"Listen address without port, example: 127.0.0.1" json:"addr"`
-		Port int    `toml:"port" default:"8086" json:"port"`
-	} `toml:"http" comment:"######################\n CDS Hatchery HTTP Configuration \n######################" json:"http"`
-	URL string `toml:"url" default:"http://localhost:8086" comment:"URL of this Hatchery" json:"url"`
-	API struct {
+	Name          string                  `toml:"name" default:"" comment:"Name of Hatchery" json:"name"`
+	RSAPrivateKey string                  `toml:"rsaPrivateKey" default:"" comment:"The RSA Private Key used by the hatchery.\nThis is mandatory." json:"-"`
+	HTTP          HTTPRouterConfiguration `toml:"http" comment:"######################\n CDS Hatchery HTTP Configuration \n######################" json:"http"`
+	URL           string                  `toml:"url" default:"http://localhost:8086" comment:"URL of this Hatchery" json:"url"`
+	API           struct {
 		HTTP struct {
 			URL      string `toml:"url" default:"http://localhost:8081" comment:"CDS API URL" json:"url"`
 			Insecure bool   `toml:"insecure" default:"false" commented:"true" comment:"sslInsecureSkipVerify, set to true if you use a self-signed SSL on CDS API" json:"insecure"`
@@ -43,14 +46,19 @@ type HatcheryCommonConfiguration struct {
 		MaxHeartbeatFailures int    `toml:"maxHeartbeatFailures" default:"10" comment:"Maximum allowed consecutives failures on heatbeat routine" json:"maxHeartbeatFailures"`
 	} `toml:"api" json:"api"`
 	Provision struct {
-		RatioService              *int   `toml:"ratioService" default:"50" commented:"true" comment:"Percent reserved for spawning worker with service requirement" json:"ratioService,omitempty" mapstructure:"ratioService"`
-		MaxWorker                 int    `toml:"maxWorker" default:"10" comment:"Maximum allowed simultaneous workers" json:"maxWorker"`
-		MaxConcurrentProvisioning int    `toml:"maxConcurrentProvisioning" default:"10" comment:"Maximum allowed simultaneous workers provisioning" json:"maxConcurrentProvisioning"`
-		MaxConcurrentRegistering  int    `toml:"maxConcurrentRegistering" default:"2" comment:"Maximum allowed simultaneous workers registering. -1 to disable registering on this hatchery" json:"maxConcurrentRegistering"`
-		RegisterFrequency         int    `toml:"registerFrequency" default:"60" comment:"Check if some worker model have to be registered each n Seconds" json:"registerFrequency"`
-		Region                    string `toml:"region" default:"" comment:"region of this hatchery - optional. With a free text as 'myregion', user can set a prerequisite 'region' with value 'myregion' on CDS Job" json:"region"`
-		IgnoreJobWithNoRegion     bool   `toml:"ignoreJobWithNoRegion" default:"false" comment:"Ignore job without a region prerequisite if ignoreJobWithNoRegion=true"`
-		WorkerLogsOptions         struct {
+		InjectEnvVars             []string `toml:"injectEnvVars" commented:"true" comment:"Inject env variables in workers" json:"-" mapstructure:"injectEnvVars"`
+		RatioService              *int     `toml:"ratioService" default:"50" commented:"true" comment:"Percent reserved for spawning worker with service requirement" json:"ratioService,omitempty" mapstructure:"ratioService"`
+		MaxWorker                 int      `toml:"maxWorker" default:"10" comment:"Maximum allowed simultaneous workers" json:"maxWorker"`
+		MaxConcurrentProvisioning int      `toml:"maxConcurrentProvisioning" default:"10" comment:"Maximum allowed simultaneous workers provisioning" json:"maxConcurrentProvisioning"`
+		MaxConcurrentRegistering  int      `toml:"maxConcurrentRegistering" default:"2" comment:"Maximum allowed simultaneous workers registering. -1 to disable registering on this hatchery" json:"maxConcurrentRegistering"`
+		RegisterFrequency         int      `toml:"registerFrequency" default:"60" comment:"Check if some worker model have to be registered each n Seconds" json:"registerFrequency"`
+		Region                    string   `toml:"region" default:"" comment:"region of this hatchery - optional. With a free text as 'myregion', user can set a prerequisite 'region' with value 'myregion' on CDS Job" json:"region"`
+		IgnoreJobWithNoRegion     bool     `toml:"ignoreJobWithNoRegion" default:"false" comment:"Ignore job without a region prerequisite if ignoreJobWithNoRegion=true" json:"ignoreJobWithNoRegion"`
+		WorkerAPIHTTP             struct {
+			URL      string `toml:"url" default:"http://localhost:8081" commented:"true" comment:"CDS API URL for worker, let empty or commented to use the same URL that is used by the Hatchery" json:"url"`
+			Insecure bool   `toml:"insecure" default:"false" commented:"true" comment:"sslInsecureSkipVerify, set to true if you use a self-signed SSL on CDS API" json:"insecure"`
+		} `toml:"workerApiHttp" json:"workerApiHttp"`
+		WorkerLogsOptions struct {
 			Graylog struct {
 				Host       string `toml:"host" comment:"Example: thot.ovh.com" json:"host"`
 				Port       int    `toml:"port" comment:"Example: 12202" json:"port"`
@@ -59,6 +67,7 @@ type HatcheryCommonConfiguration struct {
 				ExtraValue string `toml:"extraValue" comment:"value for extraKey field. For many keys: valueaaa,valuebbb" json:"-"`
 			} `toml:"graylog" json:"graylog"`
 		} `toml:"workerLogsOptions" comment:"Worker Log Configuration" json:"workerLogsOptions"`
+		MaxAttemptsNumberBeforeFailure int `toml:"maxAttemptsNumberBeforeFailure" default:"5" commented:"true" comment:"Maximum attempts to start a same job. -1 to disable failing jobs when to many attempts" json:"maxAttemptsNumberBeforeFailure"`
 	} `toml:"provision" json:"provision"`
 	LogOptions struct {
 		SpawnOptions struct {
@@ -113,13 +122,15 @@ type Common struct {
 }
 
 // Service is the interface for a engine service
+// Lifecycle: ApplyConfiguration->?BeforeStart->Init->Signin->Register->Start->Serve->Heartbeat
 type Service interface {
 	ApplyConfiguration(cfg interface{}) error
 	Serve(ctx context.Context) error
 	CheckConfiguration(cfg interface{}) error
-	Start(ctx context.Context, cfg cdsclient.ServiceConfig) error
+	Start(ctx context.Context) error
 	Init(cfg interface{}) (cdsclient.ServiceConfig, error)
-	Register(ctx context.Context, cfg sdk.ServiceConfig) error
+	Signin(ctx context.Context, cfg cdsclient.ServiceConfig) error
+	Register(ctx context.Context, cfg interface{}) error
 	Unregister(ctx context.Context) error
 	Heartbeat(ctx context.Context, status func(ctx context.Context) *sdk.MonitoringStatus) error
 	Status(ctx context.Context) *sdk.MonitoringStatus

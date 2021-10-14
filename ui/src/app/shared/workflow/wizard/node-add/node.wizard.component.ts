@@ -34,13 +34,14 @@ import { filter, finalize, first, flatMap, map } from 'rxjs/operators';
 })
 export class WorkflowNodeAddWizardComponent implements OnInit {
 
-  @Input('project')
+  @Input()
   set project(data: Project) {
     this._project = cloneDeep(data);
   }
   get project(): Project {
     return this._project;
   }
+  @Input() display: boolean;
   @Input() hideCancel: boolean;
   @Input() hideNext: boolean;
   @Input() loading: boolean;

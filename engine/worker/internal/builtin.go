@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/worker/internal/action"
 	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 var mapBuiltinActions = map[string]BuiltInAction{}
@@ -19,12 +20,15 @@ func init() {
 	mapBuiltinActions[sdk.JUnitAction] = action.RunParseJunitTestResultAction
 	mapBuiltinActions[sdk.GitCloneAction] = action.RunGitClone
 	mapBuiltinActions[sdk.GitTagAction] = action.RunGitTag
+	mapBuiltinActions[sdk.ReleaseVCSAction] = action.RunReleaseVCS
 	mapBuiltinActions[sdk.ReleaseAction] = action.RunRelease
+	mapBuiltinActions[sdk.PromoteAction] = action.RunPromote
 	mapBuiltinActions[sdk.CheckoutApplicationAction] = action.RunCheckoutApplication
 	mapBuiltinActions[sdk.DeployApplicationAction] = action.RunDeployApplication
 	mapBuiltinActions[sdk.CoverageAction] = action.RunParseCoverageResultAction
 	mapBuiltinActions[sdk.ServeStaticFiles] = action.RunServeStaticFiles
 	mapBuiltinActions[sdk.InstallKeyAction] = action.RunInstallKey
+	mapBuiltinActions[sdk.PushBuildInfo] = action.PushBuildInfo
 }
 
 func (w *CurrentWorker) runBuiltin(ctx context.Context, a sdk.Action, secrets []sdk.Variable) sdk.Result {
@@ -39,7 +43,7 @@ func (w *CurrentWorker) runBuiltin(ctx context.Context, a sdk.Action, secrets []
 		return res
 	}
 
-	log.Debug("running builin action %s %s", a.StepName, a.Name)
+	log.Debug(ctx, "running builin action %s %s", a.StepName, a.Name)
 	res, err := f(ctx, w, a, secrets)
 	if err != nil {
 		res.Status = sdk.StatusFail
@@ -53,7 +57,7 @@ func (w *CurrentWorker) runBuiltin(ctx context.Context, a sdk.Action, secrets []
 func (w *CurrentWorker) runGRPCPlugin(ctx context.Context, a sdk.Action) sdk.Result {
 	chanRes := make(chan sdk.Result, 1)
 	done := make(chan struct{})
-	sdk.NewGoRoutines().Run(ctx, "runGRPCPlugin", func(ctx context.Context) {
+	sdk.NewGoRoutines(ctx).Run(ctx, "runGRPCPlugin", func(ctx context.Context) {
 		action.RunGRPCPlugin(ctx, a.Name, w.currentJob.params, a, w, chanRes, done)
 	})
 

@@ -9,14 +9,16 @@ import (
 	"time"
 
 	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
+	"github.com/rockbears/log"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/afero"
 	"gopkg.in/square/go-jose.v2"
 
 	"github.com/ovh/cds/sdk"
+	"github.com/ovh/cds/sdk/cdn"
 	"github.com/ovh/cds/sdk/cdsclient"
 	"github.com/ovh/cds/sdk/jws"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 	loghook "github.com/ovh/cds/sdk/log/hook"
 )
 
@@ -39,6 +41,7 @@ type CurrentWorker struct {
 	basedir     afero.Fs
 	manualExit  bool
 	gelfLogger  *logger
+	cdnHttpAddr string
 	stepLogLine int64
 	httpPort    int32
 	register    struct {
@@ -47,17 +50,21 @@ type CurrentWorker struct {
 		model       string
 	}
 	currentJob struct {
-		wJob         *sdk.WorkflowNodeJobRun
-		newVariables []sdk.Variable
-		params       []sdk.Parameter
-		secrets      []sdk.Variable
-		context      context.Context
-		signer       jose.Signer
-		projectKey   string
-		workflowName string
-		workflowID   int64
-		runID        int64
-		nodeRunName  string
+		wJob             *sdk.WorkflowNodeJobRun
+		newVariables     []sdk.Variable
+		params           []sdk.Parameter
+		secrets          []sdk.Variable
+		context          context.Context
+		signer           jose.Signer
+		projectKey       string
+		workflowName     string
+		workflowID       int64
+		runID            int64
+		runNumber        int64
+		nodeRunName      string
+		features         map[sdk.FeatureName]bool
+		currentStepIndex int
+		currentStepName  string
 	}
 	status struct {
 		Name   string `json:"name"`
@@ -75,8 +82,12 @@ func (wk *CurrentWorker) Init(name, hatcheryName, apiEndpoint, token string, mod
 	wk.register.model = model
 	wk.register.token = token
 	wk.register.apiEndpoint = apiEndpoint
-	wk.client = cdsclient.NewWorker(apiEndpoint, name, cdsclient.NewHTTPClient(time.Second*360, insecure))
+	wk.client = cdsclient.NewWorker(apiEndpoint, name, cdsclient.NewHTTPClient(time.Second*10, insecure))
 	return nil
+}
+
+func (wk *CurrentWorker) GetJobIdentifiers() (int64, int64, int64) {
+	return wk.currentJob.runID, wk.currentJob.wJob.WorkflowNodeRunID, wk.currentJob.wJob.ID
 }
 
 func (wk *CurrentWorker) GetContext() context.Context {
@@ -97,6 +108,14 @@ func (wk *CurrentWorker) Parameters() []sdk.Parameter {
 	return wk.currentJob.params
 }
 
+func (wk *CurrentWorker) FeatureEnabled(name sdk.FeatureName) bool {
+	b, has := wk.currentJob.features[name]
+	if !has {
+		return false
+	}
+	return b
+}
+
 func (wk *CurrentWorker) SendTerminatedStepLog(ctx context.Context, level workerruntime.Level, logLine string) {
 	msg, sign, err := wk.prepareLog(ctx, level, logLine)
 	if err != nil {
@@ -104,11 +123,57 @@ func (wk *CurrentWorker) SendTerminatedStepLog(ctx context.Context, level worker
 		return
 	}
 	wk.gelfLogger.logger.
-		WithField(log.ExtraFieldSignature, sign).
-		WithField(log.ExtraFieldLine, wk.stepLogLine).
-		WithField(log.ExtraFieldTerminated, true).
+		WithField(cdslog.ExtraFieldSignature, sign).
+		WithField(cdslog.ExtraFieldLine, wk.stepLogLine).
+		WithField(cdslog.ExtraFieldTerminated, true).
 		Log(msg.Level, msg.Value)
 	wk.stepLogLine++
+}
+
+func (wk *CurrentWorker) WorkerCacheSignature(tag string) (string, error) {
+	sig := cdn.Signature{
+		ProjectKey: wk.currentJob.projectKey,
+		Worker: &cdn.SignatureWorker{
+			WorkerID:   wk.id,
+			WorkerName: wk.Name(),
+			CacheTag:   tag,
+		},
+	}
+	signature, err := jws.Sign(wk.currentJob.signer, sig)
+	return signature, sdk.WrapError(err, "cannot sign log message")
+}
+
+func (wk *CurrentWorker) GetPlugin(pluginType string) *sdk.GRPCPlugin {
+	for i := range wk.currentJob.wJob.IntegrationPlugins {
+		if wk.currentJob.wJob.IntegrationPlugins[i].Type == pluginType {
+			return &wk.currentJob.wJob.IntegrationPlugins[i]
+		}
+	}
+	return nil
+}
+
+func (wk *CurrentWorker) RunResultSignature(artifactName string, perm uint32, t sdk.WorkflowRunResultType) (string, error) {
+	sig := cdn.Signature{
+		ProjectKey:   wk.currentJob.projectKey,
+		JobID:        wk.currentJob.wJob.ID,
+		NodeRunID:    wk.currentJob.wJob.WorkflowNodeRunID,
+		Timestamp:    time.Now().UnixNano(),
+		WorkflowID:   wk.currentJob.workflowID,
+		WorkflowName: wk.currentJob.workflowName,
+		NodeRunName:  wk.currentJob.nodeRunName,
+		RunID:        wk.currentJob.runID,
+		RunNumber:    wk.currentJob.runNumber,
+		JobName:      wk.currentJob.wJob.Job.Action.Name,
+		Worker: &cdn.SignatureWorker{
+			WorkerID:      wk.id,
+			WorkerName:    wk.Name(),
+			FileName:      artifactName,
+			FilePerm:      perm,
+			RunResultType: string(t),
+		},
+	}
+	signature, err := jws.Sign(wk.currentJob.signer, sig)
+	return signature, sdk.WrapError(err, "cannot sign log message")
 }
 
 func (wk *CurrentWorker) SendLog(ctx context.Context, level workerruntime.Level, logLine string) {
@@ -118,15 +183,20 @@ func (wk *CurrentWorker) SendLog(ctx context.Context, level workerruntime.Level,
 		return
 	}
 	wk.gelfLogger.logger.
-		WithField(log.ExtraFieldSignature, sign).
-		WithField(log.ExtraFieldLine, wk.stepLogLine).
-		WithField(log.ExtraFieldTerminated, false).
+		WithField(cdslog.ExtraFieldSignature, sign).
+		WithField(cdslog.ExtraFieldLine, wk.stepLogLine).
+		WithField(cdslog.ExtraFieldTerminated, false).
 		Log(msg.Level, msg.Value)
 	wk.stepLogLine++
 }
 
-func (wk *CurrentWorker) prepareLog(ctx context.Context, level workerruntime.Level, s string) (log.Message, string, error) {
-	var res log.Message
+func (wk *CurrentWorker) CDNHttpURL() string {
+	return wk.cdnHttpAddr
+}
+
+func (wk *CurrentWorker) prepareLog(ctx context.Context, level workerruntime.Level, s string) (cdslog.Message, string, error) {
+	var ts = time.Now().UnixNano()
+	var res cdslog.Message
 
 	if wk.currentJob.wJob == nil {
 		return res, "", sdk.WithStack(fmt.Errorf("job is nill"))
@@ -149,8 +219,8 @@ func (wk *CurrentWorker) prepareLog(ctx context.Context, level workerruntime.Lev
 	stepOrder, _ := workerruntime.StepOrder(ctx)
 	stepName, _ := workerruntime.StepName(ctx)
 
-	res.Signature = log.Signature{
-		Worker: &log.SignatureWorker{
+	res.Signature = cdn.Signature{
+		Worker: &cdn.SignatureWorker{
 			WorkerID:   wk.id,
 			WorkerName: wk.Name(),
 			StepOrder:  int64(stepOrder),
@@ -159,11 +229,12 @@ func (wk *CurrentWorker) prepareLog(ctx context.Context, level workerruntime.Lev
 		ProjectKey:   wk.currentJob.projectKey,
 		JobID:        wk.currentJob.wJob.ID,
 		NodeRunID:    wk.currentJob.wJob.WorkflowNodeRunID,
-		Timestamp:    time.Now().UnixNano(),
+		Timestamp:    ts,
 		WorkflowID:   wk.currentJob.workflowID,
 		WorkflowName: wk.currentJob.workflowName,
 		NodeRunName:  wk.currentJob.nodeRunName,
 		RunID:        wk.currentJob.runID,
+		RunNumber:    wk.currentJob.runNumber,
 		JobName:      wk.currentJob.wJob.Job.Action.Name,
 	}
 
@@ -249,7 +320,7 @@ func (w *CurrentWorker) Blur(i interface{}) error {
 		}
 	}
 
-	if err := json.Unmarshal([]byte(dataS), i); err != nil {
+	if err := sdk.JSONUnmarshal([]byte(dataS), i); err != nil {
 		return err
 	}
 

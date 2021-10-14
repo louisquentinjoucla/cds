@@ -31,7 +31,7 @@ func (api *API) InitRouter() {
 
 	// Auth
 	r.Handle("/auth/driver", ScopeNone(), r.GET(api.getAuthDriversHandler, service.OverrideAuth(service.NoAuthMiddleware)))
-	r.Handle("/auth/me", Scope(sdk.AuthConsumerScopeAction), r.GET(api.getAuthMe))
+	r.Handle("/auth/me", ScopeNone(), r.GET(api.getAuthMe))
 	r.Handle("/auth/scope", ScopeNone(), r.GET(api.getAuthScopesHandler, service.OverrideAuth(service.NoAuthMiddleware)))
 	r.Handle("/auth/consumer/local/signup", ScopeNone(), r.POST(api.postAuthLocalSignupHandler, service.OverrideAuth(service.NoAuthMiddleware)))
 	r.Handle("/auth/consumer/local/signin", ScopeNone(), r.POST(api.postAuthLocalSigninHandler, service.OverrideAuth(service.NoAuthMiddleware), MaintenanceAware()))
@@ -71,11 +71,11 @@ func (api *API) InitRouter() {
 	r.Handle("/admin/database/migration/unlock/{id}", Scope(sdk.AuthConsumerScopeAdmin), r.POST(api.postDatabaseMigrationUnlockedHandler, service.OverrideAuth(api.authAdminMiddleware)))
 	r.Handle("/admin/database/migration", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getDatabaseMigrationHandler, service.OverrideAuth(api.authAdminMiddleware)))
 
-	r.Handle("/admin/debug/profiles", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getDebugProfilesHandler, service.OverrideAuth(api.authAdminMiddleware)))
-	r.Handle("/admin/debug/goroutines", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getDebugGoroutinesHandler, service.OverrideAuth(api.authAdminMiddleware)))
-	r.Handle("/admin/debug/trace", Scope(sdk.AuthConsumerScopeAdmin), r.POST(api.getTraceHandler, service.OverrideAuth(api.authAdminMiddleware)), r.GET(api.getTraceHandler, service.OverrideAuth(api.authAdminMiddleware)))
-	r.Handle("/admin/debug/cpu", Scope(sdk.AuthConsumerScopeAdmin), r.POST(api.getCPUProfileHandler, service.OverrideAuth(api.authAdminMiddleware)), r.GET(api.getCPUProfileHandler, service.OverrideAuth(api.authAdminMiddleware)))
-	r.Handle("/admin/debug/{name}", Scope(sdk.AuthConsumerScopeAdmin), r.POST(api.getProfileHandler, service.OverrideAuth(api.authAdminMiddleware)), r.GET(api.getProfileHandler, service.OverrideAuth(api.authAdminMiddleware)))
+	r.Handle("/admin/debug/profiles", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getDebugProfilesHandler, service.OverrideAuth(api.authMaintainerMiddleware)))
+	r.Handle("/admin/debug/goroutines", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getDebugGoroutinesHandler, service.OverrideAuth(api.authMaintainerMiddleware)))
+	r.Handle("/admin/debug/trace", Scope(sdk.AuthConsumerScopeAdmin), r.POST(api.getTraceHandler, service.OverrideAuth(api.authAdminMiddleware)), r.GET(api.getTraceHandler, service.OverrideAuth(api.authMaintainerMiddleware)))
+	r.Handle("/admin/debug/cpu", Scope(sdk.AuthConsumerScopeAdmin), r.POST(api.getCPUProfileHandler, service.OverrideAuth(api.authAdminMiddleware)), r.GET(api.getCPUProfileHandler, service.OverrideAuth(api.authMaintainerMiddleware)))
+	r.Handle("/admin/debug/{name}", Scope(sdk.AuthConsumerScopeAdmin), r.POST(api.getProfileHandler, service.OverrideAuth(api.authAdminMiddleware)), r.GET(api.getProfileHandler, service.OverrideAuth(api.authMaintainerMiddleware)))
 
 	r.Handle("/admin/plugin", Scope(sdk.AuthConsumerScopeAdmin), r.POST(api.postGRPCluginHandler, service.OverrideAuth(api.authAdminMiddleware)), r.GET(api.getAllGRPCluginHandler, service.OverrideAuth(api.authAdminMiddleware)))
 	r.Handle("/admin/plugin/{name}", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getGRPCluginHandler, service.OverrideAuth(api.authAdminMiddleware)), r.PUT(api.putGRPCluginHandler, service.OverrideAuth(api.authAdminMiddleware)), r.DELETE(api.deleteGRPCluginHandler, service.OverrideAuth(api.authAdminMiddleware)))
@@ -84,9 +84,9 @@ func (api *API) InitRouter() {
 	r.Handle("/admin/plugin/{name}/binary/{os}/{arch}/infos", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getGRPCluginBinaryInfosHandler))
 
 	// Admin service
-	r.Handle("/admin/service/{name}", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getAdminServiceHandler, service.OverrideAuth(api.authAdminMiddleware)), r.DELETE(api.deleteAdminServiceHandler, service.OverrideAuth(api.authAdminMiddleware)))
-	r.Handle("/admin/services", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getAdminServicesHandler, service.OverrideAuth(api.authAdminMiddleware)))
-	r.Handle("/admin/services/call", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getAdminServiceCallHandler, service.OverrideAuth(api.authAdminMiddleware)), r.POST(api.postAdminServiceCallHandler, service.OverrideAuth(api.authAdminMiddleware)), r.PUT(api.putAdminServiceCallHandler, service.OverrideAuth(api.authAdminMiddleware)), r.DELETE(api.deleteAdminServiceCallHandler, service.OverrideAuth(api.authAdminMiddleware)))
+	r.Handle("/admin/service/{name}", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getAdminServiceHandler, service.OverrideAuth(api.authMaintainerMiddleware)), r.DELETE(api.deleteAdminServiceHandler, service.OverrideAuth(api.authAdminMiddleware)))
+	r.Handle("/admin/services", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getAdminServicesHandler, service.OverrideAuth(api.authMaintainerMiddleware)))
+	r.Handle("/admin/services/call", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getAdminServiceCallHandler, service.OverrideAuth(api.authMaintainerMiddleware)), r.POST(api.postAdminServiceCallHandler, service.OverrideAuth(api.authAdminMiddleware)), r.PUT(api.putAdminServiceCallHandler, service.OverrideAuth(api.authAdminMiddleware)), r.DELETE(api.deleteAdminServiceCallHandler, service.OverrideAuth(api.authAdminMiddleware)))
 
 	// Admin database
 	r.Handle("/admin/database/signature", Scope(sdk.AuthConsumerScopeAdmin), r.GET(api.getAdminDatabaseSignatureResume, service.OverrideAuth(api.authAdminMiddleware)))
@@ -115,6 +115,7 @@ func (api *API) InitRouter() {
 	r.Handle("/group/{permGroupName}", Scope(sdk.AuthConsumerScopeGroup), r.GET(api.getGroupHandler), r.PUT(api.putGroupHandler), r.DELETE(api.deleteGroupHandler))
 	r.Handle("/group/{permGroupName}/user", Scope(sdk.AuthConsumerScopeGroup), r.POST(api.postGroupUserHandler))
 	r.Handle("/group/{permGroupName}/user/{username}", Scope(sdk.AuthConsumerScopeGroup), r.PUT(api.putGroupUserHandler), r.DELETE(api.deleteGroupUserHandler))
+	r.Handle("/group/{permGroupName}/project", Scope(sdk.AuthConsumerScopeGroup), r.GET(api.getProjectGroupHandler))
 
 	// Hooks
 	r.Handle("/hook/{uuid}/workflow/{workflowID}/vcsevent/{vcsServer}", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getHookPollingVCSEvents))
@@ -129,14 +130,13 @@ func (api *API) InitRouter() {
 	r.Handle("/broadcast/{id}/mark", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postMarkAsReadBroadcastHandler))
 
 	// Overall health
-	r.Handle("/mon/status", ScopeNone(), r.GET(api.statusHandler, service.OverrideAuth(service.NoAuthMiddleware)))
+	r.Handle("/mon/status", ScopeNone(), r.GET(api.statusHandler, service.OverrideAuth(api.authOptionalMiddleware)))
 	r.Handle("/mon/version", ScopeNone(), r.GET(service.VersionHandler, service.OverrideAuth(service.NoAuthMiddleware)))
 	r.Handle("/mon/db/migrate", ScopeNone(), r.GET(api.getMonDBStatusMigrateHandler, service.OverrideAuth(api.authAdminMiddleware)))
 	r.Handle("/mon/metrics", ScopeNone(), r.GET(service.GetPrometheustMetricsHandler(api), service.OverrideAuth(service.NoAuthMiddleware)))
 	r.Handle("/mon/metrics/all", ScopeNone(), r.GET(service.GetMetricsHandler, service.OverrideAuth(service.NoAuthMiddleware)))
 	r.HandlePrefix("/mon/metrics/detail/", ScopeNone(), r.GET(service.GetMetricHandler("/mon/metrics/detail/"), service.OverrideAuth(service.NoAuthMiddleware)))
 	r.Handle("/mon/errors/{uuid}", ScopeNone(), r.GET(api.getErrorHandler, service.OverrideAuth(api.authAdminMiddleware)))
-	r.Handle("/mon/panic/{uuid}", ScopeNone(), r.GET(api.getPanicDumpHandler, service.OverrideAuth(service.NoAuthMiddleware)))
 
 	r.Handle("/help", ScopeNone(), r.GET(api.getHelpHandler, service.OverrideAuth(service.NoAuthMiddleware)))
 
@@ -158,7 +158,8 @@ func (api *API) InitRouter() {
 	r.Handle("/project/{permProjectKey}/group/import", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postImportGroupsInProjectHandler))
 	r.Handle("/project/{permProjectKey}/group/{groupName}", Scope(sdk.AuthConsumerScopeProject), r.PUT(api.putGroupRoleOnProjectHandler), r.DELETE(api.deleteGroupFromProjectHandler))
 	r.Handle("/project/{permProjectKey}/variable", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getVariablesInProjectHandler))
-	r.Handle("/project/{permProjectKey}/encrypt", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postEncryptVariableHandler))
+	r.Handle("/project/{permProjectKey}/encrypt", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postEncryptVariableHandler), r.DELETE(api.deleteEncryptVariableHandler))
+	r.Handle("/project/{permProjectKey}/encrypt/list", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getListEncryptVariableHandler))
 	r.Handle("/project/{permProjectKey}/variable/audit", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getVariablesAuditInProjectnHandler))
 	r.Handle("/project/{permProjectKey}/variable/{name}", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getVariableInProjectHandler), r.POST(api.addVariableInProjectHandler), r.PUT(api.updateVariableInProjectHandler), r.DELETE(api.deleteVariableFromProjectHandler))
 	r.Handle("/project/{permProjectKey}/variable/{name}/audit", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getVariableAuditInProjectHandler))
@@ -219,13 +220,14 @@ func (api *API) InitRouter() {
 	// Workflows
 	r.Handle("/workflow/artifact/{hash}", ScopeNone(), r.GET(api.downloadworkflowArtifactDirectHandler, service.OverrideAuth(service.NoAuthMiddleware)))
 
+	r.Handle("/project/{key}/type/{type}/access", ScopeNone(), r.GET(api.getProjectAccessHandler))
 	r.Handle("/project/{permProjectKey}/workflows", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postWorkflowHandler), r.GET(api.getWorkflowsHandler))
-	r.Handle("/project/{permProjectKey}/workflows/runs/nodes/ids", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getWorkflowsRunsAndNodesIDshandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getWorkflowHandler), r.PUT(api.putWorkflowHandler), r.DELETE(api.deleteWorkflowHandler))
+	r.Handle("/project/{key}/workflows/{permWorkflowName}/delete/dependencies", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getWorkflowDependenciesHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/retention/maxruns", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postWorkflowMaxRunHandler, service.OverrideAuth(api.authAdminMiddleware)))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/retention/dryrun", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postWorkflowRetentionPolicyDryRun))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/retention/suggest", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getRetentionPolicySuggestionHandler))
-	r.Handle("/project/{key}/workflows/{permWorkflowName}/eventsintegration/{integrationID}", Scope(sdk.AuthConsumerScopeProject), r.DELETE(api.deleteWorkflowEventsIntegrationHandler))
+	r.Handle("/project/{key}/workflows/{permWorkflowName}/integration/{integrationID}", Scope(sdk.AuthConsumerScopeProject), r.DELETE(api.deleteWorkflowEventsIntegrationHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/icon", Scope(sdk.AuthConsumerScopeProject), r.PUT(api.putWorkflowIconHandler), r.DELETE(api.deleteWorkflowIconHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/ascode", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postWorkflowAsCodeHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/ascode/events/resync", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postWorkflowAsCodeEventsResyncHandler))
@@ -238,6 +240,11 @@ func (api *API) InitRouter() {
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/hooks/{uuid}", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getWorkflowHookHandler))
 	r.Handle("/project/{key}/workflow/{permWorkflowName}/node/{nodeID}/hook/model", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getWorkflowHookModelsHandler))
 	r.Handle("/project/{key}/workflow/{permWorkflowName}/node/{nodeID}/outgoinghook/model", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getWorkflowOutgoingHookModelsHandler))
+
+	// Workflows v3
+	r.Handle("/project/{permProjectKey}/workflowv3/validate", Scope(sdk.AuthConsumerScopeProject), r.POST(api.postWorkflowV3ValidateHandler))
+	r.Handle("/project/{key}/workflowv3/{permWorkflowName}", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getWorkflowV3Handler))
+	r.Handle("/project/{key}/workflowv3/{permWorkflowName}/run/{number}", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowV3RunHandler))
 
 	// Outgoing hook model
 	r.Handle("/workflow/outgoinghook/model", ScopeNone(), r.GET(api.getWorkflowOutgoingHookModelsHandler))
@@ -267,16 +274,18 @@ func (api *API) InitRouter() {
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/stop", Scope(sdk.AuthConsumerScopeRun), r.POSTEXECUTE(api.stopWorkflowRunHandler, MaintenanceAware()))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/vcs/resync", Scope(sdk.AuthConsumerScopeRun), r.POSTEXECUTE(api.postResyncVCSWorkflowRunHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/artifacts", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowRunArtifactsHandler))
+	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/artifacts/links", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowRunArtifactLinksHandler))
+	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/results", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowRunResultsHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/nodes/{nodeRunID}", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunHandler))
+	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/nodes/{nodeRunID}/results", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunResultsHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/nodes/{nodeRunID}/stop", Scope(sdk.AuthConsumerScopeRun), r.POSTEXECUTE(api.stopWorkflowNodeRunHandler, MaintenanceAware()))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/nodes/{nodeID}/history", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunHistoryHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/{nodeName}/commits", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowCommitsHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/runs/{number}/nodes/{nodeRunID}/job/{runJobID}/info", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunJobSpawnInfosHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/nodes/{nodeRunID}/job/{runJobID}/service/{serviceName}/link", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunJobServiceLinkHandler))
-	r.Handle("/project/{key}/workflows/{permWorkflowName}/nodes/{nodeRunID}/job/{runJobID}/service/{serviceName}/log", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunJobServiceLogHandler))
+	r.Handle("/project/{key}/workflows/{permWorkflowName}/nodes/{nodeRunID}/job/{runJobID}/links", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunJobStepLinksHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/nodes/{nodeRunID}/job/{runJobID}/step/{stepOrder}/link", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunJobStepLinkHandler))
-	r.Handle("/project/{key}/workflows/{workflowName}/log/access", ScopeNone(), r.GET(api.getWorkflowLogAccessHandler))
-	r.Handle("/project/{key}/workflows/{permWorkflowName}/nodes/{nodeRunID}/job/{runJobID}/step/{stepOrder}/log", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowNodeRunJobStepLogHandler))
+	r.Handle("/project/{key}/workflows/{workflowID}/type/{type}/access", ScopeNone(), r.GET(api.getWorkflowAccessHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/node/{nodeID}/triggers/condition", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowTriggerConditionHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/hook/triggers/condition", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowTriggerHookConditionHandler))
 	r.Handle("/project/{key}/workflows/{permWorkflowName}/triggers/condition", Scope(sdk.AuthConsumerScopeRun), r.GET(api.getWorkflowTriggerConditionHandler))
@@ -318,14 +327,15 @@ func (api *API) InitRouter() {
 	r.Handle("/queue/workflows", Scope(sdk.AuthConsumerScopeRun, sdk.AuthConsumerScopeRunExecution), r.GET(api.getWorkflowJobQueueHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/count", Scope(sdk.AuthConsumerScopeRun), r.GET(api.countWorkflowJobQueueHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/{id}/take", Scope(sdk.AuthConsumerScopeRunExecution), r.POST(api.postTakeWorkflowJobHandler, MaintenanceAware()))
+	r.Handle("/queue/workflows/{permJobID}/cache/{tag}/links", Scope(sdk.AuthConsumerScopeRunExecution), r.GET(api.getWorkerCacheLinkHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/{permJobID}/book", Scope(sdk.AuthConsumerScopeRunExecution), r.POST(api.postBookWorkflowJobHandler, MaintenanceAware()), r.DELETE(api.deleteBookWorkflowJobHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/{permJobID}/infos", Scope(sdk.AuthConsumerScopeRunExecution), r.GET(api.getWorkflowJobHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/{permJobID}/vulnerability", Scope(sdk.AuthConsumerScopeRunExecution), r.POSTEXECUTE(api.postVulnerabilityReportHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/{permJobID}/spawn/infos", Scope(sdk.AuthConsumerScopeRunExecution), r.POST(api.postSpawnInfosWorkflowJobHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/{permJobID}/result", Scope(sdk.AuthConsumerScopeRunExecution), r.POSTEXECUTE(api.postWorkflowJobResultHandler, MaintenanceAware()))
-	r.Handle("/queue/workflows/{jobID}/log", Scope(sdk.AuthConsumerScopeRunExecution, sdk.AuthConsumerScopeService), r.POSTEXECUTE(api.postWorkflowJobLogsHandler, MaintenanceAware()))
-	r.Handle("/queue/workflows/log/service", Scope(sdk.AuthConsumerScopeRunExecution, sdk.AuthConsumerScopeService), r.POSTEXECUTE(r.Asynchronous(api.postWorkflowJobServiceLogsHandler, 1, api.GoRoutines), MaintenanceAware()))
 	r.Handle("/queue/workflows/{permJobID}/coverage", Scope(sdk.AuthConsumerScopeRunExecution), r.POSTEXECUTE(api.postWorkflowJobCoverageResultsHandler, MaintenanceAware()))
+	r.Handle("/queue/workflows/{permJobID}/run/results", Scope(sdk.AuthConsumerScopeRunExecution), r.POSTEXECUTE(api.postWorkflowRunResultsHandler))
+	r.Handle("/queue/workflows/{permJobID}/run/results/check", Scope(sdk.AuthConsumerScopeRunExecution), r.POST(api.workflowRunResultCheckUploadHandler))
 	r.Handle("/queue/workflows/{permJobID}/test", Scope(sdk.AuthConsumerScopeRunExecution), r.POSTEXECUTE(api.postWorkflowJobTestsResultsHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/{permJobID}/tag", Scope(sdk.AuthConsumerScopeRunExecution), r.POSTEXECUTE(api.postWorkflowJobTagsHandler, MaintenanceAware()))
 	r.Handle("/queue/workflows/{permJobID}/step", Scope(sdk.AuthConsumerScopeRunExecution), r.POSTEXECUTE(api.postWorkflowJobStepStatusHandler, MaintenanceAware()))
@@ -365,6 +375,7 @@ func (api *API) InitRouter() {
 	r.Handle("/config/user", ScopeNone(), r.GET(api.ConfigUserHandler, service.OverrideAuth(service.NoAuthMiddleware)))
 	r.Handle("/config/vcs", ScopeNone(), r.GET(api.ConfigVCShandler))
 	r.Handle("/config/cdn", ScopeNone(), r.GET(api.ConfigCDNHandler))
+	r.Handle("/config/api", ScopeNone(), r.GET(api.ConfigAPIHandler))
 
 	// Users
 	r.Handle("/user", Scope(sdk.AuthConsumerScopeUser), r.GET(api.getUsersHandler))
@@ -411,6 +422,7 @@ func (api *API) InitRouter() {
 
 	r.Handle("/workflow/search", Scope(sdk.AuthConsumerScopeProject), r.GET(api.getSearchWorkflowHandler))
 	r.Handle("/workflow/hook", Scope(sdk.AuthConsumerScopeHooks), r.GET(api.getWorkflowHooksHandler))
+	r.Handle("/workflow/hook/executions", Scope(sdk.AuthConsumerScopeHooks), r.GET(api.getWorkflowHookExecutionsHandler))
 	r.Handle("/workflow/hook/model/{model}", ScopeNone(), r.GET(api.getWorkflowHookModelHandler), r.POST(api.postWorkflowHookModelHandler, service.OverrideAuth(api.authAdminMiddleware)), r.PUT(api.putWorkflowHookModelHandler, service.OverrideAuth(api.authAdminMiddleware)))
 
 	// SSE
@@ -435,7 +447,7 @@ func (api *API) InitRouter() {
 	r.Handle("/template/{groupName}/{templateSlug}/usage", Scope(sdk.AuthConsumerScopeTemplate), r.GET(api.getTemplateUsageHandler))
 
 	//Not Found handler
-	r.Mux.NotFoundHandler = http.HandlerFunc(NotFoundHandler)
+	r.Mux.NotFoundHandler = http.HandlerFunc(r.NotFoundHandler)
 
 	r.computeScopeDetails()
 }

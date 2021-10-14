@@ -17,10 +17,6 @@ import (
 	"github.com/ovh/cds/sdk"
 )
 
-var (
-	cmdCDSSetVersionValue string
-)
-
 func cmdCDSVersionSet() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "set-version",
@@ -85,7 +81,7 @@ func cdsVersionSetCmd() func(cmd *cobra.Command, args []string) {
 
 		if err := f(); err != nil {
 			if sdk.IsErrorWithStack(err) {
-				httpErr := sdk.ExtractHTTPError(err, "")
+				httpErr := sdk.ExtractHTTPError(err)
 				sdk.Exit("%v", httpErr.Error())
 			} else {
 				sdk.Exit("%v", err)

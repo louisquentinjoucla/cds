@@ -69,7 +69,7 @@ func Test_deleteWorkflowRunsHistory(t *testing.T) {
 	err = deleteRunHistory(context.Background(), db.DbMap, wr.ID, cdnClient, sharedStorage, nil)
 	require.NoError(t, err)
 
-	_, err = workflow.LoadRunByID(db, wr.ID, workflow.LoadRunOptions{})
+	_, err = workflow.LoadRunByID(context.Background(), db, wr.ID, workflow.LoadRunOptions{})
 	require.NotNil(t, err)
 	require.True(t, sdk.ErrorIs(err, sdk.ErrNotFound))
 	require.True(t, gock.IsDone())
@@ -94,4 +94,52 @@ func Test_applyRetentionPolicyOnRun(t *testing.T) {
 	keep, err = applyRetentionPolicyOnRun(context.TODO(), db.DbMap, wf, run2, nil, sdk.Application{}, nil, MarkAsDeleteOptions{DryRun: true})
 	require.NoError(t, err)
 	require.True(t, keep)
+}
+
+func Test_applyRetentionPolicyOnRunWithError(t *testing.T) {
+	db, _ := test.SetupPG(t, bootstrap.InitiliazeDB)
+
+	// check empty rule
+	keep, err := applyRetentionPolicyOnRun(context.TODO(), db.DbMap, sdk.Workflow{
+		RetentionPolicy: "",
+	}, sdk.WorkflowRunSummary{}, nil, sdk.Application{}, nil, MarkAsDeleteOptions{DryRun: true})
+	require.Error(t, err)
+	require.True(t, keep)
+
+	// check no return
+	keep, err = applyRetentionPolicyOnRun(context.TODO(), db.DbMap, sdk.Workflow{
+		RetentionPolicy: "unknown == 'true'",
+	}, sdk.WorkflowRunSummary{}, nil, sdk.Application{}, nil, MarkAsDeleteOptions{DryRun: true})
+	require.Error(t, err)
+	require.True(t, keep)
+
+	// check unknown variable
+	keep, err = applyRetentionPolicyOnRun(context.TODO(), db.DbMap, sdk.Workflow{
+		RetentionPolicy: "return unknown == 'true'",
+	}, sdk.WorkflowRunSummary{}, nil, sdk.Application{}, nil, MarkAsDeleteOptions{DryRun: true})
+	require.Error(t, err)
+	require.True(t, keep)
+
+	// check return nil
+	keep, err = applyRetentionPolicyOnRun(context.TODO(), db.DbMap, sdk.Workflow{
+		RetentionPolicy: "return nil",
+	}, sdk.WorkflowRunSummary{}, nil, sdk.Application{}, nil, MarkAsDeleteOptions{DryRun: true})
+	require.Error(t, err)
+	require.True(t, keep)
+
+	keep, err = applyRetentionPolicyOnRun(context.TODO(), db.DbMap, sdk.Workflow{
+		RetentionPolicy: "return run_status == 'Success'",
+	}, sdk.WorkflowRunSummary{
+		Status: sdk.StatusSuccess,
+	}, nil, sdk.Application{}, nil, MarkAsDeleteOptions{DryRun: true})
+	require.NoError(t, err)
+	require.True(t, keep)
+
+	keep, err = applyRetentionPolicyOnRun(context.TODO(), db.DbMap, sdk.Workflow{
+		RetentionPolicy: "return run_status ~= 'Success'",
+	}, sdk.WorkflowRunSummary{
+		Status: sdk.StatusSuccess,
+	}, nil, sdk.Application{}, nil, MarkAsDeleteOptions{DryRun: true})
+	require.NoError(t, err)
+	require.False(t, keep)
 }

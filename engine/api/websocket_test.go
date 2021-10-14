@@ -32,7 +32,7 @@ func Test_websocketWrongFilters(t *testing.T) {
 	localConsumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), api.mustDB(), sdk.ConsumerLocal, u.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
 	require.NoError(t, err)
 
-	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), localConsumer, u.GetGroupIDs(),
+	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), 0, localConsumer, u.GetGroupIDs(),
 		sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeProject))
 
 	chanMessageReceived := make(chan sdk.WebsocketEvent)
@@ -45,7 +45,7 @@ func Test_websocketWrongFilters(t *testing.T) {
 		InsecureSkipVerifyTLS:             true,
 		BuitinConsumerAuthenticationToken: jws,
 	})
-	go client.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(), chanMessageToSend, chanMessageReceived, chanErrorReceived)
+	go client.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(context.TODO()), chanMessageToSend, chanMessageReceived, chanErrorReceived)
 
 	// Subscribe to project without project key
 	chanMessageToSend <- []sdk.WebsocketFilter{{
@@ -126,7 +126,7 @@ func Test_websocketGetWorkflowEvent(t *testing.T) {
 		InsecureSkipVerifyTLS: true,
 		SessionToken:          jwt,
 	})
-	go client.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(), chanMessageToSend, chanMessageReceived, chanErrorReceived)
+	go client.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(context.TODO()), chanMessageToSend, chanMessageReceived, chanErrorReceived)
 	var lastResponse *sdk.WebsocketEvent
 	go func() {
 		for e := range chanMessageReceived {
@@ -186,7 +186,7 @@ func Test_websocketDeconnection(t *testing.T) {
 	}
 	require.NoError(t, workflow.Insert(context.TODO(), db, api.Cache, *proj, &w))
 
-	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), localConsumer, u.GetGroupIDs(),
+	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), 0, localConsumer, u.GetGroupIDs(),
 		sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeProject))
 
 	// Open websocket
@@ -268,7 +268,7 @@ func TestWebsocketNoEventLoose(t *testing.T) {
 		InsecureSkipVerifyTLS: true,
 		SessionToken:          jwt,
 	})
-	go client1.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(), chan1MessageToSend, chan1MessageReceived, chan1ErrorReceived)
+	go client1.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(ctx), chan1MessageToSend, chan1MessageReceived, chan1ErrorReceived)
 	var client1EventCount int64
 	go func() {
 		for {
@@ -299,7 +299,7 @@ func TestWebsocketNoEventLoose(t *testing.T) {
 		SessionToken:          jwt,
 	})
 	var client2EventCount int64
-	go client2.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(), chan2MessageToSend, chan2MessageReceived, chan2ErrorReceived)
+	go client2.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(ctx), chan2MessageToSend, chan2MessageReceived, chan2ErrorReceived)
 	go func() {
 		for {
 			select {

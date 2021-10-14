@@ -14,6 +14,7 @@ import (
 var List = []Manifest{
 	ArtifactDownload,
 	ArtifactUpload,
+	PushBuildInfo,
 	CheckoutApplication,
 	Coverage,
 	DeployApplication,
@@ -21,6 +22,8 @@ var List = []Manifest{
 	GitTag,
 	InstallKey,
 	JUnit,
+	Promote,
+	ReleaseVCS,
 	Release,
 	Script,
 	ServeStaticFiles,

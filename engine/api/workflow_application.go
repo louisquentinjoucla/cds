@@ -11,6 +11,7 @@ import (
 
 	"github.com/ovh/cds/engine/api/project"
 	"github.com/ovh/cds/engine/api/repositoriesmanager"
+	"github.com/ovh/cds/engine/api/services"
 	"github.com/ovh/cds/engine/api/workflow"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
@@ -21,29 +22,29 @@ func (api *API) releaseApplicationWorkflowHandler() service.Handler {
 		vars := mux.Vars(r)
 		key := vars["key"]
 		name := vars["permWorkflowName"]
-		nodeRunID, errN := requestVarInt(r, "nodeRunID")
-		if errN != nil {
-			return errN
+		nodeRunID, err := requestVarInt(r, "nodeRunID")
+		if err != nil {
+			return err
 		}
 
 		var req sdk.WorkflowNodeRunRelease
-		if errU := service.UnmarshalBody(r, &req); errU != nil {
-			return errU
+		if err := service.UnmarshalBody(r, &req); err != nil {
+			return err
 		}
 
-		proj, errprod := project.Load(ctx, api.mustDB(), key)
-		if errprod != nil {
-			return sdk.WrapError(errprod, "releaseApplicationWorkflowHandler")
+		proj, err := project.Load(ctx, api.mustDB(), key)
+		if err != nil {
+			return err
 		}
 		loadOpts := workflow.LoadRunOptions{WithArtifacts: true}
-		wNodeRun, errWNR := workflow.LoadNodeRun(api.mustDB(), key, name, nodeRunID, loadOpts)
-		if errWNR != nil {
-			return sdk.WrapError(errWNR, "releaseApplicationWorkflowHandler")
+		wNodeRun, err := workflow.LoadNodeRun(api.mustDB(), key, name, nodeRunID, loadOpts)
+		if err != nil {
+			return err
 		}
 
-		workflowRun, errWR := workflow.LoadRunByIDAndProjectKey(api.mustDB(), key, wNodeRun.WorkflowRunID, loadOpts)
-		if errWR != nil {
-			return sdk.WrapError(errWR, "releaseApplicationWorkflowHandler")
+		workflowRun, err := workflow.LoadRunByIDAndProjectKey(ctx, api.mustDB(), key, wNodeRun.WorkflowRunID, loadOpts)
+		if err != nil {
+			return err
 		}
 
 		workflowArtifacts := []sdk.WorkflowNodeRunArtifact{}
@@ -64,7 +65,7 @@ func (api *API) releaseApplicationWorkflowHandler() service.Handler {
 		app := workflowRun.Workflow.Applications[node.Context.ApplicationID]
 
 		if app.VCSServer == "" {
-			return sdk.WithStack(sdk.ErrNoReposManager)
+			return sdk.NewErrorFrom(sdk.ErrNoReposManager, "app.VCSServer is empty")
 		}
 
 		tx, err := api.mustDB().Begin()
@@ -97,7 +98,7 @@ func (api *API) releaseApplicationWorkflowHandler() service.Handler {
 		for _, a := range workflowArtifacts {
 			for _, aToUp := range req.Artifacts {
 				if len(aToUp) > 0 {
-					ok, errRX := regexp.Match(aToUp, []byte(a.Name))
+					ok, errRX := regexp.MatchString(aToUp, a.Name)
 					if errRX != nil {
 						return sdk.WrapError(errRX, "releaseApplicationWorkflowHandler> %s is not a valid regular expression", aToUp)
 					}
@@ -110,16 +111,85 @@ func (api *API) releaseApplicationWorkflowHandler() service.Handler {
 		}
 
 		for _, a := range artifactToUpload {
-			f, err := api.SharedStorage.Fetch(ctx, &a)
-			if err != nil {
-				return sdk.WrapError(err, "Cannot fetch artifact")
+			// Do manual retry because if http call failed, reader is closed
+			attempt := 0
+			var lastErr error
+			for {
+				attempt++
+				f, err := api.SharedStorage.Fetch(ctx, &a)
+				if err != nil {
+					return sdk.WrapError(err, "Cannot fetch artifact")
+				}
+
+				if err := client.UploadReleaseFile(ctx, app.RepositoryFullname, fmt.Sprintf("%d", release.ID), release.UploadURL, a.Name, f, int(a.Size)); err != nil {
+					lastErr = err
+					if attempt >= 5 {
+						break
+					}
+					continue
+				}
+				break
+			}
+			if lastErr != nil {
+				return err
 			}
 
-			if err := client.UploadReleaseFile(ctx, app.RepositoryFullname, fmt.Sprintf("%d", release.ID), release.UploadURL, a.Name, f); err != nil {
-				return sdk.WrapError(err, "releaseApplicationWorkflowHandler")
+		}
+
+		results, err := workflow.LoadRunResultsByRunIDAndType(ctx, api.mustDB(), workflowRun.ID, sdk.WorkflowRunResultTypeArtifact)
+		if err != nil {
+			return err
+		}
+		var resultToUpload []sdk.WorkflowRunResultArtifact
+		for _, r := range results {
+			artiData, err := r.GetArtifact()
+			if err != nil {
+				return err
+			}
+			for _, aToUp := range req.Artifacts {
+				if len(aToUp) > 0 {
+					ok, err := regexp.MatchString(aToUp, artiData.Name)
+					if err != nil {
+						return sdk.WrapError(err, "releaseApplicationWorkflowHandler> %s is not a valid regular expression", aToUp)
+					}
+					if ok {
+						resultToUpload = append(resultToUpload, artiData)
+						break
+					}
+				}
 			}
 		}
 
+		if len(resultToUpload) == 0 {
+			return nil
+		}
+		cdnHTTP, err := services.GetCDNPublicHTTPAdress(ctx, api.mustDB())
+		if err != nil {
+			return err
+		}
+		for _, r := range resultToUpload {
+			// Do manual retry because if http call failed, reader is closed
+			attempt := 0
+			var lastErr error
+			for {
+				attempt++
+				reader, err := api.Client.CDNItemStream(ctx, cdnHTTP, r.CDNRefHash, sdk.CDNTypeItemRunResult)
+				if err != nil {
+					return err
+				}
+				if err := client.UploadReleaseFile(ctx, app.RepositoryFullname, fmt.Sprintf("%d", release.ID), release.UploadURL, r.Name, reader, int(r.Size)); err != nil {
+					lastErr = err
+					if attempt >= 5 {
+						break
+					}
+					continue
+				}
+				break
+			}
+			if lastErr != nil {
+				return err
+			}
+		}
 		return nil
 	}
 }

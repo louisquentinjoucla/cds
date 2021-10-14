@@ -12,23 +12,18 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/lib/pq"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/environment"
 	"github.com/ovh/cds/engine/api/group"
-	"github.com/ovh/cds/engine/api/integration"
 	"github.com/ovh/cds/engine/api/keys"
 	"github.com/ovh/cds/engine/api/pipeline"
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
-)
-
-const (
-	RetentionRule = "return (git_branch_exist == \"false\" and run_days_before < 2) or run_days_before < 365"
 )
 
 type PushSecrets struct {
@@ -36,8 +31,8 @@ type PushSecrets struct {
 	EnvironmentdSecrets map[int64][]sdk.Variable
 }
 
-// LoadAllByProjectIDs returns all workflow for given project ids.
-func LoadAllNamesByProjectIDs(ctx context.Context, db gorp.SqlExecutor, projectIDs []int64) ([]sdk.WorkflowName, error) {
+// LoadAllNamesByProjectIDs returns all workflow for given project ids.
+func LoadAllNamesByProjectIDs(_ context.Context, db gorp.SqlExecutor, projectIDs []int64) ([]sdk.WorkflowName, error) {
 	query := `
     SELECT workflow.*, project.projectkey
 	FROM workflow
@@ -54,6 +49,9 @@ func LoadAllNamesByProjectIDs(ctx context.Context, db gorp.SqlExecutor, projectI
 
 // LoadAllByIDs returns all workflows by ids.
 func LoadAllByIDs(ctx context.Context, db gorp.SqlExecutor, ids []int64) (sdk.Workflows, error) {
+	if len(ids) == 0 {
+		return []sdk.Workflow{}, nil
+	}
 	var dao WorkflowDAO
 	dao.Filters.WorkflowIDs = ids
 	return dao.LoadAll(ctx, db)
@@ -65,7 +63,10 @@ type UpdateOptions struct {
 }
 
 // Exists checks if a workflow exists
-func Exists(db gorp.SqlExecutor, key string, name string) (bool, error) {
+func Exists(ctx context.Context, db gorp.SqlExecutor, key string, name string) (bool, error) {
+	_, end := telemetry.Span(ctx, "workflow.Exists")
+	defer end()
+
 	query := `
 		select count(1)
 		from workflow
@@ -79,8 +80,25 @@ func Exists(db gorp.SqlExecutor, key string, name string) (bool, error) {
 	return count > 0, nil
 }
 
+// ExistsID checks if a workflow exists for given ID and project
+func ExistsID(ctx context.Context, db gorp.SqlExecutor, key string, id int64) (bool, error) {
+	_, end := telemetry.Span(ctx, "workflow.ExistsID")
+	defer end()
+	query := `
+		select count(1)
+		from workflow
+		join project on project.id = workflow.project_id
+		where project.projectkey = $1
+		and workflow.id = $2`
+	count, err := db.SelectInt(query, key, id)
+	if err != nil {
+		return false, sdk.WithStack(err)
+	}
+	return count > 0, nil
+}
+
 func LoadByRepo(ctx context.Context, db gorp.SqlExecutor, proj sdk.Project, repo string, opts LoadOptions) (*sdk.Workflow, error) {
-	ctx, end := telemetry.Span(ctx, "workflow.Load")
+	ctx, end := telemetry.Span(ctx, "workflow.LoadByRepo")
 	defer end()
 
 	dao := opts.GetWorkflowDAO()
@@ -122,7 +140,7 @@ func UpdateMetadata(db gorp.SqlExecutor, workflowID int64, metadata sdk.Metadata
 	return nil
 }
 
-// updateFromRepository update the from_repository of a workflow
+// UpdateFromRepository update the from_repository of a workflow
 func UpdateFromRepository(db gorp.SqlExecutor, workflowID int64, fromRepository string) error {
 	if _, err := db.Exec("UPDATE workflow SET from_repository = $1, last_modified = current_timestamp WHERE id = $2", fromRepository, workflowID); err != nil {
 		return sdk.WithStack(err)
@@ -162,7 +180,7 @@ func (w *Workflow) PostGet(db gorp.SqlExecutor) error {
 }
 
 // PreUpdate is a db hook
-func (w *Workflow) PreUpdate(db gorp.SqlExecutor) error {
+func (w *Workflow) PreUpdate(_ gorp.SqlExecutor) error {
 	if w.FromRepository != "" && strings.HasPrefix(w.FromRepository, "http") {
 		fromRepoURL, err := url.Parse(w.FromRepository)
 		if err != nil {
@@ -176,9 +194,14 @@ func (w *Workflow) PreUpdate(db gorp.SqlExecutor) error {
 
 // PostUpdate is a db hook
 func (w *Workflow) PostUpdate(db gorp.SqlExecutor) error {
-	for _, integ := range w.EventIntegrations {
-		if err := integration.AddOnWorkflow(db, w.ID, integ.ID); err != nil {
-			return sdk.WrapError(err, "cannot add project event integration (%d) on workflow (%d)", integ.ID, w.ID)
+	for i := range w.Integrations {
+		integ := &w.Integrations[i]
+		if integ.ID != 0 {
+			continue
+		}
+		integ.WorkflowID = w.ID
+		if err := AddWorkflowIntegration(db, integ); err != nil {
+			return sdk.WrapError(err, "cannot add project event integration (%d) on workflow (%d)", integ.ProjectIntegration.ID, w.ID)
 		}
 	}
 	return nil
@@ -193,13 +216,13 @@ func (w *Workflow) Get() sdk.Workflow {
 }
 
 // LoadAll loads all workflows for a project. All users in a project can list all workflows in a project
-func LoadAll(db gorp.SqlExecutor, projectKey string) (sdk.Workflows, error) {
+func LoadAll(ctx context.Context, db gorp.SqlExecutor, projectKey string) (sdk.Workflows, error) {
 	dao := WorkflowDAO{
 		Filters: LoadAllWorkflowsOptionsFilters{
 			ProjectKey: projectKey,
 		},
 	}
-	return dao.LoadAll(context.Background(), db)
+	return dao.LoadAll(ctx, db)
 }
 
 // LoadAllNames loads all workflow names for a project.
@@ -230,7 +253,7 @@ func LoadAllNames(db gorp.SqlExecutor, projID int64) (sdk.IDNames, error) {
 }
 
 // Load loads a workflow for a given user (ie. checking permissions)
-func Load(ctx context.Context, db gorp.SqlExecutor, store cache.Store, proj sdk.Project, name string, opts LoadOptions) (*sdk.Workflow, error) {
+func Load(ctx context.Context, db gorp.SqlExecutor, _ cache.Store, proj sdk.Project, name string, opts LoadOptions) (*sdk.Workflow, error) {
 	ctx, end := telemetry.Span(ctx, "workflow.Load")
 	defer end()
 
@@ -255,7 +278,7 @@ func Load(ctx context.Context, db gorp.SqlExecutor, store cache.Store, proj sdk.
 // LoadAndLockByID loads a workflow
 
 // LoadByID loads a workflow
-func LoadByID(ctx context.Context, db gorp.SqlExecutor, store cache.Store, proj sdk.Project, id int64, opts LoadOptions) (*sdk.Workflow, error) {
+func LoadByID(ctx context.Context, db gorp.SqlExecutor, _ cache.Store, proj sdk.Project, id int64, opts LoadOptions) (*sdk.Workflow, error) {
 	dao := opts.GetWorkflowDAO()
 	dao.Filters.WorkflowIDs = []int64{id}
 
@@ -290,7 +313,7 @@ func Insert(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 	if w.WorkflowData.Node.Context != nil && w.WorkflowData.Node.Context.ApplicationID != 0 {
 		var err error
 		if w.WorkflowData.Node.Context.DefaultPayload, err = DefaultPayload(ctx, db, store, proj, w); err != nil {
-			log.Warning(ctx, "postWorkflowHandler> Cannot set default payload : %v", err)
+			log.Warn(ctx, "postWorkflowHandler> Cannot set default payload : %v", err)
 		}
 	}
 
@@ -298,7 +321,6 @@ func Insert(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 		w.HistoryLength = sdk.DefaultHistoryLength
 	}
 	w.MaxRuns = maxRuns
-	w.RetentionPolicy = RetentionRule
 
 	w.LastModified = time.Now()
 	if err := db.QueryRow(`INSERT INTO workflow (
@@ -330,7 +352,7 @@ func Insert(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 			return sdk.WrapError(err, "Unable to update workflow")
 		}
 	} else {
-		log.Debug("postWorkflowHandler> inherit permissions from project")
+		log.Debug(ctx, "postWorkflowHandler> inherit permissions from project")
 		for _, gp := range proj.ProjectGroups {
 			if err := group.AddWorkflowGroup(ctx, db, w, gp); err != nil {
 				return sdk.WrapError(err, "Cannot add group %s", gp.Group.Name)
@@ -421,7 +443,7 @@ func RenameNode(ctx context.Context, db gorp.SqlExecutor, w *sdk.Workflow) error
 	maxNumberByHookModel := map[int64]int{}
 	var maxForkNumber int
 
-	nodesToNamed := []*sdk.Node{}
+	nodesToNamed := make([]*sdk.Node, 0)
 	// Search max numbers by nodes type
 	for i := range nodes {
 		if nodes[i].Name == "" {
@@ -589,17 +611,12 @@ func RenameNode(ctx context.Context, db gorp.SqlExecutor, w *sdk.Workflow) error
 
 // Update updates a workflow
 func Update(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.Store, proj sdk.Project, wf *sdk.Workflow, uptOption UpdateOptions) error {
-	ctx, end := telemetry.Span(ctx, "workflow.Update")
+	ctx, end := telemetry.Span(ctx, "workflow.Update", telemetry.Tag(telemetry.TagProjectKey, proj.Key), telemetry.Tag(telemetry.TagWorkflow, wf.Name))
 	defer end()
 
 	if err := CompleteWorkflow(ctx, db, wf, proj, LoadOptions{}); err != nil {
 		return err
 	}
-
-	if wf.RetentionPolicy == "" {
-		wf.RetentionPolicy = RetentionRule
-	}
-
 	if err := CheckValidity(ctx, db, wf); err != nil {
 		return err
 	}
@@ -608,27 +625,34 @@ func Update(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 		return sdk.WrapError(err, "unable to delete all notifications on workflow(%d - %s)", wf.ID, wf.Name)
 	}
 
-	if err := integration.DeleteFromWorkflow(db, wf.ID); err != nil {
+	if err := DeleteIntegrationsFromWorkflow(db, wf.ID); err != nil {
 		return sdk.WrapError(err, "unable to delete all integrations on workflow(%d - %s)", wf.ID, wf.Name)
 	}
-
 	// reload workflow to delete the current workflow data
 	oldWf, err := LoadByID(ctx, db, store, proj, wf.ID, LoadOptions{Minimal: true})
 	if err != nil {
 		return sdk.WrapError(err, "Unable to load existing workflow with proj:%s ID:%d", proj.Key, wf.ID)
 	}
 
+	// Set or keep HistoryLength
+	if wf.HistoryLength == 0 {
+		if oldWf.HistoryLength == 0 {
+			wf.HistoryLength = sdk.DefaultHistoryLength
+		} else {
+			wf.HistoryLength = oldWf.HistoryLength
+		}
+	}
+
 	// Keep MaxRun
 	wf.MaxRuns = oldWf.MaxRuns
-
 	if err := DeleteWorkflowData(db, *oldWf); err != nil {
 		return sdk.WrapError(err, "unable to delete from old workflow data(%d - %s)", wf.ID, wf.Name)
 	}
 
-	// Delete all node ID
+	// Delete all nodes,joins, integration ID
 	wf.ResetIDs()
 
-	filteredPurgeTags := []string{}
+	filteredPurgeTags := make([]string, 0)
 	for _, t := range wf.PurgeTags {
 		if t != "" {
 			filteredPurgeTags = append(filteredPurgeTags, t)
@@ -638,7 +662,7 @@ func Update(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 	if wf.WorkflowData.Node.Context != nil && wf.WorkflowData.Node.Context.ApplicationID != 0 {
 		var err error
 		if wf.WorkflowData.Node.Context.DefaultPayload, err = DefaultPayload(ctx, db, store, proj, wf); err != nil {
-			log.Warning(ctx, "workflow.Update> Cannot set default payload : %v", err)
+			log.Warn(ctx, "workflow.Update> Cannot set default payload : %v", err)
 		}
 	}
 
@@ -679,12 +703,28 @@ func Update(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 		return sdk.WrapError(err, "Unable to update workflow")
 	}
 	*wf = dbw.Get()
+	return nil
+}
 
+func MarkAsDeleteWithDependencies(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache cache.Store, proj sdk.Project, wf *sdk.Workflow) error {
+	ctx, end := telemetry.Span(ctx, "workflow.MarkAsDeleteWithDependencies", telemetry.Tag(telemetry.TagProjectKey, proj.Key), telemetry.Tag(telemetry.TagWorkflow, wf.Name))
+	defer end()
+
+	// In this case, don't unlink workflow dependencies in the workflow structure
+	// We want to keep the relatioship in the database
+	wf.ToDeleteWithDependencies = &sdk.True
+	wf.ToDelete = true
+	if err := Update(ctx, db, cache, proj, wf, UpdateOptions{DisableHookManagement: true}); err != nil {
+		return err
+	}
 	return nil
 }
 
 // MarkAsDelete marks a workflow to be deleted
 func MarkAsDelete(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache cache.Store, proj sdk.Project, wkf *sdk.Workflow) error {
+	ctx, end := telemetry.Span(ctx, "workflow.MarkAsDelete", telemetry.Tag(telemetry.TagProjectKey, proj.Key), telemetry.Tag(telemetry.TagWorkflow, wkf.Name))
+	defer end()
+
 	// Remove references of dependencies to be able to delete them before workflow deletion
 	nodes := wkf.WorkflowData.Array()
 	for _, n := range nodes {
@@ -694,11 +734,140 @@ func MarkAsDelete(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache ca
 		n.Context.ProjectIntegrationID = 0
 	}
 	wkf.ToDelete = true
+	wkf.ToDeleteWithDependencies = nil
 	return Update(ctx, db, cache, proj, wkf, UpdateOptions{DisableHookManagement: true})
+}
+
+func deleteOrUnlinkDependencies(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache cache.Store, proj sdk.Project, wf *sdk.Workflow) error {
+	ctx, end := telemetry.Span(ctx, "workflow.deleteOrUnlinkDependencies",
+		telemetry.Tag(telemetry.TagProjectKey, proj.Key),
+		telemetry.Tag(telemetry.TagWorkflow, wf.Name))
+	defer end()
+
+	var applicationIDToDelete []int64
+	for appID := range wf.Applications {
+		app := wf.Applications[appID]
+		log.Debug(ctx, "checking application %d %q %q", appID, app.Name, app.FromRepository)
+		// Check if the application is used by another workflow
+		otherWfs, err := LoadByApplicationName(ctx, db, proj.Key, app.Name) // this should not return any workflow because the current workflow has to_delete=true
+		if err != nil {
+			return err
+		}
+		if app.FromRepository == wf.FromRepository && len(otherWfs) > 0 {
+			// Remove the "as-code" flag because it is used by another workflow
+			app.FromRepository = ""
+			if err := application.Update(ctx, db, &app); err != nil {
+				return err
+			}
+		} else if len(otherWfs) == 0 {
+			applicationIDToDelete = append(applicationIDToDelete, appID)
+		}
+	}
+
+	var pipelineIDToDelete []int64
+	for pipID := range wf.Pipelines {
+		pip := wf.Pipelines[pipID]
+
+		// Check if the pipeline is used by another workflow
+		otherWfs, err := LoadByPipelineName(ctx, db, proj.Key, pip.Name)
+		if err != nil {
+			return err
+		}
+		log.Debug(ctx, "checking pipeline %d %q %q %+v", pipID, pip.Name, pip.FromRepository, otherWfs)
+		if pip.FromRepository == wf.FromRepository && len(otherWfs) > 0 {
+			// Remove the "as-code" flag because it is used by another workflow
+			pip.FromRepository = ""
+			if err := pipeline.UpdatePipeline(db, &pip); err != nil {
+				return err
+			}
+		} else if len(otherWfs) == 0 {
+			pipelineIDToDelete = append(pipelineIDToDelete, pipID)
+		}
+	}
+
+	var environmentIDToDelete []int64
+	for envID := range wf.Environments {
+		env := wf.Environments[envID]
+		log.Debug(ctx, "checking environment %d %q %q", envID, env.Name, env.FromRepository)
+		// Check if the pipeline is used by another workflow
+		otherWfs, err := LoadByEnvName(ctx, db, proj.Key, env.Name)
+		if err != nil {
+			return err
+		}
+		if env.FromRepository == wf.FromRepository && len(otherWfs) > 0 {
+			// Remove the "as-code" flag because it is used by another workflow
+			env.FromRepository = ""
+			if err := environment.UpdateEnvironment(db, &env); err != nil {
+				return err
+			}
+		} else if len(otherWfs) == 0 {
+			environmentIDToDelete = append(environmentIDToDelete, envID)
+		}
+	}
+
+	// ---------
+	nodes := wf.WorkflowData.Array()
+	for _, n := range nodes {
+		n.Context.ApplicationID = 0
+		n.Context.PipelineID = 0
+		n.Context.EnvironmentID = 0
+		n.Context.ProjectIntegrationID = 0
+	}
+
+	// Reset workflow data
+	if err := DeleteWorkflowData(db, *wf); err != nil {
+		return err
+	}
+	wf.ResetIDs()
+	if err := InsertWorkflowData(db, wf); err != nil {
+		return err
+	}
+	wf.LastModified = time.Now()
+	dbw := Workflow{Workflow: *wf}
+	// Then update in database
+	if _, err := db.UpdateColumns(func(c *gorp.ColumnMap) bool { return c.ColumnName != "project_key" }, &dbw); err != nil {
+		return sdk.WrapError(err, "Unable to update workflow")
+	}
+	*wf = dbw.Get()
+
+	// Now delete applications, pipelines and environment
+	for _, appID := range applicationIDToDelete {
+		log.Info(ctx, "deleting application %d linked to workflow %q on project %q", appID, wf.Name, proj.Key)
+		if err := application.DeleteApplication(db, appID); err != nil {
+			return err
+		}
+	}
+
+	for _, pipID := range pipelineIDToDelete {
+		log.Info(ctx, "deleting pipeline %d linked to workflow %q on project %q", pipID, wf.Name, proj.Key)
+		if err := pipeline.DeletePipeline(ctx, db, pipID); err != nil {
+			return err
+		}
+	}
+
+	for _, envID := range environmentIDToDelete {
+		log.Info(ctx, "deleting pipeline %d linked to workflow %q on project %q", envID, wf.Name, proj.Key)
+		if err := environment.DeleteEnvironment(db, envID); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Delete workflow
 func Delete(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.Store, proj sdk.Project, w *sdk.Workflow) error {
+	ctx, end := telemetry.Span(ctx, "workflow.Delete",
+		telemetry.Tag(telemetry.TagProjectKey, proj.Key),
+		telemetry.Tag(telemetry.TagWorkflow, w.Name))
+	defer end()
+
+	if w.ToDeleteWithDependencies != nil && *w.ToDeleteWithDependencies {
+		if err := deleteOrUnlinkDependencies(ctx, db, store, proj, w); err != nil {
+			return sdk.WrapError(err, "unable to delete workflow dependencies")
+		}
+	}
+
 	// Delete all hooks
 	if err := hookUnregistration(ctx, db, store, proj, w.WorkflowData.GetHooksMapRef()); err != nil {
 		return sdk.WrapError(err, "unable to delete hooks from workflow")
@@ -710,8 +879,7 @@ func Delete(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 
 	query := `DELETE FROM w_node_trigger
 					WHERE parent_node_id IN
-					(SELECT id FROM w_node WHERE workflow_id = $1)
-		`
+					(SELECT id FROM w_node WHERE workflow_id = $1)`
 	if _, err := db.Exec(query, w.ID); err != nil {
 		return sdk.WrapError(err, "unable to delete node trigger")
 	}
@@ -726,7 +894,7 @@ func Delete(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.St
 }
 
 func CompleteWorkflow(ctx context.Context, db gorp.SqlExecutor, w *sdk.Workflow, proj sdk.Project, opts LoadOptions) error {
-	ctx, end := telemetry.Span(ctx, "workflow.CompleteWorkflow")
+	ctx, end := telemetry.Span(ctx, "workflow.CompleteWorkflow", telemetry.Tag(telemetry.TagProjectKey, proj.Key), telemetry.Tag(telemetry.TagWorkflow, w.Name))
 	defer end()
 
 	w.InitMaps()
@@ -734,7 +902,7 @@ func CompleteWorkflow(ctx context.Context, db gorp.SqlExecutor, w *sdk.Workflow,
 
 	nodesArray := w.WorkflowData.Array()
 
-	if err := checkEventIntegration(proj, w); err != nil {
+	if err := checkIntegration(proj, w); err != nil {
 		return err
 	}
 
@@ -776,7 +944,7 @@ func CompleteWorkflow(ctx context.Context, db gorp.SqlExecutor, w *sdk.Workflow,
 }
 
 // CheckValidity checks workflow validity
-func CheckValidity(ctx context.Context, db gorp.SqlExecutor, w *sdk.Workflow) error {
+func CheckValidity(_ context.Context, _ gorp.SqlExecutor, w *sdk.Workflow) error {
 	//Check project is not empty
 	if w.ProjectKey == "" {
 		return sdk.NewErrorFrom(sdk.ErrWorkflowInvalid, "invalid project key")
@@ -955,24 +1123,34 @@ func checkProjectIntegration(proj sdk.Project, w *sdk.Workflow, n *sdk.Node) err
 	return nil
 }
 
-// checkEventIntegration checks event integration data
-func checkEventIntegration(proj sdk.Project, w *sdk.Workflow) error {
-	for i := range w.EventIntegrations {
-		eventIntegration := w.EventIntegrations[i]
+// checkIntegration checks integration data
+func checkIntegration(proj sdk.Project, w *sdk.Workflow) error {
+	countArtifactManagerIntegration := 0
+	for i := range w.Integrations {
+		workflowIntegration := &w.Integrations[i]
 		found := false
 		for _, projInt := range proj.Integrations {
-			if eventIntegration.Name == projInt.Name {
-				eventIntegration.ID = projInt.ID
-				w.EventIntegrations[i] = eventIntegration
+			if workflowIntegration.ProjectIntegration.Name == projInt.Name {
+				workflowIntegration.ProjectIntegration = projInt
+				workflowIntegration.ProjectIntegrationID = projInt.ID
+				workflowIntegration.WorkflowID = w.ID
+				workflowIntegration.MergeWithModel(projInt.Model)
+				w.Integrations[i] = *workflowIntegration
 				found = true
 				break
 			}
 		}
 		if !found {
-			return sdk.WithData(sdk.ErrIntegrationtNotFound, eventIntegration.Name)
+			return sdk.WithData(sdk.ErrIntegrationtNotFound, workflowIntegration.ProjectIntegration.Name)
+		}
+		if workflowIntegration.ProjectIntegration.Model.ArtifactManager {
+			countArtifactManagerIntegration++
 		}
 	}
 
+	if countArtifactManagerIntegration > 1 {
+		return sdk.NewErrorFrom(sdk.ErrInvalidData, "you can't have multiple artifact manager integrations on a workflow")
+	}
 	return nil
 }
 
@@ -1096,7 +1274,7 @@ func Push(ctx context.Context, db *gorp.DbMap, store cache.Store, proj *sdk.Proj
 		oldWf = &opts.OldWorkflow
 	} else {
 		// load the workflow from database if exists
-		workflowExists, err = Exists(db, proj.Key, data.Workflow.GetName())
+		workflowExists, err = Exists(ctx, db, proj.Key, data.Workflow.GetName())
 		if err != nil {
 			return nil, nil, nil, nil, sdk.WrapError(err, "cannot check if workflow exists")
 		}
@@ -1143,7 +1321,7 @@ func Push(ctx context.Context, db *gorp.DbMap, store cache.Store, proj *sdk.Proj
 		if opts != nil {
 			fromRepo = opts.FromRepository
 		}
-		envDB, envsSecrets, msgList, err := environment.ParseAndImport(tx, *proj, env, environment.ImportOptions{Force: true, FromRepository: fromRepo}, decryptFunc, u)
+		envDB, envsSecrets, msgList, err := environment.ParseAndImport(ctx, tx, *proj, env, environment.ImportOptions{Force: true, FromRepository: fromRepo}, decryptFunc, u)
 		allMsg = append(allMsg, msgList...)
 		if err != nil {
 			return allMsg, nil, nil, nil, sdk.ErrorWithFallback(err, sdk.ErrWrongRequest, "unable to import environment %s/%s", proj.Key, env.Name)
@@ -1236,13 +1414,13 @@ func Push(ctx context.Context, db *gorp.DbMap, store cache.Store, proj *sdk.Proj
 
 	if !isDefaultBranch {
 		_ = tx.Rollback()
-		log.Debug("workflow %s rollbacked because it's not coming from the default branch", wf.Name)
+		log.Debug(ctx, "workflow %s rollbacked because it's not coming from the default branch", wf.Name)
 	} else {
 		if err := tx.Commit(); err != nil {
 			return nil, nil, nil, nil, sdk.WithStack(err)
 		}
 
-		log.Debug("workflow %s updated", wf.Name)
+		log.Debug(ctx, "workflow %s updated", wf.Name)
 	}
 
 	return allMsg, wf, oldWf, &allSecrets, nil

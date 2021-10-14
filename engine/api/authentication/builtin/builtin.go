@@ -4,10 +4,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/api/authentication"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 var _ sdk.AuthDriver = new(AuthDriver)
@@ -44,7 +45,7 @@ func (d AuthDriver) GetUserInfo(ctx context.Context, req sdk.AuthConsumerSigninR
 		return userInfo, err
 	}
 
-	log.Debug("builtin.GetUserInfo> %s", consumerID)
+	log.Debug(ctx, "builtin.GetUserInfo> %s", consumerID)
 
 	return sdk.AuthDriverUserInfo{
 		ExternalID: consumerID,
@@ -64,7 +65,7 @@ func (d AuthDriver) CheckSigninRequest(req sdk.AuthConsumerSigninRequest) error 
 
 // NewConsumer returns a new builtin consumer for given data.
 // The parent consumer should be given with all data loaded including the authentified user.
-func NewConsumer(ctx context.Context, db gorpmapper.SqlExecutorWithTx, name, description string, parentConsumer *sdk.AuthConsumer,
+func NewConsumer(ctx context.Context, db gorpmapper.SqlExecutorWithTx, name, description string, duration time.Duration, parentConsumer *sdk.AuthConsumer,
 	groupIDs []int64, scopes sdk.AuthConsumerScopeDetails) (*sdk.AuthConsumer, string, error) {
 	if name == "" {
 		return nil, "", sdk.NewErrorFrom(sdk.ErrWrongRequest, "name should be given to create a built in consumer")
@@ -99,7 +100,7 @@ func NewConsumer(ctx context.Context, db gorpmapper.SqlExecutorWithTx, name, des
 		Data:               map[string]string{},
 		GroupIDs:           groupIDs,
 		ScopeDetails:       scopes,
-		IssuedAt:           time.Now(),
+		ValidityPeriods:    sdk.NewAuthConsumerValidityPeriod(time.Now(), duration),
 	}
 
 	if err := authentication.InsertConsumer(ctx, db, &c); err != nil {

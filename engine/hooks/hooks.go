@@ -7,21 +7,18 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api"
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // New returns a new service
 func New() *Service {
 	s := new(Service)
-	s.GoRoutines = sdk.NewGoRoutines()
-	s.Router = &api.Router{
-		Mux: mux.NewRouter(),
-	}
+	s.GoRoutines = sdk.NewGoRoutines(context.Background())
 	return s
 }
 
@@ -31,7 +28,10 @@ func (s *Service) Init(config interface{}) (cdsclient.ServiceConfig, error) {
 	if !ok {
 		return cfg, sdk.WithStack(fmt.Errorf("invalid hooks service configuration"))
 	}
-
+	s.Router = &api.Router{
+		Mux:    mux.NewRouter(),
+		Config: sConfig.HTTP,
+	}
 	cfg.Host = sConfig.API.HTTP.URL
 	cfg.Token = sConfig.API.Token
 	cfg.InsecureSkipVerifyTLS = sConfig.API.HTTP.Insecure
@@ -147,7 +147,7 @@ func (s *Service) Serve(c context.Context) error {
 	//Start the http server
 	log.Info(ctx, "Hooks> Starting HTTP Server on port %d", s.Cfg.HTTP.Port)
 	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Hooks> Cannot start cds-hooks: %s", err)
+		log.Error(ctx, "Hooks> Cannot start cds-hooks: %s", err)
 	}
 
 	return ctx.Err()

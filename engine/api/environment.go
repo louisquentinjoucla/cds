@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/ascode"
@@ -15,11 +16,11 @@ import (
 	"github.com/ovh/cds/engine/api/keys"
 	"github.com/ovh/cds/engine/api/operation"
 	"github.com/ovh/cds/engine/api/project"
+	"github.com/ovh/cds/engine/api/repositoriesmanager"
 	"github.com/ovh/cds/engine/api/workflow"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (api *API) getEnvironmentsHandler() service.Handler {
@@ -80,11 +81,7 @@ func (api *API) getEnvironmentHandler() service.Handler {
 		}
 
 		if env.FromRepository != "" {
-			proj, err := project.Load(ctx, api.mustDB(), projectKey,
-				project.LoadOptions.WithApplicationWithDeploymentStrategies,
-				project.LoadOptions.WithPipelines,
-				project.LoadOptions.WithEnvironments,
-				project.LoadOptions.WithIntegrations)
+			proj, err := project.Load(ctx, api.mustDB(), projectKey, project.LoadOptions.WithIntegrations)
 			if err != nil {
 				return err
 			}
@@ -194,7 +191,7 @@ func (api *API) deleteEnvironmentHandler() service.Handler {
 		env, errEnv := environment.LoadEnvironmentByName(api.mustDB(), projectKey, environmentName)
 		if errEnv != nil {
 			if !sdk.ErrorIs(errEnv, sdk.ErrEnvironmentNotFound) {
-				log.Warning(ctx, "deleteEnvironmentHandler> Cannot load environment %s: %v", environmentName, errEnv)
+				log.Warn(ctx, "deleteEnvironmentHandler> Cannot load environment %s: %v", environmentName, errEnv)
 			}
 			return errEnv
 		}
@@ -290,6 +287,25 @@ func (api *API) updateAsCodeEnvironmentHandler() service.Handler {
 			return sdk.NewErrorFrom(sdk.ErrWrongRequest, "cannot find the root application of the workflow %s that hold the pipeline", wkHolder.Name)
 		}
 
+		vcsServer, err := repositoriesmanager.LoadProjectVCSServerLinkByProjectKeyAndVCSServerName(ctx, tx, key, rootApp.VCSServer)
+		if err != nil {
+			return sdk.WrapError(sdk.ErrNoReposManagerClientAuth, "updateAsCodeEnvironmentHandler> Cannot get client got %s %s : %v", key, rootApp.VCSServer, err)
+		}
+
+		client, err := repositoriesmanager.AuthorizedClient(ctx, tx, api.Cache, key, vcsServer)
+		if err != nil {
+			return sdk.WrapError(sdk.ErrNoReposManagerClientAuth, "updateAsCodeEnvironmentHandler> Cannot get client got %s %s : %v", key, rootApp.VCSServer, err)
+		}
+
+		b, err := client.Branch(ctx, rootApp.RepositoryFullname, sdk.VCSBranchFilters{BranchName: branch})
+		if err != nil && !sdk.ErrorIs(err, sdk.ErrNotFound) {
+			return err
+		}
+
+		if b != nil && b.Default {
+			return sdk.NewErrorFrom(sdk.ErrForbidden, "cannot push the the default branch on your git repository")
+		}
+
 		// create keys
 		for i := range env.Keys {
 			k := &env.Keys[i]
@@ -304,7 +320,7 @@ func (api *API) updateAsCodeEnvironmentHandler() service.Handler {
 
 		u := getAPIConsumer(ctx)
 		env.ProjectID = proj.ID
-		envExported, err := environment.ExportEnvironment(tx, env, project.EncryptWithBuiltinKey, fmt.Sprintf("env:%d:%s", envDB.ID, branch))
+		envExported, err := environment.ExportEnvironment(ctx, tx, env, project.EncryptWithBuiltinKey, fmt.Sprintf("env:%d:%s", envDB.ID, branch))
 		if err != nil {
 			return err
 		}
@@ -330,7 +346,7 @@ func (api *API) updateAsCodeEnvironmentHandler() service.Handler {
 				OperationUUID: ope.UUID,
 			}
 			ascode.UpdateAsCodeResult(ctx, api.mustDB(), api.Cache, api.GoRoutines, *proj, *wkHolder, *rootApp, ed, u)
-		}, api.PanicDump())
+		})
 
 		return service.WriteJSON(w, sdk.Operation{
 			UUID:   ope.UUID,

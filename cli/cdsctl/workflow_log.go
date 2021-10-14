@@ -93,7 +93,7 @@ func workflowLogSearchNumber(v cli.Values) (int64, error) {
 		return 0, err
 	}
 	if len(runs) < 1 {
-		return 0, sdk.WithStack(fmt.Errorf("no run found for workflow %s/%s", projectKey, workflowName))
+		return 0, cli.NewError("no run found for workflow %s/%s", projectKey, workflowName)
 	}
 	return runs[0].Number, nil
 }
@@ -282,11 +282,11 @@ func workflowLogDownloadRun(v cli.Values) error {
 	if v.GetString("pattern") != "" {
 		reg, err = regexp.Compile(v.GetString("pattern"))
 		if err != nil {
-			return sdk.NewErrorFrom(err, "invalid pattern %s", v.GetString("pattern"))
+			return cli.NewError("invalid pattern %q", v.GetString("pattern"))
 		}
 	}
 
-	feature, err := client.FeatureEnabled("cdn-job-logs", map[string]string{
+	feature, err := client.FeatureEnabled(sdk.FeatureCDNJobLogs, map[string]string{
 		"project_key": projectKey,
 	})
 	if err != nil {
@@ -301,7 +301,7 @@ func workflowLogDownloadRun(v cli.Values) error {
 
 		// If cdn logs is enabled for current project, first check if logs can be downloaded from it
 		var link *sdk.CDNLogLink
-		if feature.Enabled {
+		if !feature.Exists || feature.Enabled {
 			if log.detailType == workflowLogDetailTypeService {
 				link, err = client.WorkflowNodeRunJobServiceLink(context.Background(), projectKey, workflowName, log.runID, log.jobID, log.serviceName)
 			} else {
@@ -312,26 +312,9 @@ func workflowLogDownloadRun(v cli.Values) error {
 			}
 		}
 
-		var data []byte
-		if link != nil {
-			data, err = client.WorkflowLogDownload(context.Background(), *link)
-			if err != nil {
-				return err
-			}
-		} else {
-			if log.detailType == workflowLogDetailTypeService {
-				serviceLog, err := client.WorkflowNodeRunJobServiceLog(context.Background(), projectKey, workflowName, log.runID, log.jobID, log.serviceName)
-				if err != nil {
-					return err
-				}
-				data = []byte(serviceLog.Val)
-			} else {
-				buildState, err := client.WorkflowNodeRunJobStepLog(context.Background(), projectKey, workflowName, log.runID, log.jobID, log.stepOrder)
-				if err != nil {
-					return err
-				}
-				data = []byte(buildState.StepLogs.Val)
-			}
+		data, err := client.WorkflowLogDownload(context.Background(), *link)
+		if err != nil {
+			return err
 		}
 
 		if err := ioutil.WriteFile(log.getFilename(), data, 0644); err != nil {
@@ -343,7 +326,7 @@ func workflowLogDownloadRun(v cli.Values) error {
 	}
 
 	if !ok {
-		return sdk.WithStack(fmt.Errorf("no log downloaded"))
+		return cli.NewError("no log downloaded")
 	}
 	return nil
 }
@@ -369,16 +352,6 @@ var workflowLogStreamCmd = cli.Command{
 func workflowLogStreamRun(v cli.Values) error {
 	projectKey := v.GetString(_ProjectKey)
 	workflowName := v.GetString(_WorkflowName)
-
-	feature, err := client.FeatureEnabled("cdn-job-logs", map[string]string{
-		"project_key": projectKey,
-	})
-	if err != nil {
-		return err
-	}
-	if !feature.Enabled {
-		return sdk.WithStack(fmt.Errorf("cdn log processing is not active for given project"))
-	}
 
 	runNumber, err := workflowLogSearchNumber(v)
 	if err != nil {
@@ -447,7 +420,7 @@ func workflowLogStreamRun(v cli.Values) error {
 	chanMsgReceived := make(chan json.RawMessage)
 	chanErrorReceived := make(chan error)
 
-	goRoutines := sdk.NewGoRoutines()
+	goRoutines := sdk.NewGoRoutines(ctx)
 	goRoutines.Exec(ctx, "WebsocketEventsListenCmd", func(ctx context.Context) {
 		for ctx.Err() == nil {
 			if err := client.RequestWebsocket(ctx, goRoutines, fmt.Sprintf("%s/item/stream", link.CDNURL), chanMessageToSend, chanMsgReceived, chanErrorReceived); err != nil {
@@ -458,13 +431,18 @@ func workflowLogStreamRun(v cli.Values) error {
 	})
 
 	buf, err := json.Marshal(sdk.CDNStreamFilter{
-		ItemType: link.ItemType,
-		APIRef:   link.APIRef,
+		JobRunID: log.jobID,
 	})
 	if err != nil {
-		return sdk.WithStack(err)
+		return cli.WrapError(err, "unable to marshal streamFilter")
 	}
 	chanMessageToSend <- buf
+
+	type logBlock struct {
+		Number     int64  `json:"number"`
+		Value      string `json:"value"`
+		ApiRefHash string `json:"api_ref_hash"`
+	}
 
 	for {
 		select {
@@ -476,6 +454,13 @@ func workflowLogStreamRun(v cli.Values) error {
 			}
 			fmt.Printf("Error: %s\n", err)
 		case m := <-chanMsgReceived:
+			var line logBlock
+			if err := json.Unmarshal(m, &line); err != nil {
+				return err
+			}
+			if line.ApiRefHash != link.APIRef {
+				continue
+			}
 			fmt.Printf("%s", string(m))
 		}
 	}

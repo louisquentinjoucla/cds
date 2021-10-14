@@ -3,6 +3,7 @@ package sdk
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha512"
 	"database/sql/driver"
@@ -37,7 +38,7 @@ var (
 )
 
 // EncryptFunc is a common type
-type EncryptFunc func(gorp.SqlExecutor, int64, string, string) (string, error)
+type EncryptFunc func(context.Context, gorp.SqlExecutor, int64, string, string) (string, error)
 
 // IDName is generally used when you want to get basic informations from db
 type IDName struct {
@@ -127,7 +128,7 @@ func JSONWithoutHTMLEncode(t interface{}) ([]byte, error) {
 	return buffer.Bytes(), err
 }
 
-// FileMd5sum returns the md5sum ofr a file
+// FileMd5sum returns the md5sum of a file
 func FileMd5sum(filePath string) (string, error) {
 	file, errop := os.Open(filePath)
 	if errop != nil {
@@ -205,7 +206,7 @@ func (s *StringSlice) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(errors.New("type assertion .([]byte) failed"))
 	}
-	return WrapError(json.Unmarshal(source, s), "cannot unmarshal StringSlice")
+	return WrapError(JSONUnmarshal(source, s), "cannot unmarshal StringSlice")
 }
 
 // Value returns driver.Value from string slice.
@@ -232,7 +233,7 @@ func (s *Int64Slice) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(errors.New("type assertion .([]byte) failed"))
 	}
-	return WrapError(json.Unmarshal(source, s), "cannot unmarshal Int64Slice")
+	return WrapError(JSONUnmarshal(source, s), "cannot unmarshal Int64Slice")
 }
 
 // Value returns driver.Value from int64 slice.
@@ -308,4 +309,19 @@ func PathIsAbs(s string) bool {
 		return windowsPathRegex.MatchString(s)
 	}
 	return path.IsAbs(s)
+}
+
+func JSONUnmarshal(btes []byte, i interface{}) error {
+	d := json.NewDecoder(bytes.NewReader(btes))
+	d.UseNumber()
+	err := d.Decode(i)
+	if err != nil {
+		return WithStack(err)
+	}
+	return nil
+}
+
+type KeyValues struct {
+	Key    string
+	Values []string
 }

@@ -222,14 +222,14 @@ func ParametersFromPipelineParameters(pipParams []Parameter) map[string]string {
 }
 
 // ParametersFromIntegration returns a map of variables from a ProjectIntegration
-func ParametersFromIntegration(ppf IntegrationConfig) map[string]string {
+func ParametersFromIntegration(prefix string, ppf IntegrationConfig) map[string]string {
 	vars := make([]Variable, len(ppf))
 	i := 0
 	for k, c := range ppf {
 		vars[i] = Variable{Name: k, Type: c.Type, Value: c.Value}
 		i++
 	}
-	params := VariablesToParameters("cds.integration", vars)
+	params := VariablesToParameters("cds.integration."+prefix, vars)
 	return ParametersToMap(params)
 }
 
@@ -300,7 +300,7 @@ func ParametersMerge(src []Parameter, overwritter []Parameter) []Parameter {
 	return params
 }
 
-// ParametersMapMerge merges two maps of parameters preserving all git values
+// ParametersMapMerge merges two maps of parameters
 func ParametersMapMerge(params map[string]string, otherParams map[string]string, checkFuncs ...func(string) bool) map[string]string {
 	for k, overrideValue := range otherParams {
 		if _, ok := params[k]; ok {

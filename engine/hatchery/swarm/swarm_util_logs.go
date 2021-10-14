@@ -2,34 +2,54 @@ package swarm
 
 import (
 	"context"
-	"fmt"
 	"io/ioutil"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/rockbears/log"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ovh/cds/sdk"
+	"github.com/ovh/cds/sdk/cdn"
 	"github.com/ovh/cds/sdk/hatchery"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 )
 
 func (h *HatcherySwarm) getServicesLogs() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	apiWorkers, err := h.CDSClient().WorkerList(ctx)
+	if err != nil {
+		return sdk.WrapError(err, "cannot get worker list from CDS api")
+	}
+	apiWorkerNames := make(map[string]struct{}, len(apiWorkers))
+	for i := range apiWorkers {
+		apiWorkerNames[apiWorkers[i].Name] = struct{}{}
+	}
+
 	for _, dockerClient := range h.dockerClients {
 		containers, err := h.getContainers(dockerClient, types.ContainerListOptions{All: true})
 		if err != nil {
 			return sdk.WrapError(err, "Cannot get containers list from %s", dockerClient.name)
 		}
 
-		servicesLogs := make([]log.Message, 0, len(containers))
+		servicesLogs := make([]cdslog.Message, 0, len(containers))
 		for _, cnt := range containers {
 			if _, has := cnt.Labels[hatchery.LabelServiceID]; !has {
 				continue
 			}
 
 			workerName := cnt.Labels["service_worker"]
+			// Check if there is a known worker in CDS api results for given worker name
+			// If not we skip sending logs as the worker is not ready.
+			// This will avoid problems validating log signature by the CDN service.
+			if _, ok := apiWorkerNames[workerName]; !ok {
+				continue
+			}
+
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute*2)
 			logsOpts := types.ContainerLogsOptions{
 				Details:    true,
@@ -40,7 +60,8 @@ func (h *HatcherySwarm) getServicesLogs() error {
 			logsReader, err := dockerClient.ContainerLogs(ctx, cnt.ID, logsOpts)
 			if err != nil {
 				err = sdk.WrapError(err, "cannot get logs from docker for containers service %s %v", cnt.ID, cnt.Names)
-				log.ErrorWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+				ctx := sdk.ContextWithStacktrace(ctx, err)
+				log.Error(ctx, err.Error())
 				cancel()
 				continue
 			}
@@ -49,7 +70,8 @@ func (h *HatcherySwarm) getServicesLogs() error {
 			if err != nil {
 				logsReader.Close() // nolint
 				err = sdk.WrapError(err, "cannot read logs for containers service %s %v", cnt.ID, cnt.Names)
-				log.ErrorWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+				ctx := sdk.ContextWithStacktrace(ctx, err)
+				log.Error(ctx, err.Error())
 				cancel()
 				continue
 			}
@@ -63,10 +85,10 @@ func (h *HatcherySwarm) getServicesLogs() error {
 					continue
 				}
 
-				commonMessage := log.Message{
+				commonMessage := cdslog.Message{
 					Level: logrus.InfoLevel,
-					Signature: log.Signature{
-						Service: &log.SignatureService{
+					Signature: cdn.Signature{
+						Service: &cdn.SignatureService{
 							HatcheryID:      h.Service().ID,
 							HatcheryName:    h.ServiceName(),
 							RequirementID:   jobIdentifiers.ServiceID,

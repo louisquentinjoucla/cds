@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/ascode"
 	"github.com/ovh/cds/engine/api/event"
@@ -17,7 +18,7 @@ import (
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 )
 
 // postImportAsCodeHandler
@@ -68,16 +69,11 @@ func (api *API) postImportAsCodeHandler() service.Handler {
 				sdk.NewErrorFrom(sdk.ErrNoReposManagerClientAuth, "cannot get client for %s %s", key, ope.VCSServer))
 		}
 
-		branches, err := client.Branches(ctx, ope.RepoFullName)
+		branch, err := repositoriesmanager.DefaultBranch(ctx, client, ope.RepoFullName)
 		if err != nil {
 			return err
 		}
-		for _, b := range branches {
-			if b.Default {
-				ope.Setup.Checkout.Branch = b.DisplayID
-				break
-			}
-		}
+		ope.Setup.Checkout.Branch = branch.DisplayID
 
 		if err := operation.PostRepositoryOperation(ctx, tx, *p, ope, nil); err != nil {
 			return sdk.WrapError(err, "cannot create repository operation")
@@ -90,19 +86,18 @@ func (api *API) postImportAsCodeHandler() service.Handler {
 		u := getAPIConsumer(ctx)
 
 		api.GoRoutines.Exec(context.Background(), fmt.Sprintf("postImportAsCodeHandler-%s", ope.UUID), func(ctx context.Context) {
+			ctx = context.WithValue(ctx, cdslog.Operation, ope.UUID)
+			ctx = context.WithValue(ctx, cdslog.Repository, ope.RepoFullName)
+
 			ope, err := operation.Poll(ctx, api.mustDB(), ope.UUID)
 			if err != nil {
-				isErrWithStack := sdk.IsErrorWithStack(err)
-				fields := log.Fields{}
-				if isErrWithStack {
-					fields["stack_trace"] = fmt.Sprintf("%+v", err)
-				}
-				log.ErrorWithFields(ctx, fields, "%s", err)
+				ctx = sdk.ContextWithStacktrace(ctx, err)
+				log.Error(ctx, "%v", err)
 				return
 			}
 
 			if ope.Status == sdk.OperationStatusError {
-				log.Error(ctx, "repositories> operation %s error %+v", ope.UUID, ope.Error)
+				log.Error(ctx, "operation %s error %+v", ope.UUID, ope.Error)
 			}
 
 			ope = &sdk.Operation{
@@ -115,7 +110,7 @@ func (api *API) postImportAsCodeHandler() service.Handler {
 			}
 
 			event.PublishOperation(ctx, p.Key, *ope, u)
-		}, api.PanicDump())
+		})
 
 		return service.WriteJSON(w, sdk.Operation{
 			UUID:   ope.UUID,
@@ -206,7 +201,7 @@ func (api *API) postPerformImportAsCodeHandler() service.Handler {
 		if err := workflowtemplate.UpdateTemplateInstanceWithWorkflow(ctx, api.mustDB(), *wrkflw, *consumer, wti); err != nil {
 			return err
 		}
-		msgListString := translate(r, allMsg)
+		msgListString := translate(allMsg)
 
 		tx, err := api.mustDB().Begin()
 		if err != nil {

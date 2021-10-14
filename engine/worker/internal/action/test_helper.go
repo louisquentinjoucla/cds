@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rockbears/log"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 
@@ -16,7 +17,6 @@ import (
 	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/vcs"
 )
 
@@ -30,6 +30,26 @@ type TestWorker struct {
 	logBuffer        bytes.Buffer
 }
 
+func (w *TestWorker) GetJobIdentifiers() (int64, int64, int64) {
+	return 0, 0, 0
+}
+
+func (w *TestWorker) WorkerCacheSignature(tag string) (string, error) {
+	return "mysig", nil
+}
+
+func (w *TestWorker) RunResultSignature(artifactName string, perm uint32, t sdk.WorkflowRunResultType) (string, error) {
+	return "mysignature", nil
+}
+
+func (w *TestWorker) FeatureEnabled(featureName sdk.FeatureName) bool {
+	return false
+}
+
+func (w *TestWorker) CDNHttpURL() string {
+	return "http://cdn.me"
+}
+
 func (w *TestWorker) WorkingDirectory() *afero.BasePathFile {
 	return w.workingDirectory
 }
@@ -40,6 +60,10 @@ func (w *TestWorker) KeyDirectory() *afero.BasePathFile {
 
 func (w *TestWorker) Blur(i interface{}) error {
 	w.t.Log("Blur")
+	return nil
+}
+
+func (w *TestWorker) GetPlugin(t string) *sdk.GRPCPlugin {
 	return nil
 }
 
@@ -127,7 +151,7 @@ var _ workerruntime.Runtime = new(TestWorker)
 func SetupTest(t *testing.T) (*TestWorker, context.Context) {
 	fs := afero.NewOsFs()
 	basedir := "test-" + test.GetTestName(t) + "-" + sdk.RandomString(10) + "-" + fmt.Sprintf("%d", time.Now().Unix())
-	log.Debug("creating basedir %s", basedir)
+	log.Debug(context.TODO(), "creating basedir %s", basedir)
 	require.NoError(t, fs.MkdirAll(basedir, os.FileMode(0755)))
 
 	wk := TestWorker{

@@ -69,7 +69,7 @@ func LoadApplicationSecrets(ctx context.Context, db gorp.SqlExecutor, id int64) 
 				continue
 			}
 			secretsVariables = append(secretsVariables, sdk.Variable{
-				Name:  fmt.Sprintf("%s:cds.integration.%s", name, vName),
+				Name:  fmt.Sprintf("%s:cds.integration.%s.%s", name, sdk.IntegrationVariablePrefixDeployment, vName),
 				Type:  sdk.SecretVariable,
 				Value: v.Value,
 			})

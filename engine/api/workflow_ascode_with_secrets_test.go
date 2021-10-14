@@ -58,7 +58,7 @@ func Test_RunNonDefaultBranchWithSecrets(t *testing.T) {
 		Name:  "app-password",
 		Value: "my application secret",
 	}
-	encryptedAppVariable, errA := project.EncryptWithBuiltinKey(api.mustDB(), proj.ID, appVariable.Name, appVariable.Value)
+	encryptedAppVariable, errA := project.EncryptWithBuiltinKey(context.TODO(), api.mustDB(), proj.ID, appVariable.Name, appVariable.Value)
 	require.NoError(t, errA)
 
 	k, errK := keys.GenerateSSHKey("app-key")
@@ -67,17 +67,17 @@ func Test_RunNonDefaultBranchWithSecrets(t *testing.T) {
 		Name:    "app-key",
 		Private: k.Private,
 	}
-	encryptedAppKey, errB := project.EncryptWithBuiltinKey(api.mustDB(), proj.ID, appKey.Name, appKey.Private)
+	encryptedAppKey, errB := project.EncryptWithBuiltinKey(context.TODO(), api.mustDB(), proj.ID, appKey.Name, appKey.Private)
 	require.NoError(t, errB)
 
-	encryptedAppIntegration, errC := project.EncryptWithBuiltinKey(api.mustDB(), proj.ID, "token", "my application integration token")
+	encryptedAppIntegration, errC := project.EncryptWithBuiltinKey(context.TODO(), api.mustDB(), proj.ID, "token", "my application integration token")
 	require.NoError(t, errC)
 
 	envVariable := sdk.Variable{
 		Name:  "env-password",
 		Value: "my environment secret",
 	}
-	encryptedEnvVariable, errD := project.EncryptWithBuiltinKey(api.mustDB(), proj.ID, envVariable.Name, envVariable.Value)
+	encryptedEnvVariable, errD := project.EncryptWithBuiltinKey(context.TODO(), api.mustDB(), proj.ID, envVariable.Name, envVariable.Value)
 	require.NoError(t, errD)
 
 	ke, errKe := keys.GenerateSSHKey("env-key")
@@ -86,25 +86,21 @@ func Test_RunNonDefaultBranchWithSecrets(t *testing.T) {
 		Name:    "env-key",
 		Private: ke.Private,
 	}
-	encryptedEnvKey, errE := project.EncryptWithBuiltinKey(api.mustDB(), proj.ID, envKey.Name, envKey.Private)
+	encryptedEnvKey, errE := project.EncryptWithBuiltinKey(context.TODO(), api.mustDB(), proj.ID, envKey.Name, envKey.Private)
 	require.NoError(t, errE)
 
 	UUID := sdk.UUID()
 
 	servicesClients.EXPECT().
-		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/myrepo/branches", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/myrepo/branches/?branch=&default=true", gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(
 			func(ctx context.Context, method, path string, in interface{}, out interface{}, _ interface{}) (http.Header, int, error) {
-				bs := []sdk.VCSBranch{
-					{
-						DisplayID: "master",
-						Default:   true,
-					},
-					{
-						DisplayID: "devbranch",
-					},
+				b := sdk.VCSBranch{
+					DisplayID: "master",
+					Default:   true,
 				}
-				out = bs
+
+				out = b
 				return nil, 200, nil
 			},
 		).MaxTimes(3)
@@ -188,7 +184,7 @@ version: v1.0`),
 
 	// Get vcsInfos +  Get Commits
 	servicesClients.EXPECT().
-		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/myrepo/branches/?branch=devbranch", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/myrepo/branches/?branch=devbranch&default=false", gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(
 			func(ctx context.Context, method, path string, in interface{}, out interface{}, _ interface{}) (http.Header, int, error) {
 				b := sdk.VCSBranch{
@@ -350,7 +346,7 @@ version: v1.0`),
 
 	require.NoError(t, waitCraftinWorkflow(t, api, db, wr.ID))
 
-	wrDB, errDB := workflow.LoadRunByID(db, wr.ID, workflow.LoadRunOptions{})
+	wrDB, errDB := workflow.LoadRunByID(context.Background(), db, wr.ID, workflow.LoadRunOptions{})
 	require.NoError(t, errDB)
 
 	t.Logf("%d %+v", wrDB.Workflow.WorkflowData.Node.ID, wrDB.WorkflowNodeRuns)
@@ -363,10 +359,10 @@ version: v1.0`),
 	require.Len(t, secrets, 6)
 	require.NotNil(t, sdk.VariableFind(secrets, "cds.key.app-key.priv"))
 	require.NotNil(t, sdk.VariableFind(secrets, "cds.app.app-password"))
-	require.NotNil(t, sdk.VariableFind(secrets, "cds.integration.token"))
+	require.NotNil(t, sdk.VariableFind(secrets, "cds.integration.deployment.token"))
 	require.NotNil(t, sdk.VariableFind(secrets, "cds.key.env-key.priv"))
 	require.NotNil(t, sdk.VariableFind(secrets, "cds.env.env-password"))
 
 	// from project
-	require.NotNil(t, sdk.VariableFind(secrets, "cds.integration.mypassword"))
+	require.NotNil(t, sdk.VariableFind(secrets, "cds.integration.deployment.mypassword"))
 }

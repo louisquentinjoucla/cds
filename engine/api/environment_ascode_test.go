@@ -87,17 +87,28 @@ func TestUpdateAsCodeEnvironmentHandler(t *testing.T) {
 				return nil, 200, nil
 			},
 		)
-	servicesClients.EXPECT().DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/foo/myrepo/branches", gomock.Any(), gomock.Any(), gomock.Any()).
+	servicesClients.EXPECT().DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/foo/myrepo/branches/?branch=&default=true", gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, method, path string, in interface{}, out interface{}, _ interface{}) (http.Header, int, error) {
-			bs := []sdk.VCSBranch{}
 			b := sdk.VCSBranch{
 				DisplayID:    "master",
 				LatestCommit: "aaaaaaa",
 			}
-			bs = append(bs, b)
-			out = bs
+			out = b
 			return nil, 200, nil
 		}).Times(1)
+
+	servicesClients.EXPECT().
+		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/foo/myrepo/branches/?branch=master&default=false", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(
+			func(ctx context.Context, method, path string, in interface{}, out interface{}, _ interface{}) (http.Header, int, error) {
+				b := sdk.VCSBranch{
+					DisplayID: "master",
+					Default:   false,
+				}
+				out = b
+				return nil, 404, nil
+			},
+		).MaxTimes(1)
 
 	servicesClients.EXPECT().
 		DoJSONRequest(gomock.Any(), "POST", "/vcs/github/repos/foo/myrepo/hooks", gomock.Any(), gomock.Any(), gomock.Any()).
@@ -218,7 +229,7 @@ func TestUpdateAsCodeEnvironmentHandler(t *testing.T) {
 	chanMessageReceived := make(chan sdk.WebsocketEvent)
 	chanMessageToSend := make(chan []sdk.WebsocketFilter)
 	chanErrorReceived := make(chan error)
-	go client.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(), chanMessageToSend, chanMessageReceived, chanErrorReceived)
+	go client.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(context.TODO()), chanMessageToSend, chanMessageReceived, chanErrorReceived)
 	chanMessageToSend <- []sdk.WebsocketFilter{{
 		Type:         sdk.WebsocketFilterTypeAscodeEvent,
 		ProjectKey:   proj.Key,

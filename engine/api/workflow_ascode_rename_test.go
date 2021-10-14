@@ -11,13 +11,14 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/golang/mock/gomock"
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/api/repositoriesmanager"
 	"github.com/ovh/cds/engine/api/services"
 	"github.com/ovh/cds/engine/api/services/mock_services"
 	"github.com/ovh/cds/engine/api/test/assets"
 	"github.com/ovh/cds/engine/api/workflow"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -73,21 +74,19 @@ func Test_WorkflowAsCodeRename(t *testing.T) {
 		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/fsamin/go-repo", gomock.Any(), gomock.Any(), gomock.Any()).MinTimes(0)
 
 	servicesClients.EXPECT().
-		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/fsamin/go-repo/branches", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/fsamin/go-repo/branches/?branch=&default=true", gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(
 			func(ctx context.Context, method, path string, in interface{}, out interface{}, _ interface{}) (http.Header, int, error) {
-				bs := []sdk.VCSBranch{}
 				b := sdk.VCSBranch{
 					DisplayID: "master",
 				}
-				bs = append(bs, b)
-				out = bs
+				out = b
 				return nil, 200, nil
 			},
 		).Times(4)
 
 	servicesClients.EXPECT().
-		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/fsamin/go-repo/branches/?branch=master", gomock.Any(), gomock.Any(), gomock.Any()).
+		DoJSONRequest(gomock.Any(), "GET", "/vcs/github/repos/fsamin/go-repo/branches/?branch=master&default=false", gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(
 			func(ctx context.Context, method, path string, in interface{}, out interface{}, _ interface{}) (http.Header, int, error) {
 				bs := []sdk.VCSBranch{}
@@ -307,7 +306,7 @@ version: v1.0`),
 	require.Len(t, wk.WorkflowData.GetHooks(), 1)
 
 	for _, h := range wk.WorkflowData.GetHooks() {
-		log.Debug("--> %T %+v", h, h)
+		log.Debug(context.TODO(), "--> %T %+v", h, h)
 		require.Equal(t, "RepositoryWebHook", h.HookModelName)
 		require.Equal(t, "push", h.Config["eventFilter"].Value)
 		require.Equal(t, "Github", h.Config["hookIcon"].Value)
@@ -350,7 +349,7 @@ version: v1.0`),
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &wrun))
 
 	require.NoError(t, waitCraftinWorkflow(t, api, api.mustDB(), wrun.ID))
-	wr, _ := workflow.LoadRunByID(db, wrun.ID, workflow.LoadRunOptions{})
+	wr, _ := workflow.LoadRunByID(context.Background(), db, wrun.ID, workflow.LoadRunOptions{})
 
 	assert.NotEqual(t, "Fail", wr.Status)
 
@@ -364,7 +363,7 @@ version: v1.0`),
 	require.Len(t, wk.WorkflowData.GetHooks(), 1)
 
 	for _, h := range wk.WorkflowData.GetHooks() {
-		log.Debug("--> %T %+v", h, h)
+		log.Debug(context.TODO(), "--> %T %+v", h, h)
 		require.Equal(t, "RepositoryWebHook", h.HookModelName)
 		require.Equal(t, "push", h.Config["eventFilter"].Value)
 		require.Equal(t, "Github", h.Config["hookIcon"].Value)

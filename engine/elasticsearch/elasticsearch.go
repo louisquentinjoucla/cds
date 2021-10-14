@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 	"gopkg.in/olivere/elastic.v6"
 
 	"github.com/ovh/cds/engine/api"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
-	"github.com/ovh/cds/sdk/log"
 )
 
 var esClient *elastic.Client
@@ -20,10 +20,7 @@ var esClient *elastic.Client
 // New returns a new service
 func New() *Service {
 	s := new(Service)
-	s.GoRoutines = sdk.NewGoRoutines()
-	s.Router = &api.Router{
-		Mux: mux.NewRouter(),
-	}
+	s.GoRoutines = sdk.NewGoRoutines(context.Background())
 	return s
 }
 
@@ -37,12 +34,15 @@ func (s *Service) ApplyConfiguration(config interface{}) error {
 	if !ok {
 		return fmt.Errorf("ApplyConfiguration> Invalid Elasticsearch configuration")
 	}
-
+	s.Router = &api.Router{
+		Mux:    mux.NewRouter(),
+		Config: s.Cfg.HTTP,
+	}
 	s.HTTPURL = s.Cfg.URL
 	s.ServiceName = s.Cfg.Name
 	s.ServiceType = sdk.TypeElasticsearch
 	s.MaxHeartbeatFailures = s.Cfg.API.MaxHeartbeatFailures
-	s.ServiceName = "cds-elasticsearch"
+
 	return nil
 }
 

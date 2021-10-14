@@ -2,7 +2,6 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,9 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func arrayContains(array interface{}, s interface{}) bool {
@@ -96,7 +96,7 @@ func filterCommits(allCommits []Commit, since, until string) []Commit {
 func (g *githubClient) Commits(ctx context.Context, repo, theBranch, since, until string) ([]sdk.VCSCommit, error) {
 	var commitsResult []sdk.VCSCommit
 
-	log.Debug("Looking for commits on repo %s since = %s until = %s", repo, since, until)
+	log.Debug(ctx, "Looking for commits on repo %s since = %s until = %s", repo, since, until)
 	k := cache.Key("vcs", "github", "commits", repo, "since="+since, "until="+until)
 	find, err := g.Cache.Get(k, &commitsResult)
 	if err != nil {
@@ -109,7 +109,7 @@ func (g *githubClient) Commits(ctx context.Context, repo, theBranch, since, unti
 	// Calculate since commit
 	if since == "" {
 		// If no since commit, take from the beginning of the branch
-		b, errB := g.Branch(ctx, repo, theBranch)
+		b, errB := g.Branch(ctx, repo, sdk.VCSBranchFilters{BranchName: theBranch})
 		if errB != nil {
 			return nil, errB
 		}
@@ -153,7 +153,7 @@ func (g *githubClient) Commits(ctx context.Context, repo, theBranch, since, unti
 		return nil, err
 	}
 	if since != "" {
-		log.Debug("filter commit (%d) between %s and %s", len(theCommits), since, until)
+		log.Debug(ctx, "filter commit (%d) between %s and %s", len(theCommits), since, until)
 		theCommits = filterCommits(theCommits, since, until)
 	}
 
@@ -203,17 +203,17 @@ func (g *githubClient) allCommitBetween(ctx context.Context, repo string, untilD
 		}
 		status, body, headers, err := g.get(ctx, nextPage+urlValues.Encode(), withoutETag)
 		if err != nil {
-			log.Warning(ctx, "githubClient.Commits> Error %s", err)
+			log.Warn(ctx, "githubClient.Commits> Error %s", err)
 			return nil, err
 		}
 		if status >= 400 {
-			log.Warning(ctx, "githubClient.Commits> Error %s", errorAPI(body))
+			log.Warn(ctx, "githubClient.Commits> Error %s", errorAPI(body))
 			return nil, sdk.NewError(sdk.ErrUnknownError, errorAPI(body))
 		}
 		nextCommits := []Commit{}
 
-		if err := json.Unmarshal(body, &nextCommits); err != nil {
-			log.Warning(ctx, "githubClient.Commits> Unable to parse github commits: %s", err)
+		if err := sdk.JSONUnmarshal(body, &nextCommits); err != nil {
+			log.Warn(ctx, "githubClient.Commits> Unable to parse github commits: %s", err)
 			return nil, err
 		}
 
@@ -230,7 +230,7 @@ func (g *githubClient) Commit(ctx context.Context, repo, hash string) (sdk.VCSCo
 	url := "/repos/" + repo + "/commits/" + hash
 	status, body, _, err := g.get(ctx, url)
 	if err != nil {
-		log.Warning(ctx, "githubClient.Commit> Error %s", err)
+		log.Warn(ctx, "githubClient.Commit> Error %s", err)
 		return sdk.VCSCommit{}, err
 	}
 	if status >= 400 {
@@ -246,8 +246,8 @@ func (g *githubClient) Commit(ctx context.Context, repo, hash string) (sdk.VCSCo
 			log.Error(ctx, "cannot get from cache %s: %v", k, err)
 		}
 	} else {
-		if err := json.Unmarshal(body, &c); err != nil {
-			log.Warning(ctx, "githubClient.Commit> Unable to parse github commit: %s", err)
+		if err := sdk.JSONUnmarshal(body, &c); err != nil {
+			log.Warn(ctx, "githubClient.Commit> Unable to parse github commit: %s", err)
 			return sdk.VCSCommit{}, err
 		}
 		//Put the body on cache for one hour and one minute
@@ -278,7 +278,7 @@ func (g *githubClient) CommitsBetweenRefs(ctx context.Context, repo, base, head 
 	url := fmt.Sprintf("/repos/%s/compare/%s...%s", repo, base, head)
 	status, body, _, err := g.get(ctx, url)
 	if err != nil {
-		log.Warning(ctx, "githubClient.CommitsBetweenRefs> Error %s", err)
+		log.Warn(ctx, "githubClient.CommitsBetweenRefs> Error %s", err)
 		return commits, err
 	}
 	if status >= 400 {
@@ -294,8 +294,8 @@ func (g *githubClient) CommitsBetweenRefs(ctx context.Context, repo, base, head 
 			log.Error(ctx, "cannot get from cache %s: %v", k, err)
 		}
 	} else {
-		if err := json.Unmarshal(body, &diff); err != nil {
-			log.Warning(ctx, "githubClient.CommitsBetweenRefs> Unable to parse github commit: %s", err)
+		if err := sdk.JSONUnmarshal(body, &diff); err != nil {
+			log.Warn(ctx, "githubClient.CommitsBetweenRefs> Unable to parse github commit: %s", err)
 			return commits, err
 		}
 

@@ -3,14 +3,15 @@ package notification
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
-	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/api/user"
+	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/interpolate"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/luascript"
 )
 
@@ -128,7 +129,7 @@ func GetUserWorkflowEvents(ctx context.Context, db gorp.SqlExecutor, store cache
 				if err != nil {
 					log.Error(ctx, "notification.GetUserWorkflowEvents> unable to handle event %+v: %v", jn, err)
 				}
-				log.Debug("GetUserWorkflowEvents> will send mail notifications: %+v", notif)
+				log.Debug(ctx, "GetUserWorkflowEvents> will send mail notifications: %+v", notif)
 				go sendMailNotif(ctx, notif)
 			}
 		}
@@ -217,7 +218,17 @@ func getWorkflowEvent(notif *sdk.UserNotificationSettings, params map[string]str
 		Subject: subject,
 		Body:    body,
 	}
-	e.Recipients = append(e.Recipients, notif.Recipients...)
+
+	var recipients []string
+	for i := range notif.Recipients {
+		r, err := interpolate.Do(notif.Recipients[i], params)
+		if err != nil {
+			return sdk.EventNotif{}, err
+		}
+		recipients = append(recipients, strings.Split(r, ",")...)
+	}
+
+	e.Recipients = append(e.Recipients, recipients...)
 
 	return e, nil
 }

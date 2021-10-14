@@ -6,12 +6,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ovh/cds/engine/cache"
+	"github.com/rockbears/log"
+
+	"github.com/ovh/cds/engine/api/ascode"
 	"github.com/ovh/cds/engine/api/keys"
+	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // ImportOptions are options to import application
@@ -32,7 +34,7 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache 
 		return nil, nil, msgList, sdk.WrapError(sdk.ErrInvalidApplicationPattern, "application name %s do not respect pattern %s", eapp.Name, sdk.NamePattern)
 	}
 
-	//Check if app exist
+	//Check if app exists
 	oldApp, err := LoadByProjectKeyAndName(ctx, db, proj.Key, eapp.Name,
 		LoadOptions.WithVariablesWithClearPassword,
 		LoadOptions.WithClearKeys,
@@ -42,13 +44,23 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache 
 		return nil, nil, msgList, sdk.WrapError(err, "unable to load application")
 	}
 
-	//If the application exist and we don't want to force, raise an error
+	//If the application exists and we don't want to force, raise an error
 	if oldApp != nil && !opts.Force {
 		return nil, nil, msgList, sdk.WithStack(sdk.ErrApplicationExist)
 	}
 
-	if oldApp != nil && oldApp.FromRepository != "" && opts.FromRepository != oldApp.FromRepository {
-		return nil, nil, msgList, sdk.NewErrorFrom(sdk.ErrApplicationAsCodeOverride, "unable to update existing ascode application from %s", oldApp.FromRepository)
+	if oldApp != nil {
+		if opts.Force && opts.FromRepository == "" {
+			if oldApp.FromRepository != "" {
+				if err := ascode.DeleteEventsApplicationOnlyFromRepoName(ctx, db, oldApp.FromRepository, oldApp.ID, oldApp.Name); err != nil {
+					return nil, nil, msgList, sdk.WrapError(err, "unable to delete as_code_event for %s on repo %s", oldApp.Name, oldApp.FromRepository)
+				}
+				msgList = append(msgList, sdk.NewMessage(sdk.MsgApplicationDetached, eapp.Name, oldApp.FromRepository))
+			}
+			log.Debug(ctx, "ParseAndImport>> force import application %s in project %s without fromRepository", eapp.Name, proj.Key)
+		} else if oldApp.FromRepository != "" && opts.FromRepository != oldApp.FromRepository {
+			return nil, nil, msgList, sdk.NewErrorFrom(sdk.ErrApplicationAsCodeOverride, "unable to update existing ascode application from %s", oldApp.FromRepository)
+		}
 	}
 
 	//Craft the application
@@ -66,7 +78,7 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache 
 		case "":
 			v.Type = sdk.StringVariable
 		case sdk.SecretVariable:
-			secret, err := decryptFunc(db, proj.ID, v.Value)
+			secret, err := decryptFunc(ctx, db, proj.ID, v.Value)
 			if err != nil {
 				return app, nil, msgList, sdk.WrapError(sdk.NewError(sdk.ErrWrongRequest, err), "unable to decrypt secret variable")
 			}
@@ -96,14 +108,14 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache 
 		//If application doesn't exist, skip the regen mecanism to generate key
 		if oldApp == nil {
 			kval.Regen = nil
-			log.Debug("ParseAndImport> Skipping regen feature")
+			log.Debug(ctx, "ParseAndImport> Skipping regen feature")
 		} else {
 			//If application exist, check the key exist
 			oldKey = oldApp.GetKey(kname)
 			//If the key doesn't exist, skip the regen mecanism to generate key
 			if oldKey == nil {
 				kval.Regen = nil
-				log.Debug("ParseAndImport> Skipping regen feature")
+				log.Debug(ctx, "ParseAndImport> Skipping regen feature")
 			}
 		}
 
@@ -111,7 +123,7 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache 
 			keepOldValue = true
 		}
 
-		kk, err := keys.Parse(db, proj.ID, kname, kval, decryptFunc)
+		kk, err := keys.Parse(ctx, db, proj.ID, kname, kval, decryptFunc)
 		if err != nil {
 			return app, nil, msgList, sdk.ErrorWithFallback(err, sdk.ErrWrongRequest, "unable to parse key %s", kname)
 		}
@@ -157,7 +169,7 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache 
 		return app, nil, msgList, sdk.NewErrorFrom(sdk.ErrInvalidApplicationRepoStrategy, "could not import application %s with a connection type ssh without ssh key", app.Name)
 	}
 	if eapp.VCSPassword != "" {
-		clearPWD, err := decryptFunc(db, proj.ID, eapp.VCSPassword)
+		clearPWD, err := decryptFunc(ctx, db, proj.ID, eapp.VCSPassword)
 		if err != nil {
 			return app, nil, msgList, sdk.WrapError(sdk.NewError(sdk.ErrWrongRequest, err), "unable to decrypt vcs password")
 		}
@@ -178,8 +190,8 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache 
 			msgList = append(msgList, sdk.NewMessage(sdk.MsgWorkflowErrorBadIntegrationName, pfName))
 			return app, nil, msgList, sdk.WrapError(sdk.NewErrorFrom(sdk.ErrWrongRequest, "deployment platform not found"), "deployment platform %s not found", pfName)
 		}
-		if projIt.Model.DeploymentDefaultConfig != nil {
-			deploymentStrategies[pfName] = projIt.Model.DeploymentDefaultConfig.Clone()
+		if projIt.Model.AdditionalDefaultConfig != nil {
+			deploymentStrategies[pfName] = projIt.Model.AdditionalDefaultConfig.Clone()
 		} else {
 			deploymentStrategies[pfName] = make(map[string]sdk.IntegrationConfigValue)
 		}
@@ -195,13 +207,13 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, cache 
 		for k, v := range pfConfig {
 			if v.Value != "" {
 				if v.Type == sdk.SecretVariable {
-					clearPWD, err := decryptFunc(db, proj.ID, v.Value)
+					clearPWD, err := decryptFunc(ctx, db, proj.ID, v.Value)
 					if err != nil {
 						return app, nil, nil, sdk.WrapError(sdk.NewError(sdk.ErrWrongRequest, err), "unable to decrypt deployment strategy password")
 					}
 					v.Value = clearPWD
 					applicationSecrets = append(applicationSecrets, sdk.Variable{
-						Name:  fmt.Sprintf("%s:cds.integration.%s", pfName, k),
+						Name:  fmt.Sprintf("%s:cds.integration.deployment.%s", pfName, k),
 						Type:  sdk.SecretVariable,
 						Value: clearPWD,
 					})

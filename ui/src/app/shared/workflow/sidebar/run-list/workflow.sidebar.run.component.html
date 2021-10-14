@@ -1,10 +1,10 @@
-<div *ngIf="ready" class="workflowSidebar">
+<ng-container *ngIf="ready">
     <sui-multi-select class="selection" [(ngModel)]="selectedTags" [options]="tagsSelectable" [isSearchable]="true"
         (ngModelChange)="filterRuns()" [optionsFilter]="filterTags" #multiSelect>
         <sui-select-option *ngFor="let option of multiSelect.filteredOptions" [value]="option">
         </sui-select-option>
     </sui-multi-select>
-    <div class="runs scrollable" #tagsList infiniteScroll [infiniteScrollDistance]="2" [infiniteScrollThrottle]="50"
+    <div class="runs" #tagsList infiniteScroll [infiniteScrollDistance]="2" [infiniteScrollThrottle]="50"
         [scrollWindow]="false" (scrolled)="scroll()">
         <ng-container *ngIf="workflowRuns.length > 0">
             <div class="item pointing" *ngFor="let r of workflowRuns" (click)="changeRun(r.num)"
@@ -15,12 +15,18 @@
                 [class.never]="r.status === pipelineStatusEnum.NEVER_BUILT || r.status === pipelineStatusEnum.SKIPPED || r.status === pipelineStatusEnum.DISABLED">
                 <div class="content">
                     <div class="info">
-                        <div class="number">
-                            <span class="hash">#</span>
-                            <span class="count" title="{{r.version ? r.version : r.num}}" [class.success]="r.status === pipelineStatusEnum.SUCCESS"
-                                [class.waiting]="r.status === pipelineStatusEnum.BUILDING || r.status === pipelineStatusEnum.WAITING || r.status === pipelineStatusEnum.PENDING"
-                                [class.fail]="r.status === pipelineStatusEnum.FAIL || r.status === pipelineStatusEnum.STOPPED"
-                                [class.never]="r.status === pipelineStatusEnum.NEVER_BUILT || r.status === pipelineStatusEnum.SKIPPED || r.status === pipelineStatusEnum.DISABLED">{{r.version ? r.version : r.num}}</span>
+                        <div class="number-wrapper">
+                            <div class="number">
+                                <span class="hash">#</span>
+                                <span class="count" title="{{r.version ? r.version : r.num}}"
+                                    [class.success]="r.status === pipelineStatusEnum.SUCCESS"
+                                    [class.waiting]="r.status === pipelineStatusEnum.BUILDING || r.status === pipelineStatusEnum.WAITING || r.status === pipelineStatusEnum.PENDING"
+                                    [class.fail]="r.status === pipelineStatusEnum.FAIL || r.status === pipelineStatusEnum.STOPPED"
+                                    [class.never]="r.status === pipelineStatusEnum.NEVER_BUILT || r.status === pipelineStatusEnum.SKIPPED || r.status === pipelineStatusEnum.DISABLED">{{r.version
+                                    ? r.version : r.num}}</span>
+                            </div>
+                            <a title="Copy version" ngxClipboard [cbContent]="r.version ? r.version : r.num"
+                                (click)="confirmCopy();$event.stopPropagation();"><i class="copy outline icon"></i></a>
                         </div>
                         <ng-template let-popup #popupTemplate>
                             <div class="content">
@@ -39,10 +45,9 @@
                             </ng-container>
                         </div>
                     </div>
-                    <div class="loader"
-                        *ngIf="r.status === pipelineStatusEnum.BUILDING || r.status === pipelineStatusEnum.WAITING">
-                        <app-status-icon [status]="pipelineStatusEnum.BUILDING"></app-status-icon>
-                    </div>
+                    <app-status-icon
+                        *ngIf="r.status === pipelineStatusEnum.BUILDING || r.status === pipelineStatusEnum.WAITING"
+                        [status]="pipelineStatusEnum.BUILDING"></app-status-icon>
                 </div>
                 <div class="foot">
                     <div class="duration">
@@ -56,7 +61,7 @@
             {{'workflow_no_run_found' | translate}}
         </div>
     </div>
-</div>
-<div *ngIf="!ready" class="ui text active loader">
-    {{ 'workflow_run_loading' | translate }}
+</ng-container>
+<div *ngIf="!ready" class="ui text active inline loader">
+    Loading runs...
 </div>

@@ -2,15 +2,16 @@ package purge
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"strconv"
 	"time"
 
 	"github.com/fsamin/go-dump"
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 	"go.opencensus.io/stats"
 
+	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/api/event"
 	"github.com/ovh/cds/engine/api/repositoriesmanager"
@@ -18,8 +19,8 @@ import (
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/featureflipping"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/luascript"
+	"github.com/ovh/cds/sdk/telemetry"
 )
 
 type MarkAsDeleteOptions struct {
@@ -29,6 +30,7 @@ type MarkAsDeleteOptions struct {
 const (
 	RunStatus          = "run_status"
 	RunDaysBefore      = "run_days_before"
+	RunHasGitBranch    = "has_git_branch"
 	RunGitBranchExist  = "git_branch_exist"
 	RunChangeExist     = "gerrit_change_exist"
 	RunChangeMerged    = "gerrit_change_merged"
@@ -36,23 +38,27 @@ const (
 	RunChangeDayBefore = "gerrit_change_days_before"
 )
 
-func GetRetetionPolicyVariables() []string {
-	return []string{RunDaysBefore, RunStatus, RunGitBranchExist, RunChangeMerged, RunChangeAbandoned, RunChangeDayBefore, RunChangeExist}
+func GetRetentionPolicyVariables() []string {
+	return []string{RunDaysBefore, RunStatus, RunHasGitBranch, RunGitBranchExist, RunChangeMerged, RunChangeAbandoned, RunChangeDayBefore, RunChangeExist}
 }
 
 func markWorkflowRunsToDelete(ctx context.Context, store cache.Store, db *gorp.DbMap, workflowRunsMarkToDelete *stats.Int64Measure) error {
+	ctx, end := telemetry.Span(ctx, "purge.markWorkflowRunsToDelete")
+	defer end()
+
 	dao := new(workflow.WorkflowDAO)
 	wfs, err := dao.LoadAll(ctx, db)
 	if err != nil {
 		return err
 	}
 	for _, wf := range wfs {
-		enabled := featureflipping.IsEnabled(ctx, gorpmapping.Mapper, db, FeaturePurgeName, map[string]string{"project_key": wf.ProjectKey})
+		_, enabled := featureflipping.IsEnabled(ctx, gorpmapping.Mapper, db, sdk.FeaturePurgeName, map[string]string{"project_key": wf.ProjectKey})
 		if !enabled {
 			continue
 		}
 		if err := ApplyRetentionPolicyOnWorkflow(ctx, store, db, wf, MarkAsDeleteOptions{DryRun: false}, nil); err != nil {
-			log.ErrorWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+			ctx = sdk.ContextWithStacktrace(ctx, err)
+			log.Error(ctx, "%v", err)
 		}
 	}
 	workflow.CountWorkflowRunsMarkToDelete(ctx, db, workflowRunsMarkToDelete)
@@ -60,12 +66,19 @@ func markWorkflowRunsToDelete(ctx context.Context, store cache.Store, db *gorp.D
 }
 
 func ApplyRetentionPolicyOnWorkflow(ctx context.Context, store cache.Store, db *gorp.DbMap, wf sdk.Workflow, opts MarkAsDeleteOptions, u *sdk.AuthentifiedUser) error {
+	ctx, end := telemetry.Span(ctx, "purge.ApplyRetentionPolicyOnWorkflow")
+	defer end()
+
 	var vcsClient sdk.VCSAuthorizedClientService
 	var app sdk.Application
 	if wf.WorkflowData.Node.Context != nil {
 		appID := wf.WorkflowData.Node.Context.ApplicationID
 		if appID != 0 {
-			app = wf.Applications[appID]
+			appDB, err := application.LoadByID(ctx, db, appID)
+			if err != nil {
+				return err
+			}
+			app = *appDB
 			if app.RepositoryFullname != "" {
 				tx, err := db.Begin()
 				if err != nil {
@@ -82,18 +95,32 @@ func ApplyRetentionPolicyOnWorkflow(ctx context.Context, store cache.Store, db *
 					_ = tx.Rollback()
 					return sdk.WithStack(err)
 				}
+				if err := tx.Commit(); err != nil {
+					_ = tx.Rollback()
+					return err
+				}
 			}
 		}
 	}
 
 	branchesMap := make(map[string]struct{})
 	if vcsClient != nil {
-		branches, err := vcsClient.Branches(ctx, app.RepositoryFullname)
+		branches, err := vcsClient.Branches(ctx, app.RepositoryFullname, sdk.VCSBranchesFilter{})
 		if err != nil {
 			return err
 		}
+		log.Info(ctx, "Purge getting branch for repo %s - count: %d", app.RepositoryFullname, len(branches))
+		defaultBranchFound := false
 		for _, b := range branches {
 			branchesMap[b.DisplayID] = struct{}{}
+			if b.Default {
+				log.Info(ctx, "Purge getting default branch for repo %s - %s", app.RepositoryFullname, b.DisplayID)
+				defaultBranchFound = true
+			}
+		}
+
+		if !defaultBranchFound {
+			log.Warn(ctx, "Purge getting default branch for repo %s - not found", app.RepositoryFullname)
 		}
 	}
 
@@ -102,7 +129,7 @@ func ApplyRetentionPolicyOnWorkflow(ctx context.Context, store cache.Store, db *
 	limit := 50
 	offset := 0
 	for {
-		wfRuns, _, _, count, err := workflow.LoadRunsSummaries(db, wf.ProjectKey, wf.Name, offset, limit, nil)
+		wfRuns, _, _, count, err := workflow.LoadRunsSummaries(ctx, db, wf.ProjectKey, wf.Name, offset, limit, nil)
 		if err != nil {
 			return err
 		}
@@ -141,20 +168,31 @@ func applyRetentionPolicyOnRun(ctx context.Context, db *gorp.DbMap, wf sdk.Workf
 		}
 		return false, nil
 	}
-	luacheck, err := luascript.NewCheck()
+
+	luaCheck, err := luascript.NewCheck()
 	if err != nil {
 		return true, sdk.WithStack(err)
 	}
 
-	if err := purgeComputeVariables(ctx, luacheck, run, branchesMap, app, vcsClient); err != nil {
+	if err := purgeComputeVariables(ctx, luaCheck, run, branchesMap, app, vcsClient); err != nil {
 		return true, err
 	}
 
-	if err := luacheck.Perform(wf.RetentionPolicy); err != nil {
-		return true, sdk.NewErrorFrom(sdk.ErrWrongRequest, "%v", err)
+	retentionPolicy := defaultRunRetentionPolicy
+	if wf.RetentionPolicy != "" {
+		retentionPolicy = wf.RetentionPolicy
 	}
 
-	if luacheck.Result {
+	// Enabling strict checks on variables to prevent errors on rule definition
+	if err := luaCheck.EnableStrict(); err != nil {
+		return true, sdk.WithStack(err)
+	}
+
+	if err := luaCheck.Perform(retentionPolicy); err != nil {
+		return true, sdk.NewErrorFrom(sdk.ErrWrongRequest, "unable to apply retention policy on workflow %s/%s: %v", wf.ProjectKey, wf.Name, err)
+	}
+
+	if luaCheck.Result {
 		return true, nil
 	}
 	if !opts.DryRun {
@@ -209,14 +247,17 @@ func purgeComputeVariables(ctx context.Context, luaCheck *luascript.Check, run s
 			vars[RunChangeAbandoned] = strconv.FormatBool(ch.Closed)
 			varsFloats[RunChangeDayBefore] = math.Floor(time.Now().Sub(ch.Updated).Hours())
 		}
-
 	}
 
 	// If we have a branch in payload, check if it exists on repository branches list
-	if b, has := vars["git.branch"]; has {
-		_, exist := branchesMap[b]
-		vars[RunGitBranchExist] = strconv.FormatBool(exist)
+	b, has := vars["git.branch"]
+	var exist bool
+	if has {
+		_, exist = branchesMap[b]
 	}
+	vars[RunHasGitBranch] = strconv.FormatBool(has)
+	vars[RunGitBranchExist] = strconv.FormatBool(exist)
+
 	vars[RunStatus] = run.Status
 
 	varsFloats[RunDaysBefore] = math.Floor(time.Now().Sub(run.LastModified).Hours() / 24)

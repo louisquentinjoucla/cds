@@ -4,11 +4,12 @@ import (
 	"context"
 	"sync"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -26,9 +27,9 @@ type ImportOptions struct {
 }
 
 // Parse parse an exportentities.workflow and return the parsed workflow
-func Parse(ctx context.Context, proj sdk.Project, ew exportentities.Workflow) (*sdk.Workflow, error) {
+func Parse(ctx context.Context, proj sdk.Project, oldW *sdk.Workflow, ew exportentities.Workflow) (*sdk.Workflow, error) {
 	log.Info(ctx, "Parse>> Parse workflow %s in project %s", ew.GetName(), proj.Key)
-	log.Debug("Parse>> Workflow: %+v", ew)
+	log.Debug(ctx, "Parse>> Workflow: %+v", ew)
 
 	//Parse workflow
 	w, errW := exportentities.ParseWorkflow(ew)
@@ -38,11 +39,17 @@ func Parse(ctx context.Context, proj sdk.Project, ew exportentities.Workflow) (*
 	w.ProjectID = proj.ID
 	w.ProjectKey = proj.Key
 
-	// Get permission from project if needed
-	if len(w.Groups) == 0 {
+	// Get permission from old workflow if needed
+	if oldW != nil && len(w.Groups) == 0 {
+		w.Groups = make([]sdk.GroupPermission, 0, len(oldW.Groups))
+		for _, g := range oldW.Groups {
+			perm := sdk.GroupPermission{Group: sdk.Group{Name: g.Group.Name}, Permission: g.Permission}
+			w.Groups = append(w.Groups, perm)
+		}
+	} else if len(w.Groups) == 0 {
 		w.Groups = make([]sdk.GroupPermission, 0, len(proj.ProjectGroups))
-		for _, gp := range proj.ProjectGroups {
-			perm := sdk.GroupPermission{Group: sdk.Group{Name: gp.Group.Name}, Permission: gp.Permission}
+		for _, g := range proj.ProjectGroups {
+			perm := sdk.GroupPermission{Group: sdk.Group{Name: g.Group.Name}, Permission: g.Permission}
 			w.Groups = append(w.Groups, perm)
 		}
 	}
@@ -57,7 +64,7 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 	log.Info(ctx, "ParseAndImport>> Import workflow %s in project %s (force=%v)", ew.GetName(), proj.Key, opts.Force)
 
 	//Parse workflow
-	w, err := Parse(ctx, proj, ew)
+	w, err := Parse(ctx, proj, oldW, ew)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -120,7 +127,7 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 						)
 						// get only non cofigurable stuff
 						currentRepoWebHook = h
-						log.Debug("workflow.ParseAndImport> keeping the old repository web hook: %+v (%+v)", h, oldRepoWebHook)
+						log.Debug(ctx, "workflow.ParseAndImport> keeping the old repository web hook: %+v (%+v)", h, oldRepoWebHook)
 						break
 					}
 				}
@@ -161,8 +168,7 @@ func ParseAndImport(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 					hasARepoWebHook = true
 					break
 				}
-				if h.HookModelName == newRepoWebHook.HookModelName &&
-					h.ConfigValueContainsEventsDefault() {
+				if h.HookModelName == newRepoWebHook.HookModelName {
 					hasARepoWebHook = true
 					break
 				}

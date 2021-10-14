@@ -71,9 +71,7 @@ export class WorkflowRun {
         wr.last_execution = new Date(event.payload['LastExecution'] * 1000).toString();
         wr.last_modified = new Date(event.payload['LastModified'] * 1000).toString();
         wr.last_modified_nano = event.payload['LastModifiedNano'];
-        wr.tags = event.payload['Tags'].map(t => {
-            return { tag: t.Tag, value: t.Value }
-        });
+        wr.tags = event.payload['Tags'].map(t => ({ tag: t.Tag, value: t.Value }));
         return wr;
     }
 
@@ -129,9 +127,53 @@ export class WorkflowNodeRun implements WithKey {
     callback: WorkflowNodeOutgoingHookRunCallback;
     static_files: Array<WorkflowNodeRunStaticFiles>;
 
+    // ui data
+    results: Array<WorkflowRunResult>;
+
     key(): string {
         return `${this.id}-${this.num}.${this.subnumber}`;
     }
+}
+
+export class WorkflowRunResult {
+    id: string;
+    created: string;
+    workflow_run_id: number;
+    workflow_node_run_id: number;
+    workflow_run_job_id: number;
+    sub_num: number;
+    type: string;
+    data: any;
+}
+
+export class UIArtifact {
+    name: string;
+    md5: string;
+    size: number;
+    link: string;
+    type: string;
+}
+
+
+export class WorkflowRunResultArtifact {
+    name: string
+    size: number;
+    md5: string;
+    cdn_hash: string;
+}
+
+export class WorkflowRunResultArtifactManager {
+    name: string;
+    size: number;
+    md5: string;
+    path: string;
+    repository_name: string;
+    repository_type: string;
+}
+
+export class WorkflowRunResultStaticFile {
+    name: string;
+    remote_url: string;
 }
 
 export class WorkflowNodeOutgoingHookRunCallback {
@@ -181,12 +223,17 @@ export class WorkflowNodeJobRun {
     start: string;
     done: string;
     model: string;
-    bookedby: Hatchery;
+    bookedby: BookedBy;
     spawninfos: Array<SpawnInfo>;
 
     // UI infos for queue
     duration: string;
     updating: boolean;
+}
+
+export class BookedBy {
+    id: number;
+    name: string;
 }
 
 // WorkflowNodeRunHookEvent is an instanc of event received on a hook

@@ -11,6 +11,7 @@ import { WorkflowRunService } from 'app/service/workflow/run/workflow.run.servic
 import { WorkflowService } from 'app/service/workflow/workflow.service';
 import * as actionAsCode from 'app/store/ascode.action';
 import cloneDeep from 'lodash-es/cloneDeep';
+import { forkJoin } from 'rxjs';
 import { finalize, first, tap } from 'rxjs/operators';
 import * as ActionProject from './project.action';
 import * as actionWorkflow from './workflow.action';
@@ -263,7 +264,7 @@ export class WorkflowState {
                 hook: null,
                 editModal: false
             });
-            return
+            return;
         }
         ctx.setState({
             ...state,
@@ -421,7 +422,7 @@ export class WorkflowState {
     @Action(actionWorkflow.DeleteWorkflow)
     delete(ctx: StateContext<WorkflowStateModel>, action: actionWorkflow.DeleteWorkflow) {
         return this._http.delete(
-            `/project/${action.payload.projectKey}/workflows/${action.payload.workflowName}`
+            `/project/${action.payload.projectKey}/workflows/${action.payload.workflowName}?withDependencies=${action.payload.withDependencies}`
         ).pipe(tap(() => {
             const state = ctx.getState();
             ctx.setState({
@@ -540,7 +541,7 @@ export class WorkflowState {
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -577,7 +578,7 @@ export class WorkflowState {
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -608,13 +609,11 @@ export class WorkflowState {
         if (state.workflow && state.editMode) {
             const editWorkflow: Workflow = {
                 ...state.editWorkflow,
-                notifications: state.editWorkflow.notifications.filter(no => {
-                    return action.payload.notification.id !== no.id;
-                })
+                notifications: state.editWorkflow.notifications.filter(no => action.payload.notification.id !== no.id)
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -622,9 +621,7 @@ export class WorkflowState {
 
         const workflow: Workflow = {
             ...state.workflow,
-            notifications: state.workflow.notifications.filter(no => {
-                return action.payload.notification.id !== no.id;
-            })
+            notifications: state.workflow.notifications.filter(no => action.payload.notification.id !== no.id)
         };
 
         return ctx.dispatch(new actionWorkflow.UpdateWorkflow({
@@ -635,18 +632,18 @@ export class WorkflowState {
     }
 
     //  ------- Event integration --------- //
-    @Action(actionWorkflow.UpdateEventIntegrationsWorkflow)
-    addEventIntegration(ctx: StateContext<WorkflowStateModel>, action: actionWorkflow.UpdateEventIntegrationsWorkflow) {
+    @Action(actionWorkflow.UpdateIntegrationsWorkflow)
+    addEventIntegration(ctx: StateContext<WorkflowStateModel>, action: actionWorkflow.UpdateIntegrationsWorkflow) {
         const state = ctx.getState();
         // As code Update Cache
         if (state.workflow && state.editMode) {
             const editWorkflow: Workflow = {
                 ...state.editWorkflow,
-                event_integrations: action.payload.eventIntegrations
+                integrations: action.payload.integrations
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -654,7 +651,7 @@ export class WorkflowState {
 
         const workflow: Workflow = {
             ...state.workflow,
-            event_integrations: action.payload.eventIntegrations
+            integrations: action.payload.integrations
         };
 
         return ctx.dispatch(new actionWorkflow.UpdateWorkflow({
@@ -664,18 +661,19 @@ export class WorkflowState {
         }));
     }
 
-    @Action(actionWorkflow.DeleteEventIntegrationWorkflow)
-    deleteEventIntegration(ctx: StateContext<WorkflowStateModel>, action: actionWorkflow.DeleteEventIntegrationWorkflow) {
+    @Action(actionWorkflow.DeleteIntegrationWorkflow)
+    deleteEventIntegration(ctx: StateContext<WorkflowStateModel>, action: actionWorkflow.DeleteIntegrationWorkflow) {
         const state = ctx.getState();
         // As code Update Cache
         if (state.workflow && state.editMode) {
             const editWorkflow: Workflow = {
                 ...state.editWorkflow,
-                event_integrations: state.editWorkflow.event_integrations.filter((integ) => integ.id !== action.payload.integrationId)
+                integrations: state.editWorkflow.integrations
+                    .filter((integ) => integ.project_integration.id !== action.payload.projectIntegrationID)
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -684,11 +682,12 @@ export class WorkflowState {
 
         return this._http.delete<null>(
             `/project/${action.payload.projectKey}/workflows/` +
-            `${action.payload.workflowName}/eventsintegration/${action.payload.integrationId}`
+            `${action.payload.workflowName}/integration/${action.payload.projectIntegrationID}`
         ).pipe(tap(() => {
             const workflow: Workflow = {
                 ...state.workflow,
-                event_integrations: state.workflow.event_integrations.filter((integ) => integ.id !== action.payload.integrationId)
+                integrations: state.workflow.integrations
+                    .filter((integ) => integ.project_integration.id !== action.payload.projectIntegrationID)
             };
 
             return ctx.dispatch(new actionWorkflow.UpdateWorkflow({
@@ -762,7 +761,7 @@ export class WorkflowState {
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -818,7 +817,7 @@ export class WorkflowState {
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -864,7 +863,7 @@ export class WorkflowState {
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -910,7 +909,7 @@ export class WorkflowState {
             };
             ctx.setState({
                 ...state,
-                editWorkflow: editWorkflow,
+                editWorkflow,
                 editModeWorkflowChanged: true
             });
             return;
@@ -963,7 +962,7 @@ export class WorkflowState {
             const state = ctx.getState();
             ctx.setState({
                 ...state,
-                workflow: workflow,
+                workflow,
             });
             return ctx.dispatch(new actionWorkflow.FetchWorkflowAudits({
                 projectKey: action.payload.projectKey,
@@ -1057,11 +1056,11 @@ export class WorkflowState {
                     ...state,
                     projectKey: action.payload.projectKey,
                     workflow: wf,
-                    editWorkflow: editWorkflow,
+                    editWorkflow,
                     workflowRun: null,
                     workflowNodeRun: null,
                     canEdit: state.workflowRun ? false : canEdit,
-                    editMode: editMode
+                    editMode
                 });
             }));
     }
@@ -1102,8 +1101,8 @@ export class WorkflowState {
         }
         ctx.setState({
             ...state,
-            node: node,
-            hook: hook
+            node,
+            hook
         });
     }
 
@@ -1142,7 +1141,7 @@ export class WorkflowState {
                 tap((wr: WorkflowRun) => {
                     const stateRun = ctx.getState();
                     let routeParams = this._routerService.getRouteSnapshotParams({}, this._router.routerState.snapshot.root);
-                    if (wr.project_id !== stateRun.workflow.project_id || wr.workflow_id !== stateRun.workflow.id) {
+                    if (!stateRun.workflow || wr.project_id !== stateRun.workflow.project_id || wr.workflow_id !== stateRun.workflow.id) {
                         return;
                     }
                     if (routeParams['number'] && routeParams['number'] === wr.num.toString()) {
@@ -1212,16 +1211,27 @@ export class WorkflowState {
             ...state,
             loadingWorkflowNodeRun: true,
         });
-        return this._workflowRunService
-            .getWorkflowNodeRun(action.payload.projectKey, action.payload.workflowName,
-                action.payload.num, action.payload.nodeRunID)
-            .pipe(first(), finalize(() => {
+
+        return forkJoin([
+            this._workflowRunService
+                .getWorkflowNodeRun(action.payload.projectKey, action.payload.workflowName,
+                    action.payload.num, action.payload.nodeRunID),
+            this._workflowRunService
+                .getWorkflowNodeRunResults(action.payload.projectKey, action.payload.workflowName,
+                    action.payload.num, action.payload.nodeRunID)
+        ]).pipe(
+            first(),
+            finalize(() => {
                 const stateFin = ctx.getState();
                 ctx.setState({
                     ...stateFin,
                     loadingWorkflowNodeRun: false
                 });
-            }), tap((wnr: WorkflowNodeRun) => {
+            }),
+            tap(partial => {
+                let wnr = partial[0];
+                let runResults = partial[1];
+
                 let routeParams = this._routerService.getRouteSnapshotParams({}, this._router.routerState.snapshot.root);
                 if (action.payload.projectKey !== routeParams['key'] || action.payload.workflowName !== routeParams['workflowName']) {
                     return;
@@ -1233,18 +1243,20 @@ export class WorkflowState {
                     return;
                 }
 
+                wnr.results = runResults;
                 const stateNR = ctx.getState();
                 let node = Workflow.getNodeByID(wnr.workflow_node_id, stateNR.workflowRun.workflow);
                 ctx.setState({
                     ...stateNR,
                     projectKey: action.payload.projectKey,
                     workflowNodeRun: wnr,
-                    node: node,
+                    node,
                 });
                 if (stateNR.workflowNodeJobRun) {
                     ctx.dispatch(new SelectWorkflowNodeRunJob({ jobID: stateNR.workflowNodeJobRun.job.pipeline_action_id }));
                 }
-            }));
+            })
+        );
     }
 
     @Action(actionWorkflow.CleanWorkflowRun)
@@ -1278,7 +1290,7 @@ export class WorkflowState {
                 ...state,
                 listRuns: state.listRuns.concat(WorkflowRun.Summary(action.payload.workflowRun)).sort((a, b) => b.num - a.num)
             });
-            return
+            return;
 
         }
         if (state.listRuns[index].status === action.payload.workflowRun.status
@@ -1289,8 +1301,8 @@ export class WorkflowState {
         ctx.setState({
             ...state,
             listRuns: [...state.listRuns.slice(0, index),
-                WorkflowRun.Summary(action.payload.workflowRun),
-                ...state.listRuns.slice(index + 1)]
+            WorkflowRun.Summary(action.payload.workflowRun),
+            ...state.listRuns.slice(index + 1)]
         });
     }
 
@@ -1370,8 +1382,8 @@ export class WorkflowState {
         ctx.setState({
             ...state,
             editModeWorkflowChanged: false,
-            editMode: editMode,
-            editWorkflow: editWorkflow
+            editMode,
+            editWorkflow
         });
     }
 

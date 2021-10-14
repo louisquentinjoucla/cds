@@ -50,7 +50,7 @@ func (h *WorkflowRunHeaders) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, h), "cannot unmarshal WorkflowRunHeaders")
+	return WrapError(JSONUnmarshal(source, h), "cannot unmarshal WorkflowRunHeaders")
 }
 
 //WorkflowRun is an execution instance of a run
@@ -106,7 +106,7 @@ func (a *WorkflowRunInfos) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, a), "cannot unmarshal WorkflowRunInfos")
+	return WrapError(JSONUnmarshal(source, a), "cannot unmarshal WorkflowRunInfos")
 }
 
 type WorkflowNodeTriggerRuns map[int64]WorkflowNodeTriggerRun
@@ -124,15 +124,7 @@ func (a *WorkflowNodeTriggerRuns) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, a), "cannot unmarshal WorkflowNodeTriggerRuns")
-}
-
-type WorkflowNodeRunIdentifiers struct {
-	WorkflowRunID int64  `db:"id"`
-	WorkflowID    int64  `db:"workflow_id"`
-	WorkflowName  string `db:"name"`
-	RunNumber     int64  `db:"num"`
-	NodeRunID     int64  `db:"node_run_id"`
+	return WrapError(JSONUnmarshal(source, a), "cannot unmarshal WorkflowNodeTriggerRuns")
 }
 
 type WorkflowRunSecret struct {
@@ -176,7 +168,7 @@ func (a *WorkflowRunPostHandlerOption) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, a), "cannot unmarshal WorkflowRunPostHandlerOption")
+	return WrapError(JSONUnmarshal(source, a), "cannot unmarshal WorkflowRunPostHandlerOption")
 }
 
 //WorkflowRunNumber contains a workflow run number
@@ -192,17 +184,17 @@ type WorkflowRunVersion struct {
 func (w WorkflowRunVersion) IsValid() error {
 	_, err := semver.ParseTolerant(w.Value)
 	if err != nil {
-		return NewError(ErrWrongRequest, fmt.Errorf("value '%s' is not semver compatible: %v", w.Value, err))
+		return NewError(ErrWrongRequest, fmt.Errorf("value %q is not semver compatible: %v", w.Value, err))
 	}
 	return nil
 }
 
 // Translate translates messages in WorkflowNodeRun
-func (r *WorkflowRun) Translate(lang string) {
+func (r *WorkflowRun) Translate() {
 	for ki, info := range r.Infos {
 		if _, ok := Messages[info.Message.ID]; ok {
 			m := NewMessage(Messages[info.Message.ID], info.Message.Args...)
-			r.Infos[ki].UserMessage = m.String(lang)
+			r.Infos[ki].UserMessage = m.String()
 		}
 	}
 }
@@ -372,6 +364,19 @@ type WorkflowNodeRun struct {
 	VCSReport              string                               `json:"vcs_report,omitempty"`
 }
 
+func (nodeRun *WorkflowNodeRun) GetStageIndex(job *WorkflowNodeJobRun) int {
+	var stageIndex = -1
+	for i := range nodeRun.Stages {
+		s := &nodeRun.Stages[i]
+		for _, j := range s.Jobs {
+			if j.Action.ID == job.Job.Job.Action.ID {
+				stageIndex = i
+			}
+		}
+	}
+	return stageIndex
+}
+
 // WorkflowNodeOutgoingHookRunCallback is the callback coming from hooks uservice avec an outgoing hook execution
 type WorkflowNodeOutgoingHookRunCallback struct {
 	NodeHookID        int64     `json:"workflow_node_outgoing_hook_id"`
@@ -428,10 +433,10 @@ type WorkflowNodeTriggerRun struct {
 }
 
 // Translate translates messages in WorkflowNodeRun
-func (nr *WorkflowNodeRun) Translate(lang string) {
+func (nr *WorkflowNodeRun) Translate() {
 	for ks := range nr.Stages {
 		for kj := range nr.Stages[ks].RunJobs {
-			nr.Stages[ks].RunJobs[kj].Translate(lang)
+			nr.Stages[ks].RunJobs[kj].Translate()
 		}
 	}
 }
@@ -477,27 +482,33 @@ func (w WorkflowNodeRunArtifact) Equal(c WorkflowNodeRunArtifact) bool {
 
 //WorkflowNodeJobRun represents an job to be run
 type WorkflowNodeJobRun struct {
-	ProjectID                 int64              `json:"project_id"`
-	ID                        int64              `json:"id"`
-	WorkflowNodeRunID         int64              `json:"workflow_node_run_id,omitempty"`
-	Job                       ExecutedJob        `json:"job"`
-	Parameters                []Parameter        `json:"parameters,omitempty"`
-	Status                    string             `json:"status"`
-	Retry                     int                `json:"retry"`
-	Queued                    time.Time          `json:"queued,omitempty" cli:"queued"`
-	QueuedSeconds             int64              `json:"queued_seconds,omitempty"`
-	Start                     time.Time          `json:"start,omitempty"`
-	Done                      time.Time          `json:"done,omitempty"`
-	Model                     string             `json:"model,omitempty"`
-	ModelType                 string             `json:"model_type,omitempty"`
-	BookedBy                  Service            `json:"bookedby,omitempty"`
-	SpawnInfos                []SpawnInfo        `json:"spawninfos"`
-	ExecGroups                Groups             `json:"exec_groups"`
-	IntegrationPluginBinaries []GRPCPluginBinary `json:"integration_plugin_binaries,omitempty"`
-	Header                    WorkflowRunHeaders `json:"header,omitempty"`
-	ContainsService           bool               `json:"contains_service,omitempty"`
-	HatcheryName              string             `json:"hatchery_name,omitempty"`
-	WorkerName                string             `json:"worker_name,omitempty"`
+	ProjectID          int64              `json:"project_id"`
+	ID                 int64              `json:"id"`
+	WorkflowNodeRunID  int64              `json:"workflow_node_run_id,omitempty"`
+	Job                ExecutedJob        `json:"job"`
+	Parameters         []Parameter        `json:"parameters,omitempty"`
+	Status             string             `json:"status"`
+	Retry              int                `json:"retry"`
+	Queued             time.Time          `json:"queued,omitempty" cli:"queued"`
+	QueuedSeconds      int64              `json:"queued_seconds,omitempty"`
+	Start              time.Time          `json:"start,omitempty"`
+	Done               time.Time          `json:"done,omitempty"`
+	Model              string             `json:"model,omitempty"`
+	ModelType          string             `json:"model_type,omitempty"`
+	Region             *string            `json:"region,omitempty"`
+	BookedBy           BookedBy           `json:"bookedby,omitempty"`
+	SpawnInfos         []SpawnInfo        `json:"spawninfos"`
+	ExecGroups         Groups             `json:"exec_groups"`
+	Header             WorkflowRunHeaders `json:"header,omitempty"`
+	ContainsService    bool               `json:"contains_service,omitempty"`
+	HatcheryName       string             `json:"hatchery_name,omitempty"`
+	WorkerName         string             `json:"worker_name,omitempty"`
+	IntegrationPlugins []GRPCPlugin       `json:"integration_plugin,omitempty"`
+}
+
+type BookedBy struct {
+	Name string `json:"name,omitempty"`
+	ID   int64  `json:"id,omitempty"`
 }
 
 // WorkflowNodeJobRunSummary is a light representation of WorkflowNodeJobRun for CDS event
@@ -550,13 +561,27 @@ type WorkflowNodeJobRunBooked struct {
 }
 
 // Translate translates messages in WorkflowNodeJobRun
-func (wnjr *WorkflowNodeJobRun) Translate(lang string) {
+func (wnjr *WorkflowNodeJobRun) Translate() {
 	for ki, info := range wnjr.SpawnInfos {
 		if _, ok := Messages[info.Message.ID]; ok {
 			m := NewMessage(Messages[info.Message.ID], info.Message.Args...)
-			wnjr.SpawnInfos[ki].UserMessage = m.String(lang)
+			wnjr.SpawnInfos[ki].UserMessage = m.String()
 		}
 	}
+}
+
+func (wnjr *WorkflowNodeJobRun) GetPuginBinary(pluginType string, os string, arch string) *GRPCPluginBinary {
+	for _, p := range wnjr.IntegrationPlugins {
+		if p.Type != pluginType {
+			continue
+		}
+		for _, b := range p.Binaries {
+			if b.OS == os && b.Arch == arch {
+				return &b
+			}
+		}
+	}
+	return nil
 }
 
 //WorkflowNodeRunHookEvent is an instanc of event received on a hook

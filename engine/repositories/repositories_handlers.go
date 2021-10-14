@@ -4,17 +4,17 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 )
 
 func muxVar(r *http.Request, s string) string {
@@ -39,9 +39,9 @@ func (s *Service) postOperationHandler() service.Handler {
 			}
 		}
 
-		requestID := ctx.Value(log.ContextLoggingRequestIDKey)
+		requestID := cdslog.ContextValue(ctx, cdslog.RequestID)
 		log.Info(ctx, "setting request_id:%s on operation:%s", requestID, op.UUID)
-		op.RequestID, _ = requestID.(string)
+		op.RequestID = requestID
 
 		uuid := sdk.UUID()
 		op.UUID = uuid
@@ -104,7 +104,7 @@ func readOperationMultipart(r *http.Request) (*sdk.Operation, map[string][]byte,
 		file.Close()
 	}
 
-	if err := json.Unmarshal([]byte(r.FormValue("dataJSON")), &op); err != nil {
+	if err := sdk.JSONUnmarshal([]byte(r.FormValue("dataJSON")), &op); err != nil {
 		return nil, nil, sdk.WithStack(err)
 	}
 	return op, files, nil

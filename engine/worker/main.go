@@ -1,5 +1,9 @@
 package main
 
+import (
+	"os"
+)
+
 func main() {
 	cmd := cmdMain()
 	cmd.AddCommand(cmdExport)
@@ -17,9 +21,12 @@ func main() {
 	cmd.AddCommand(cmdKey())
 	cmd.AddCommand(cmdJunitParser())
 	cmd.AddCommand(cmdCDSVersionSet())
+	cmd.AddCommand(cmdRunResult())
 
 	// last command: doc, this command is hidden
 	cmd.AddCommand(cmdDoc(cmd))
 
-	cmd.Execute()
+	if err := cmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }

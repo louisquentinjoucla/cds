@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -28,8 +27,9 @@ import (
 	"github.com/ovh/cds/engine/ui"
 	"github.com/ovh/cds/engine/vcs"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	cdslog "github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
+	"github.com/rockbears/log"
 
 	"github.com/spf13/cobra"
 )
@@ -232,7 +232,7 @@ See $ engine config command for more details.
 				names = append(names, conf.Repositories.Name)
 				types = append(types, sdk.TypeRepositories)
 
-			case "elasticsearch":
+			case sdk.TypeElasticsearch:
 				if conf.ElasticSearch == nil {
 					sdk.Exit("Unable to start: missing service %s configuration", a)
 				}
@@ -257,8 +257,9 @@ See $ engine config command for more details.
 		}(ctx)
 
 		//Initialize logs
-		logConf := log.Conf{
+		logConf := cdslog.Conf{
 			Level:                      conf.Log.Level,
+			Format:                     conf.Log.Format,
 			GraylogProtocol:            conf.Log.Graylog.Protocol,
 			GraylogHost:                conf.Log.Graylog.Host,
 			GraylogPort:                fmt.Sprintf("%d", conf.Log.Graylog.Port),
@@ -270,7 +271,7 @@ See $ engine config command for more details.
 			GraylogFieldCDSServiceName: strings.Join(names, "_"),
 			GraylogFieldCDSServiceType: strings.Join(types, "_"),
 		}
-		log.Initialize(ctx, &logConf)
+		cdslog.Initialize(ctx, &logConf)
 
 		// Sort the slice of services we have to start to be sure to start the API au first
 		sort.Slice(serviceConfs, func(i, j int) bool {
@@ -281,6 +282,8 @@ See $ engine config command for more details.
 		//Configure the services
 		for i := range serviceConfs {
 			s := serviceConfs[i]
+
+			ctx := context.WithValue(ctx, cdslog.Service, s.service.Name())
 			if err := s.service.ApplyConfiguration(s.cfg); err != nil {
 				sdk.Exit("Unable to init service %s: %v", s.arg, err)
 			}
@@ -293,14 +296,17 @@ See $ engine config command for more details.
 				}
 			}
 
-			ctx, err := telemetry.Init(ctx, conf.Telemetry, s.service)
+			var err error
+			ctx, err = telemetry.Init(ctx, conf.Telemetry, s.service)
 			if err != nil {
 				sdk.Exit("Unable to start tracing exporter: %v", err)
 			}
 
 			wg.Add(1)
 			go func(srv serviceConf) {
-				start(ctx, srv.service, srv.cfg, srv.arg)
+				if err := start(ctx, srv.service, srv.arg, srv.cfg); err != nil {
+					log.Error(ctx, "%s> service has been stopped: %+v", srv.arg, err)
+				}
 				wg.Done()
 			}(s)
 
@@ -310,11 +316,8 @@ See $ engine config command for more details.
 			}
 		}
 
+		// Wait for all services to stop
 		wg.Wait()
-
-		//Wait for the end
-		<-ctx.Done()
-
 	},
 }
 
@@ -322,60 +325,54 @@ func unregisterServices(ctx context.Context, serviceConfs []serviceConf) {
 	// unregister all services
 	for i := range serviceConfs {
 		s := serviceConfs[i]
-		fmt.Printf("Unregister (%v)\n", s.service.Name())
+		fmt.Printf("%s> Unregister\n", s.service.Name())
 		if err := s.service.Unregister(ctx); err != nil {
 			log.Error(ctx, "%s> Unable to unregister: %v", s.service.Name(), err)
 		}
 	}
 
 	if ctx.Err() != nil {
-		fmt.Printf("Exiting (%v)\n", ctx.Err())
+		fmt.Printf("Exiting: %+v\n", ctx.Err())
 	}
 }
 
-func start(c context.Context, s service.Service, cfg interface{}, serviceName string) {
-	if err := serve(c, s, serviceName, cfg); err != nil {
-		fmt.Printf("Service has been stopped: %s %+v", serviceName, err)
-	}
-}
-
-func serve(c context.Context, s service.Service, serviceName string, cfg interface{}) error {
+func start(c context.Context, s service.Service, serviceName string, cfg interface{}) error {
 	ctx, cancel := context.WithCancel(c)
 	defer cancel()
 
-	x, err := s.Init(cfg)
+	ctx = context.WithValue(ctx, cdslog.Service, serviceName)
+	srvConfig, err := s.Init(cfg)
 	if err != nil {
 		return err
 	}
 
-	// first signin
-	if err := s.Start(ctx, x); err != nil {
-		log.Error(ctx, "%s> Unable to start service: %v", serviceName, err)
-		return err
+	// Signin and register to CDS api
+	if err := s.Signin(c, srvConfig); err != nil {
+		return sdk.WrapError(err, "unable to signin: %s", serviceName)
 	}
+	log.Info(ctx, "%s> Service signed in", serviceName)
 
-	var srvConfig sdk.ServiceConfig
-	b, _ := json.Marshal(cfg)
-	json.Unmarshal(b, &srvConfig) // nolint
-
-	// then register
-	if err := s.Register(c, srvConfig); err != nil {
-		log.Error(ctx, "%s> Unable to register: %v", serviceName, err)
-		return err
+	// Signin and register to CDS api
+	if err := s.Register(c, cfg); err != nil {
+		return sdk.WrapError(err, "unable to register: %s", serviceName)
 	}
 	log.Info(ctx, "%s> Service registered", serviceName)
 
-	// finally start the heartbeat goroutine
+	if err := s.Start(ctx); err != nil {
+		return sdk.WrapError(err, "unable to start service: %s", serviceName)
+	}
+
 	go func() {
-		if err := s.Heartbeat(ctx, s.Status); err != nil {
-			log.Error(ctx, "%v", err)
+		if err := s.Serve(ctx); err != nil {
+			log.Error(ctx, "%s> Error serve: %+v", serviceName, err)
 			cancel()
 		}
 	}()
 
+	// finally start the heartbeat goroutine
 	go func() {
-		if err := s.Serve(ctx); err != nil {
-			log.Error(ctx, "%s> Serve: %+v", serviceName, err)
+		if err := s.Heartbeat(ctx, s.Status); err != nil {
+			log.Error(ctx, "%s> Error heartbeat: %+v", serviceName, err)
 			cancel()
 		}
 	}()

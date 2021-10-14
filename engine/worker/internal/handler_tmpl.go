@@ -2,19 +2,23 @@ package internal
 
 import (
 	"context"
-	"encoding/json"
 	"io/ioutil"
 	"net/http"
 	"os"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/interpolate"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func tmplHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := workerruntime.SetJobID(ctx, wk.currentJob.wJob.ID)
+		ctx = workerruntime.SetStepOrder(ctx, wk.currentJob.currentStepIndex)
+		ctx = workerruntime.SetStepName(ctx, wk.currentJob.currentStepName)
+
 		// Get body
 		data, errRead := ioutil.ReadAll(r.Body)
 		if errRead != nil {
@@ -24,7 +28,7 @@ func tmplHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 		}
 
 		var a workerruntime.TmplPath
-		if err := json.Unmarshal(data, &a); err != nil {
+		if err := sdk.JSONUnmarshal(data, &a); err != nil {
 			newError := sdk.NewError(sdk.ErrWrongRequest, err)
 			writeError(w, r, newError)
 			return

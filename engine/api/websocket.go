@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -11,12 +10,12 @@ import (
 	"time"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/permission"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/engine/websocket"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -82,10 +81,10 @@ func (c *websocketClientData) updateEventFilters(ctx context.Context, db gorp.Sq
 	var fs []sdk.WebsocketFilter
 
 	var f sdk.WebsocketFilter
-	if err := json.Unmarshal(msg, &f); err == nil {
+	if err := sdk.JSONUnmarshal(msg, &f); err == nil {
 		fs = []sdk.WebsocketFilter{f}
 	} else {
-		if err := json.Unmarshal(msg, &fs); err != nil {
+		if err := sdk.JSONUnmarshal(msg, &fs); err != nil {
 			return sdk.WrapError(err, "cannot unmarshal websocket input message")
 		}
 	}
@@ -210,15 +209,16 @@ func (a *API) initWebsocket(pubSubKey string) error {
 		telemetry.Record(a.Router.Background, WebSocketEvents, 1)
 
 		var e sdk.Event
-		if err := json.Unmarshal(m, &e); err != nil {
+		if err := sdk.JSONUnmarshal(m, &e); err != nil {
 			err = sdk.WrapError(err, "cannot parse event from WS broker")
-			log.WarningWithFields(a.Router.Background, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+			ctx := sdk.ContextWithStacktrace(context.TODO(), err)
+			log.Warn(ctx, err.Error())
 			return
 		}
 
 		a.websocketOnMessage(e)
 	})
-	a.WSBroker.Init(a.Router.Background, a.GoRoutines, pubSub, a.PanicDump())
+	a.WSBroker.Init(a.Router.Background, a.GoRoutines, pubSub)
 	return nil
 }
 
@@ -238,7 +238,8 @@ func (a *API) getWebsocketHandler() service.Handler {
 		wsClient.OnMessage(func(m []byte) {
 			if err := wsClientData.updateEventFilters(ctx, a.mustDBWithCtx(ctx), m); err != nil {
 				err = sdk.WithStack(err)
-				log.WarningWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+				ctx = sdk.ContextWithStacktrace(ctx, err)
+				log.Warn(ctx, err.Error())
 				wsClient.Send(sdk.WebsocketEvent{Status: "KO", Error: sdk.Cause(err).Error()})
 			}
 		})
@@ -272,7 +273,9 @@ func (a *API) websocketOnMessage(e sdk.Event) {
 				return
 			}
 
+			c.mutex.Lock()
 			found, needCheckPermission := c.filters.HasOneKey(eventKeys...)
+			c.mutex.Unlock()
 			if !found {
 				return
 			}
@@ -280,22 +283,23 @@ func (a *API) websocketOnMessage(e sdk.Event) {
 				allowed, err := c.checkEventPermission(ctx, a.mustDBWithCtx(ctx), e)
 				if err != nil {
 					err = sdk.WrapError(err, "unable to check event permission for client %s with consumer id: %s", clientID, c.AuthConsumer.ID)
-					log.ErrorWithFields(ctx, log.Fields{"stack_trace": fmt.Sprintf("%+v", err)}, "%s", err)
+					ctx = sdk.ContextWithStacktrace(ctx, err)
+					log.Error(ctx, err.Error())
 					return
 				}
 				if !allowed {
 					return
 				}
 			}
-			log.Debug("api.websocketOnMessage> send data to client %s for user %s", clientID, c.AuthConsumer.GetUsername())
+			log.Debug(ctx, "api.websocketOnMessage> send data to client %s for user %s", clientID, c.AuthConsumer.GetUsername())
 			if err := a.WSServer.server.SendToClient(clientID, sdk.WebsocketEvent{
 				Status: "OK",
 				Event:  e,
 			}); err != nil {
-				log.Debug("websocketOnMessage> can't send to client %s it will be removed: %+v", clientID, err)
+				log.Debug(ctx, "websocketOnMessage> can't send to client %s it will be removed: %+v", clientID, err)
 				a.WSServer.RemoveClient(clientID)
 			}
-		}, a.PanicDump())
+		})
 	}
 }
 

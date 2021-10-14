@@ -188,17 +188,19 @@ export CDS_GITHUB_CLIENT_SECRET="xxxxxxxxxxx"
 
 mkdir -p tools/smtpmock
 
-curl https://raw.githubusercontent.com/ovh/cds/master/docker-compose.yml -o docker-compose.yml
+curl https://raw.githubusercontent.com/ovh/cds/{{< param "version" "master" >}}/docker-compose.yml -o docker-compose.yml
 export HOSTNAME=$(hostname)
+export CDS_DOCKER_IMAGE=ovhcom/cds-engine:{{< param "version" "latest" >}}
 
-docker pull ovhcom/cds-engine:latest
+docker pull ovhcom/cds-engine:{{< param "version" "latest" >}}
 docker-compose up --no-recreate -d cds-db cds-cache elasticsearch dockerhost
 sleep 3
 docker-compose logs| grep 'database system is ready to accept connections'
+docker-compose up --no-recreate cds-db-init
 docker-compose up --no-recreate cds-migrate
 sleep 3
 docker-compose up cds-prepare
-export CDS_EDIT_CONFIG="api.smtp.disable=true telemetry.metricsEnabled=true"
+export CDS_EDIT_CONFIG="api.smtp.disable=true"
 docker-compose up cds-edit-config
 export CDS_EDIT_CONFIG="vcs.servers.github.github.clientId=${CDS_GITHUB_CLIENT_ID} vcs.servers.github.github.clientSecret=${CDS_GITHUB_CLIENT_SECRET} "
 docker-compose up cds-edit-config
@@ -223,12 +225,12 @@ docker-compose stop cds-api
 docker-compose rm -f cds-api
 docker-compose up -d cds-api
 sleep 3
-docker-compose up -d cds-ui cds-hooks cds-elasticsearch cds-hatchery-swarm cds-vcs cds-repositories
+docker-compose up -d cds-ui cds-cdn cds-hooks cds-elasticsearch cds-hatchery-swarm cds-vcs cds-repositories
 sleep 5
 
-./cdsctl worker model import https://raw.githubusercontent.com/ovh/cds/master/contrib/worker-models/maven3-jdk10-official.yml
+./cdsctl worker model import https://raw.githubusercontent.com/ovh/cds/{{< param "version" "master" >}}/contrib/worker-models/maven3-jdk10-official.yml
 
-./cdsctl template push https://raw.githubusercontent.com/ovh/cds/master/contrib/workflow-templates/demo-workflow-hello-world/demo-workflow-hello-world.yml
+./cdsctl template push https://raw.githubusercontent.com/ovh/cds/{{< param "version" "master" >}}/contrib/workflow-templates/demo-workflow-hello-world/demo-workflow-hello-world.yml
 ./cdsctl project create DEMO FirstProject
 ./cdsctl template apply DEMO MyFirstWorkflow shared.infra/demo-workflow-hello-world --force --import-push --quiet
 ./cdsctl workflow run DEMO MyFirstWorkflow
@@ -274,7 +276,7 @@ fe2fcbee96aa        ovhcom/cds-engine:latest                              "sh -c
 f2eb7b8c4329        ovhcom/cds-engine:latest                              "sh -c '/app/cds-eng…"   35 seconds ago      Up 33 seconds (healthy)                              debian_cds-elasticsearch_1
 22dc66a1b2a2        ovhcom/cds-engine:latest                              "sh -c '/app/cds-eng…"   35 seconds ago      Up 33 seconds (healthy)                              debian_cds-hatchery-swarm_1
 958ab1703f16        ovhcom/cds-engine:latest                              "sh -c '/app/cds-eng…"   39 seconds ago      Up 39 seconds (healthy)   0.0.0.0:8081->8081/tcp     debian_cds-api_1
-9223395500ab        postgres:9.6.2                                        "docker-entrypoint.s…"   2 minutes ago       Up About a minute         5432/tcp                   debian_cds-db_1
+9223395500ab        postgres:9.6                                        "docker-entrypoint.s…"   2 minutes ago       Up About a minute         5432/tcp                   debian_cds-db_1
 c9b58ce83003        docker.elastic.co/elasticsearch/elasticsearch:6.7.2   "/usr/local/bin/dock…"   2 minutes ago       Up About a minute         9200/tcp, 9300/tcp         debian_elasticsearch_1
 08cfe15c3e2c        bobrik/socat                                          "socat TCP4-LISTEN:2…"   2 minutes ago       Up About a minute         127.0.0.1:2375->2375/tcp   debian_dockerhost_1
 fc2ac075c000        redis:alpine                                          "docker-entrypoint.s…"   2 minutes ago       Up About a minute         6379/tcp                   debian_cds-cache_1

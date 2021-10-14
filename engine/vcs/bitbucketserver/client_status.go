@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/ovh/cds/sdk/telemetry"
 )
 
 type statusData struct {
@@ -22,8 +24,11 @@ type statusData struct {
 }
 
 func (b *bitbucketClient) SetStatus(ctx context.Context, event sdk.Event) error {
+	ctx, end := telemetry.Span(ctx, "bitbucketserver.SetStatus")
+	defer end()
+
 	if b.consumer.disableStatus {
-		log.Warning(ctx, "bitbucketClient.SetStatus>  ⚠ Bitbucket statuses are disabled")
+		log.Warn(ctx, "bitbucketClient.SetStatus>  ⚠ Bitbucket statuses are disabled")
 		return nil
 	}
 
@@ -127,7 +132,7 @@ const (
 func processWorkflowNodeRunEvent(event sdk.Event, uiURL string) (statusData, error) {
 	data := statusData{}
 	var eventNR sdk.EventRunWorkflowNode
-	if err := json.Unmarshal(event.Payload, &eventNR); err != nil {
+	if err := sdk.JSONUnmarshal(event.Payload, &eventNR); err != nil {
 		return data, sdk.WrapError(err, "cannot unmarshal payload")
 	}
 	data.key = fmt.Sprintf("%s-%s-%s",

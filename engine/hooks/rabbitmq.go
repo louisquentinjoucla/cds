@@ -2,7 +2,6 @@ package hooks
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -10,10 +9,10 @@ import (
 	"time"
 
 	"github.com/fsamin/go-dump"
+	"github.com/rockbears/log"
 	"github.com/streadway/amqp"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 type rabbitMQConsumer struct {
@@ -91,7 +90,7 @@ func (s *Service) startRabbitMQHook(ctx context.Context, t *sdk.Task) error {
 }
 
 func (s *Service) doRabbitMQTaskExecution(t *sdk.TaskExecution) (*sdk.WorkflowNodeRunHookEvent, error) {
-	log.Debug("Hooks> Processing rabbitMQ %s %s", t.UUID, t.Type)
+	log.Debug(context.TODO(), "Hooks> Processing rabbitMQ %s %s", t.UUID, t.Type)
 
 	// Prepare a struct to send to CDS API
 	h := sdk.WorkflowNodeRunHookEvent{
@@ -103,10 +102,10 @@ func (s *Service) doRabbitMQTaskExecution(t *sdk.TaskExecution) (*sdk.WorkflowNo
 
 	//Try to parse the body as an array
 	bodyJSONArray := []interface{}{}
-	if err := json.Unmarshal(t.RabbitMQ.Message, &bodyJSONArray); err != nil {
+	if err := sdk.JSONUnmarshal(t.RabbitMQ.Message, &bodyJSONArray); err != nil {
 		//Try to parse the body as a map
 		bodyJSONMap := map[string]interface{}{}
-		if err2 := json.Unmarshal(t.RabbitMQ.Message, &bodyJSONMap); err2 == nil {
+		if err2 := sdk.JSONUnmarshal(t.RabbitMQ.Message, &bodyJSONMap); err2 == nil {
 			bodyJSON = bodyJSONMap
 		}
 	} else {

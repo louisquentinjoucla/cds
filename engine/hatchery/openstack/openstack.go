@@ -12,6 +12,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/images"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ovh/cds/engine/api"
@@ -19,7 +20,6 @@ import (
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/cdsclient"
 	"github.com/ovh/cds/sdk/hatchery"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/slug"
 )
 
@@ -40,10 +40,7 @@ var _ hatchery.InterfaceWithModels = new(HatcheryOpenstack)
 // New instanciates a new Hatchery Openstack
 func New() *HatcheryOpenstack {
 	s := new(HatcheryOpenstack)
-	s.GoRoutines = sdk.NewGoRoutines()
-	s.Router = &api.Router{
-		Mux: mux.NewRouter(),
-	}
+	s.GoRoutines = sdk.NewGoRoutines(context.Background())
 	return s
 }
 
@@ -54,7 +51,10 @@ func (h *HatcheryOpenstack) Init(config interface{}) (cdsclient.ServiceConfig, e
 	if !ok {
 		return cfg, sdk.WithStack(fmt.Errorf("invalid openstack hatchery configuration"))
 	}
-
+	h.Router = &api.Router{
+		Mux:    mux.NewRouter(),
+		Config: sConfig.HTTP,
+	}
 	cfg.Host = sConfig.API.HTTP.URL
 	cfg.Token = sConfig.API.Token
 	cfg.InsecureSkipVerifyTLS = sConfig.API.HTTP.Insecure
@@ -127,7 +127,7 @@ func (h *HatcheryOpenstack) CheckConfiguration(cfg interface{}) error {
 	}
 
 	if hconfig.IPRange != "" {
-		ips, err := IPinRanges(context.Background(), hconfig.IPRange)
+		ips, err := sdk.IPinRanges(context.Background(), hconfig.IPRange)
 		if err != nil {
 			return fmt.Errorf("flag or environment variable openstack-ip-range error: %s", err)
 		}
@@ -137,6 +137,11 @@ func (h *HatcheryOpenstack) CheckConfiguration(cfg interface{}) error {
 	}
 
 	return nil
+}
+
+// Start inits client and routines for hatchery
+func (h *HatcheryOpenstack) Start(ctx context.Context) error {
+	return hatchery.Create(ctx, h)
 }
 
 // Serve start the hatchery server
@@ -169,7 +174,7 @@ func (h *HatcheryOpenstack) WorkerModelsEnabled() ([]sdk.Model, error) {
 
 		// Required flavor should be available on target OpenStack project
 		if _, err := h.flavor(allModels[i].ModelVirtualMachine.Flavor); err != nil {
-			log.Debug("WorkerModelsEnabled> model %s/%s is not usable because flavor '%s' not found", allModels[i].Group.Name, allModels[i].Name, allModels[i].ModelVirtualMachine.Flavor)
+			log.Debug(context.TODO(), "WorkerModelsEnabled> model %s/%s is not usable because flavor '%s' not found", allModels[i].Group.Name, allModels[i].Name, allModels[i].ModelVirtualMachine.Flavor)
 			continue
 		}
 
@@ -254,9 +259,9 @@ func (h *HatcheryOpenstack) updateServerList(ctx context.Context) {
 	for k, s := range status {
 		st += fmt.Sprintf("%d %s ", s, k)
 	}
-	log.Debug("Got %d servers %s", total, st)
+	log.Debug(ctx, "Got %d servers %s", total, st)
 	if total > 0 {
-		log.Debug(out)
+		log.Debug(ctx, out)
 	}
 }
 
@@ -266,17 +271,17 @@ func (h *HatcheryOpenstack) killAwolServers(ctx context.Context) {
 	workers, err := h.CDSClient().WorkerList(ctx)
 	now := time.Now().Unix()
 	if err != nil {
-		log.Warning(ctx, "killAwolServers> Cannot fetch worker list: %s", err)
+		log.Warn(ctx, "killAwolServers> Cannot fetch worker list: %s", err)
 		return
 	}
 
 	for _, s := range h.getServers(ctx) {
-		log.Debug("killAwolServers> Checking %s %v", s.Name, s.Metadata)
+		log.Debug(ctx, "killAwolServers> Checking %s %v", s.Name, s.Metadata)
 		workerName, isWorker := s.Metadata["worker"]
 		// if the vm is in BUILD state since > 15 min, we delete it
 		if s.Status == "BUILD" {
 			if isWorker && time.Since(s.Created) > 15*time.Minute {
-				log.Warning(ctx, "killAwolServers> Deleting server %s status: %s last update: %s", s.Name, s.Status, time.Since(s.Updated))
+				log.Warn(ctx, "killAwolServers> Deleting server %s status: %s last update: %s", s.Name, s.Status, time.Since(s.Updated))
 				if err := h.deleteServer(ctx, s); err != nil {
 					log.Error(ctx, "killAwolServers> Error while deleting server %s not created status: %s last update: %s", s.Name, s.Status, time.Since(s.Updated))
 				}
@@ -287,7 +292,7 @@ func (h *HatcheryOpenstack) killAwolServers(ctx context.Context) {
 		var inWorkersList bool
 		for _, w := range workers {
 			if _, ok := workersAlive[w.Name]; !ok {
-				log.Debug("killAwolServers> add %s to map workersAlive", w.Name)
+				log.Debug(ctx, "killAwolServers> add %s to map workersAlive", w.Name)
 				workersAlive[w.Name] = now
 			}
 
@@ -310,7 +315,7 @@ func (h *HatcheryOpenstack) killAwolServers(ctx context.Context) {
 			if _, wasAlive := workersAlive[workerName]; wasAlive {
 				if !inWorkersList {
 					toDeleteKilled = true
-					log.Debug("killAwolServers> %s toDeleteKilled --> true", workerName)
+					log.Debug(ctx, "killAwolServers> %s toDeleteKilled --> true", workerName)
 					delete(workersAlive, workerName)
 				}
 			}
@@ -318,7 +323,7 @@ func (h *HatcheryOpenstack) killAwolServers(ctx context.Context) {
 
 		// Delete workers, if not identified by CDS API
 		// Wait for 10 minutes, to avoid killing worker babies
-		log.Debug("killAwolServers> server %s status: %s last update: %s toDeleteKilled:%t inWorkersList:%t", s.Name, s.Status, time.Since(s.Updated), toDeleteKilled, inWorkersList)
+		log.Debug(ctx, "killAwolServers> server %s status: %s last update: %s toDeleteKilled:%t inWorkersList:%t", s.Name, s.Status, time.Since(s.Updated), toDeleteKilled, inWorkersList)
 		if isWorker && (workerHatcheryName == "" || workerHatcheryName == h.Name()) &&
 			(s.Status == "SHUTOFF" || toDeleteKilled || (!inWorkersList && time.Since(s.Updated) > 10*time.Minute)) {
 
@@ -329,7 +334,7 @@ func (h *HatcheryOpenstack) killAwolServers(ctx context.Context) {
 				h.killAwolServersComputeImage(ctx, workerModelPath, workerModelNameLastModified, s.ID, model, flavor)
 			}
 
-			log.Debug("killAwolServers> Deleting server %s status: %s last update: %s registerOnly:%s toDeleteKilled:%t inWorkersList:%t", s.Name, s.Status, time.Since(s.Updated), registerOnly, toDeleteKilled, inWorkersList)
+			log.Debug(ctx, "killAwolServers> Deleting server %s status: %s last update: %s registerOnly:%s toDeleteKilled:%t inWorkersList:%t", s.Name, s.Status, time.Since(s.Updated), registerOnly, toDeleteKilled, inWorkersList)
 			_ = h.deleteServer(ctx, s)
 		}
 	}
@@ -343,7 +348,7 @@ func (h *HatcheryOpenstack) killAwolServers(ctx context.Context) {
 	for _, workerName := range toDelete {
 		delete(workersAlive, workerName)
 	}
-	log.Debug("killAwolServers> workersAlive: %+v", workersAlive)
+	log.Debug(ctx, "killAwolServers> workersAlive: %+v", workersAlive)
 }
 
 func (h *HatcheryOpenstack) killAwolServersComputeImage(ctx context.Context, workerModelPath, workerModelNameLastModified, serverID, model, flavor string) {
@@ -460,7 +465,7 @@ func (h *HatcheryOpenstack) deleteServer(ctx context.Context, s servers.Server) 
 		if err != nil {
 			log.Error(ctx, "killAndRemove> unable to get console log from registering server %s: %v", s.Name, err)
 		}
-		if err := hatchery.CheckWorkerModelRegister(h, modelPath); err != nil {
+		if err := hatchery.CheckWorkerModelRegister(ctx, h, modelPath); err != nil {
 			var spawnErr = sdk.SpawnErrorForm{
 				Error: err.Error(),
 				Logs:  []byte(consoleLog),
@@ -474,7 +479,7 @@ func (h *HatcheryOpenstack) deleteServer(ctx context.Context, s servers.Server) 
 
 	r := servers.Delete(h.openstackClient, s.ID)
 	if err := r.ExtractErr(); err != nil {
-		log.Warning(ctx, "deleteServer> Cannot delete worker %s: %s", s.Name, err)
+		log.Warn(ctx, "deleteServer> Cannot delete worker %s: %s", s.Name, err)
 		return err
 	}
 	return nil
@@ -491,35 +496,22 @@ func (h *HatcheryOpenstack) WorkersStarted(ctx context.Context) []string {
 	return res
 }
 
-// WorkersStartedByModel returns the number of instances of given model started but
-// not necessarily register on CDS yet
-func (h *HatcheryOpenstack) WorkersStartedByModel(ctx context.Context, model *sdk.Model) int {
-	var x int
-	for _, s := range h.getServers(ctx) {
-		if strings.Contains(strings.ToLower(s.Name), strings.ToLower(model.Name)) {
-			x++
-		}
-	}
-	log.Debug("WorkersStartedByModel> %s : %d", model.Name, x)
-	return x
-}
-
 // NeedRegistration return true if worker model need regsitration
 func (h *HatcheryOpenstack) NeedRegistration(ctx context.Context, m *sdk.Model) bool {
 	if m.NeedRegistration {
-		log.Debug("NeedRegistration> true as worker model %s model.NeedRegistration=true", m.Name)
+		log.Debug(ctx, "NeedRegistration> true as worker model %s model.NeedRegistration=true", m.Name)
 		return true
 	}
 	for _, img := range h.getImages(ctx) {
 		if w := img.Metadata["worker_model_path"]; w == m.Group.Name+"/"+m.Name {
 			if d, ok := img.Metadata["worker_model_last_modified"]; ok {
 				if fmt.Sprintf("%d", m.UserLastModified.Unix()) == d.(string) {
-					log.Debug("NeedRegistration> false. An image is already available for this worker model %s workerModel.UserLastModified", m.Name)
+					log.Debug(ctx, "NeedRegistration> false. An image is already available for this worker model %s workerModel.UserLastModified", m.Name)
 					return false
 				}
 			}
 		}
 	}
-	log.Debug("NeedRegistration> true. No existing image found for this worker model %s", m.Name)
+	log.Debug(ctx, "NeedRegistration> true. No existing image found for this worker model %s", m.Name)
 	return true
 }

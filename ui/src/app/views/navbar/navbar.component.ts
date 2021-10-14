@@ -1,5 +1,4 @@
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
-import { FormControl } from '@angular/forms';
 import { NavigationEnd, Router } from '@angular/router';
 import { Store } from '@ngxs/store';
 import { Application } from 'app/model/application.model';
@@ -7,18 +6,16 @@ import { Broadcast } from 'app/model/broadcast.model';
 import { Help } from 'app/model/help.model';
 import { NavbarProjectData, NavbarRecentData, NavbarSearchItem } from 'app/model/navbar.model';
 import { Project } from 'app/model/project.model';
-import { AuthentifiedUser } from 'app/model/user.model';
+import { AuthSummary } from 'app/model/user.model';
 import { ApplicationStore } from 'app/service/application/application.store';
 import { BroadcastStore } from 'app/service/broadcast/broadcast.store';
-import { HelpService } from 'app/service/help/help.service';
-import { LanguageStore } from 'app/service/language/language.store';
 import { NavbarService } from 'app/service/navbar/navbar.service';
 import { RouterService } from 'app/service/router/router.service';
 import { ProjectStore } from 'app/service/services.module';
 import { ThemeStore } from 'app/service/theme/theme.store';
 import { WorkflowStore } from 'app/service/workflow/workflow.store';
 import { AutoUnsubscribe } from 'app/shared/decorator/autoUnsubscribe';
-import { SignoutCurrentUser } from 'app/store/authentication.action';
+import { FetchCurrentAuth, SignoutCurrentUser } from 'app/store/authentication.action';
 import { AuthenticationState } from 'app/store/authentication.state';
 import { HelpState } from 'app/store/help.state';
 import { List } from 'immutable';
@@ -47,16 +44,17 @@ export class NavbarComponent implements OnInit, OnDestroy {
     previousBroadcastsToDisplay: Array<Broadcast> = new Array<Broadcast>();
     loading = true;
     listWorkflows: List<NavbarRecentData>;
-    currentCountry: string;
     langSubscription: Subscription;
     navbarSubscription: Subscription;
-    userSubscription: Subscription;
+    authSubscription: Subscription;
+    sessionSubcription: Subscription;
+    consumerSubcription: Subscription;
     broadcastSubscription: Subscription;
     currentRoute: {};
     recentView = true;
-    currentUser: AuthentifiedUser;
+    currentAuthSummary: AuthSummary;
     themeSubscription: Subscription;
-    themeSwitch = new FormControl();
+    darkActive: boolean;
     searchValue: string;
     searchProjects: Array<NavbarSearchItem>;
     searchApplications: Array<NavbarSearchItem>;
@@ -75,34 +73,28 @@ export class NavbarComponent implements OnInit, OnDestroy {
         private _workflowStore: WorkflowStore,
         private _broadcastStore: BroadcastStore,
         private _router: Router,
-        private _language: LanguageStore,
         private _theme: ThemeStore,
         private _routerService: RouterService,
         private _cd: ChangeDetectorRef
     ) {
-        this.userSubscription = this._store.select(AuthenticationState.user).subscribe(u => {
-            this.currentUser = u;
-            this._cd.markForCheck();
-        });
-
-        this.langSubscription = this._language.get().subscribe(l => {
-            this.currentCountry = l;
+        this.authSubscription = this._store.select(AuthenticationState.summary).subscribe(s => {
+            this.currentAuthSummary = s;
             this._cd.markForCheck();
         });
 
         this.themeSubscription = this._theme.get().subscribe(t => {
-            this.themeSwitch.setValue(t === 'night');
+            this.darkActive = t === 'night';
             this._cd.markForCheck();
         });
 
         this._store.select(HelpState.last)
-        .pipe(
-            filter((help) => help != null),
-        )
-        .subscribe(help => {
-            this.help = help;
-            this._cd.markForCheck();
-        });
+            .pipe(
+                filter((help) => help != null),
+            )
+            .subscribe(help => {
+                this.help = help;
+                this._cd.markForCheck();
+            });
 
         this._router.events.pipe(
             filter(e => e instanceof NavigationEnd),
@@ -111,21 +103,18 @@ export class NavbarComponent implements OnInit, OnDestroy {
         });
     }
 
-    ngOnDestroy(): void {} // Should be set to use @AutoUnsubscribe with AOT
-
-    changeCountry() {
-        this._language.set(this.currentCountry);
-    }
+    ngOnDestroy(): void { } // Should be set to use @AutoUnsubscribe with AOT
 
     changeTheme() {
-        let darkActive = !!this.themeSwitch.value;
-        this._theme.set(darkActive ? 'night' : 'light');
+        this.darkActive = !this.darkActive;
+        this._theme.set(this.darkActive ? 'night' : 'light');
+        this._cd.markForCheck();
     }
 
     ngOnInit() {
         // Listen list of nav project
-        this._store.selectOnce(AuthenticationState.user).subscribe(user => {
-            if (user) {
+        this._store.selectOnce(AuthenticationState.summary).subscribe(s => {
+            if (s) {
                 this.getData();
             }
         });
@@ -229,14 +218,14 @@ export class NavbarComponent implements OnInit, OnDestroy {
                     if (element.type !== 'project') {
                         continue;
                     }
-                    if (isProjectOnly) { // search end with '/'
+                    if (isProjectOnly) { // search end with '/'
                         if (element.title.toLowerCase() + '/' === this.searchValue.toLowerCase() ||
                             element.projectKey.toLowerCase() + '/' === this.searchValue.toLowerCase()) {
                             projectKey = element.projectKey;
                             break;
                         }
                     } else if ((element.title.toLowerCase() === firstPart) ||
-                               (element.projectKey.toLowerCase() === firstPart)) {
+                        (element.projectKey.toLowerCase() === firstPart)) {
                         projectKey = element.projectKey;
                         break;
                     }
@@ -249,7 +238,7 @@ export class NavbarComponent implements OnInit, OnDestroy {
             let toadd = false;
             if (!this.searchValue || this.searchValue === '') { // recent view
                 toadd = true;
-            } else if (isProjectOnly) {
+            } else if (isProjectOnly) {
                 if (element.projectKey === projectKey) {
                     toadd = true;
                 }
@@ -377,6 +366,7 @@ export class NavbarComponent implements OnInit, OnDestroy {
 
     /**
      * Navigate to the selected project.
+     *
      * @param key Project unique key get by the event
      */
     navigateToProject(key): void {
@@ -405,7 +395,22 @@ export class NavbarComponent implements OnInit, OnDestroy {
 
     clickLogout(): void {
         this._store.dispatch(new SignoutCurrentUser()).subscribe(
-            () => { this._router.navigate(['/auth/signin']); }
+            () => {
+                this._router.navigate(['/auth/signin']);
+            }
+        );
+    }
+
+    mfaLogin(): void {
+        this._store.dispatch(new SignoutCurrentUser()).subscribe(
+            () => {
+                this._router.navigate(['/auth/ask-signin/' + this.currentAuthSummary.consumer.type], {
+                    queryParams: {
+                        redirect_uri: this._router.url,
+                        require_mfa: true
+                    }
+                });
+            }
         );
     }
 }

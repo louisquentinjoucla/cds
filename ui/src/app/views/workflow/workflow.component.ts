@@ -12,7 +12,7 @@ import { Select, Store } from '@ngxs/store';
 import { SuiPopup } from '@richardlt/ng2-semantic-ui';
 import { Project } from 'app/model/project.model';
 import { Workflow } from 'app/model/workflow.model';
-import { FeatureService } from 'app/service/feature/feature.service';
+import { FeatureNames, FeatureService } from 'app/service/feature/feature.service';
 import { WorkflowCoreService } from 'app/service/workflow/workflow.core.service';
 import { AsCodeSaveModalComponent } from 'app/shared/ascode/save-modal/ascode.save-modal.component';
 import { AutoUnsubscribe } from 'app/shared/decorator/autoUnsubscribe';
@@ -22,7 +22,7 @@ import { AddFeatureResult, FeaturePayload } from 'app/store/feature.action';
 import { ProjectState, ProjectStateModel } from 'app/store/project.state';
 import {
     CleanWorkflowRun,
-    CleanWorkflowState, ClearListRuns,
+    CleanWorkflowState,
     GetWorkflow,
     SelectHook,
     UpdateFavoriteWorkflow
@@ -49,6 +49,8 @@ export class WorkflowComponent implements OnInit, OnDestroy {
     workflow: Workflow;
     workflowSubscription: Subscription;
 
+    runNumber: number;
+
     projectSubscription: Subscription;
     qpRouteSubscription: Subscription;
     paramsRouteSubscription: Subscription;
@@ -71,6 +73,8 @@ export class WorkflowComponent implements OnInit, OnDestroy {
     selectedNodeID: number;
     selectedNodeRef: string;
     selectecHookRef: string;
+
+    workflowV3Enabled: boolean;
 
     constructor(
         private _activatedRoute: ActivatedRoute,
@@ -96,33 +100,39 @@ export class WorkflowComponent implements OnInit, OnDestroy {
                 return;
             }
 
-            let data = { 'project_key': this.project.key };
-            this._featureService.isEnabled('cdn-job-logs', data).subscribe(f => {
+            let data = { project_key: this.project.key };
+            this._featureService.isEnabled(FeatureNames.CDNArtifact, data).subscribe(f => {
                 this._store.dispatch(new AddFeatureResult(<FeaturePayload>{
                     key: f.name,
                     result: {
                         paramString: JSON.stringify(data),
-                        enabled: f.enabled
+                        enabled: f.enabled,
+                        exists: f.exists
                     }
                 }));
             });
-            this._featureService.isEnabled('workflow-retention-policy', data).subscribe(f => {
+            this._featureService.isEnabled(FeatureNames.WorkflowRetentionPolicy, data).subscribe(f => {
                 this._store.dispatch(new AddFeatureResult(<FeaturePayload>{
                     key: f.name,
                     result: {
                         paramString: JSON.stringify(data),
-                        enabled: f.enabled
+                        enabled: f.enabled,
+                        exists: f.exists
                     }
                 }));
             });
-            this._featureService.isEnabled('workflow-retention-maxruns', data).subscribe(f => {
+            this._featureService.isEnabled(FeatureNames.WorkflowRetentionMaxRuns, data).subscribe(f => {
                 this._store.dispatch(new AddFeatureResult(<FeaturePayload>{
                     key: f.name,
                     result: {
                         paramString: JSON.stringify(data),
-                        enabled: f.enabled
+                        enabled: f.enabled,
+                        exists: f.exists
                     }
                 }));
+            });
+            this._featureService.isEnabled(FeatureNames.WorkflowV3, data).subscribe(f => {
+                this.workflowV3Enabled = f.enabled;
             });
         });
 
@@ -168,19 +178,22 @@ export class WorkflowComponent implements OnInit, OnDestroy {
 
         // Workflow subscription
         this.paramsRouteSubscription = this._activatedRoute.params.subscribe(params => {
+            let projectKey = params['key'];
             let workflowName = params['workflowName'];
-            let key = params['key'];
 
-            if (key && workflowName) {
+            if (projectKey && workflowName) {
                 this.loading = true;
-                this._store.dispatch(new GetWorkflow({ projectKey: key, workflowName }))
+                this._store.dispatch(new GetWorkflow({ projectKey, workflowName }))
                     .pipe(finalize(() => this.loading = false))
-                    .subscribe(null, () => this._router.navigate(['/project', key]));
+                    .subscribe(null, () => this._router.navigate(['/project', projectKey]));
             }
         });
 
         // unselect all when returning on workflow main page
         this.eventsRouteSubscription = this._router.events.subscribe(e => {
+            this.runNumber = this._activatedRoute.children[0].snapshot.params['number'];
+            this._cd.markForCheck();
+
             if (e instanceof NavigationStart && this.workflow) {
                 if (e.url.indexOf('/project/' + this.project.key + '/workflow/') === 0 && e.url.indexOf('/run/') === -1) {
                     this._store.dispatch(new CleanWorkflowRun({}));

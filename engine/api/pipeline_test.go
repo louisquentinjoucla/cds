@@ -105,6 +105,24 @@ func TestUpdateAsCodePipelineHandler(t *testing.T) {
 				if err := enc.Encode(hook); err != nil {
 					return writeError(w, err)
 				}
+			case "/vcs/github/repos/foo/myrepo/branches":
+				bs := []sdk.VCSBranch{}
+				b := sdk.VCSBranch{
+					DisplayID:    "master",
+					LatestCommit: "aaaaaaa",
+				}
+				bs = append(bs, b)
+				if err := enc.Encode(bs); err != nil {
+					return writeError(w, err)
+				}
+			case "/vcs/github/repos/foo/myrepo/branches/?branch=master":
+				b := sdk.VCSBranch{
+					DisplayID: "master",
+					Default:   false,
+				}
+				if err := enc.Encode(b); err != nil {
+					return writeError(w, err)
+				}
 			case "/vcs/github/repos/foo/myrepo/pullrequests?state=open":
 				vcsPRs := []sdk.VCSPullRequest{}
 				if err := enc.Encode(vcsPRs); err != nil {
@@ -187,7 +205,7 @@ func TestUpdateAsCodePipelineHandler(t *testing.T) {
 	chanMessageToSend := make(chan []sdk.WebsocketFilter)
 	chanErrorReceived := make(chan error)
 
-	go client.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(), chanMessageToSend, chanMessageReceived, chanErrorReceived)
+	go client.WebsocketEventsListen(context.TODO(), sdk.NewGoRoutines(context.TODO()), chanMessageToSend, chanMessageReceived, chanErrorReceived)
 	chanMessageToSend <- []sdk.WebsocketFilter{{
 		Type:         sdk.WebsocketFilterTypeAscodeEvent,
 		ProjectKey:   proj.Key,

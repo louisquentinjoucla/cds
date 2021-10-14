@@ -2,16 +2,16 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // Repos list repositories that are accessible to the authenticated user
@@ -37,7 +37,7 @@ func (g *githubClient) Repos(ctx context.Context) ([]sdk.VCSRepo, error) {
 		attempt++
 		status, body, headers, err := g.get(ctx, nextPage, opt)
 		if err != nil {
-			log.Warning(ctx, "githubClient.Repos> Error %s", err)
+			log.Warn(ctx, "githubClient.Repos> Error %s", err)
 			return nil, err
 		}
 		if status >= 400 {
@@ -60,8 +60,8 @@ func (g *githubClient) Repos(ctx context.Context) ([]sdk.VCSRepo, error) {
 			noEtag = true
 			continue
 		} else {
-			if err := json.Unmarshal(body, &nextRepos); err != nil {
-				log.Warning(ctx, "githubClient.Repos> Unable to parse github repositories: %s", err)
+			if err := sdk.JSONUnmarshal(body, &nextRepos); err != nil {
+				log.Warn(ctx, "githubClient.Repos> Unable to parse github repositories: %s", err)
 				return nil, err
 			}
 		}
@@ -121,7 +121,7 @@ func (g *githubClient) repoByFullname(ctx context.Context, fullname string) (Rep
 	url := "/repos/" + fullname
 	status, body, _, err := g.get(ctx, url)
 	if err != nil {
-		log.Warning(ctx, "githubClient.Repos> Error %s", err)
+		log.Warn(ctx, "githubClient.Repos> Error %s", err)
 		return Repository{}, err
 	}
 	if status >= 400 {
@@ -137,8 +137,8 @@ func (g *githubClient) repoByFullname(ctx context.Context, fullname string) (Rep
 			log.Error(ctx, "cannot get from cache %s: %v", k, err)
 		}
 	} else {
-		if err := json.Unmarshal(body, &repo); err != nil {
-			log.Warning(ctx, "githubClient.Repos> Unable to parse github repository: %s", err)
+		if err := sdk.JSONUnmarshal(body, &repo); err != nil {
+			log.Warn(ctx, "githubClient.Repos> Unable to parse github repository: %s", err)
 			return Repository{}, err
 		}
 		//Put the body on cache for one hour and one minute
@@ -157,7 +157,7 @@ func (g *githubClient) UserHasWritePermission(ctx context.Context, fullname stri
 		return false, sdk.WrapError(sdk.ErrUserNotFound, "No user found in configuration")
 	}
 	if g.username == owner {
-		log.Debug("githubClient.UserHasWritePermission> nothing to do ¯\\_(ツ)_/¯")
+		log.Debug(ctx, "githubClient.UserHasWritePermission> nothing to do ¯\\_(ツ)_/¯")
 		return true, nil
 	}
 
@@ -177,7 +177,7 @@ func (g *githubClient) UserHasWritePermission(ctx context.Context, fullname stri
 			log.Error(ctx, "cannot get from cache %s: %v", k, err)
 		}
 	} else {
-		if err := json.Unmarshal(resp, &permResp); err != nil {
+		if err := sdk.JSONUnmarshal(resp, &permResp); err != nil {
 			return false, sdk.WrapError(err, "unable to unmarshal: %s", string(resp))
 		}
 		if err := g.Cache.SetWithTTL(k, permResp, 61*60); err != nil {
@@ -190,13 +190,13 @@ func (g *githubClient) UserHasWritePermission(ctx context.Context, fullname stri
 func (g *githubClient) GrantWritePermission(ctx context.Context, fullname string) error {
 	owner := strings.SplitN(fullname, "/", 2)[0]
 	if g.username == "" || owner == g.username {
-		log.Debug("githubClient.GrantWritePermission> nothing to do ¯\\_(ツ)_/¯")
+		log.Debug(ctx, "githubClient.GrantWritePermission> nothing to do ¯\\_(ツ)_/¯")
 		return nil
 	}
 	url := "/repos/" + fullname + "/collaborators/" + g.username + "?permission=push"
-	resp, err := g.put(url, "application/json", nil, nil)
+	resp, err := g.put(ctx, url, "application/json", nil, nil)
 	if err != nil {
-		log.Warning(ctx, "githubClient.GrantWritePermission> Error (%s) %s", url, err)
+		log.Warn(ctx, "githubClient.GrantWritePermission> Error (%s) %s", url, err)
 		return err
 	}
 
@@ -212,21 +212,21 @@ func (g *githubClient) GrantWritePermission(ctx context.Context, fullname string
 	}
 	defer resp.Body.Close() // nolint
 
-	log.Debug("githubClient.GrantWritePermission> invitation response: %v", string(body))
+	log.Debug(ctx, "githubClient.GrantWritePermission> invitation response: %v", string(body))
 
 	// Response when a new invitation is created
 	if resp.StatusCode == 201 {
 		invit := RepositoryInvitation{}
-		if err := json.Unmarshal(body, &invit); err != nil {
-			log.Warning(ctx, "githubClient.GrantWritePermission> unable to unmarshal invitation %s", err)
+		if err := sdk.JSONUnmarshal(body, &invit); err != nil {
+			log.Warn(ctx, "githubClient.GrantWritePermission> unable to unmarshal invitation %s", err)
 			return err
 		}
 
 		// Accept the invitation
 		url := fmt.Sprintf("/user/repository_invitations/%d", invit.ID)
-		resp, err := g.patch(url, "", nil, &postOptions{asUser: true})
+		resp, err := g.patch(ctx, url, "", nil, &postOptions{asUser: true})
 		if err != nil {
-			log.Warning(ctx, "githubClient.GrantWritePermission> Error (%s) %s", url, err)
+			log.Warn(ctx, "githubClient.GrantWritePermission> Error (%s) %s", url, err)
 			return err
 		}
 		body, err := ioutil.ReadAll(resp.Body)
@@ -234,7 +234,7 @@ func (g *githubClient) GrantWritePermission(ctx context.Context, fullname string
 			return err
 		}
 		_ = resp.Body.Close()
-		log.Debug("githubClient.GrantWritePermission> accept invitation response: %v", string(body))
+		log.Debug(ctx, "githubClient.GrantWritePermission> accept invitation response: %v", string(body))
 
 		// All is fine
 		if resp.StatusCode == 204 {

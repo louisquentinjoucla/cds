@@ -2,13 +2,14 @@ package bitbucketcloud
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"time"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/ovh/cds/sdk/telemetry"
 )
 
 const (
@@ -17,6 +18,8 @@ const (
 
 //AuthorizeRedirect returns the request token, the Authorize Bitbucket cloud
 func (consumer *bitbucketcloudConsumer) AuthorizeRedirect(ctx context.Context) (string, string, error) {
+	_, end := telemetry.Span(ctx, "bitbucketcloud.AuthorizeRedirect")
+	defer end()
 	requestToken, err := sdk.GenerateHash()
 	if err != nil {
 		return "", "", err
@@ -35,7 +38,9 @@ func (consumer *bitbucketcloudConsumer) AuthorizeRedirect(ctx context.Context) (
 //AuthorizeToken returns the authorized token (and its refresh_token)
 //from the request token and the verifier got on authorize url
 func (consumer *bitbucketcloudConsumer) AuthorizeToken(ctx context.Context, _, code string) (string, string, error) {
-	log.Debug("AuthorizeToken> Bitbucketcloud send code %s", code)
+	_, end := telemetry.Span(ctx, "bitbucketcloud.AuthorizeToken")
+	defer end()
+	log.Debug(ctx, "AuthorizeToken> Bitbucketcloud send code %s", code)
 
 	params := url.Values{}
 	params.Add("code", code)
@@ -54,7 +59,7 @@ func (consumer *bitbucketcloudConsumer) AuthorizeToken(ctx context.Context, _, c
 	}
 
 	var resp AccessToken
-	if err := json.Unmarshal(res, &resp); err != nil {
+	if err := sdk.JSONUnmarshal(res, &resp); err != nil {
 		return "", "", fmt.Errorf("Unable to parse bitbucketcloud response (%d) %s ", status, string(res))
 	}
 
@@ -80,7 +85,7 @@ func (consumer *bitbucketcloudConsumer) RefreshToken(ctx context.Context, refres
 	}
 
 	var resp AccessToken
-	if err := json.Unmarshal(res, &resp); err != nil {
+	if err := sdk.JSONUnmarshal(res, &resp); err != nil {
 		return "", "", fmt.Errorf("Unable to parse bitbucketcloud response (%d) %s ", status, string(res))
 	}
 

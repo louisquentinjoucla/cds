@@ -19,11 +19,11 @@
                 <div class="ui grid">
                     <div class="four wide column">
                         <div class="grouped fields">
-                            <label for="os">{{ 'cdsctl_choice_os' | translate }}</label>
+                            <label>{{ 'cdsctl_choice_os' | translate }}</label>
                             <ng-container *ngFor="let o of os">
                                 <div class="field">
                                     <div class="ui radio checkbox">
-                                        <sui-radio-button type="radio" id="os-{{a}}" name="os" [value]="o"
+                                        <sui-radio-button type="radio" id="os-{{o}}" name="os" [value]="o"
                                             [(ngModel)]="osChoice" (ngModelChange)="buildData()">
                                             {{o}}
                                         </sui-radio-button>
@@ -80,9 +80,9 @@
             <div class="ui info message">
                 {{ 'cdsctl_notice' | translate }}
                 <ul>
-                    <li>{{ 'cdsctl_notice_2_1' | translate }} {{currentUser.username}}`</li>
+                    <li>{{ 'cdsctl_notice_2_1' | translate }} {{currentAuthSummary.user.username}}`</li>
                     <li>{{ 'cdsctl_notice_2_2' | translate }} `CDS_API_URL="{{apiURL}}"
-                        CDS_USER="{{currentUser.username}}" CDS_TOKEN="yourtoken" cdsctl [command]`</li>
+                        CDS_USER="{{currentAuthSummary.user.username}}" CDS_TOKEN="yourtoken" cdsctl [command]`</li>
                     <li>{{ 'cdsctl_notice_2_3' | translate }} `CDS_VERBOSE=true ./cdsctl [command]`</li>
                 </ul>
             </div>

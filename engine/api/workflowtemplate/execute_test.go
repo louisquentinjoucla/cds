@@ -87,7 +87,7 @@ values:
 	}
 
 	res, err := workflowtemplate.Execute(tmpl, instance)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	buf, err := yaml.Marshal(res.Workflow)
 	require.NoError(t, err)
@@ -176,8 +176,8 @@ name: Environment-[[if .id]]`)),
 	}
 
 	_, err := workflowtemplate.Parse(tmpl)
-	assert.NotNil(t, err)
-	e := sdk.ExtractHTTPError(err, "")
+	require.Error(t, err)
+	e := sdk.ExtractHTTPError(err)
 	assert.Equal(t, sdk.ErrCannotParseTemplate.ID, e.ID)
 	errs := []sdk.WorkflowTemplateError{{
 		Type:    "workflow",
@@ -190,11 +190,53 @@ name: Environment-[[if .id]]`)),
 	}, {
 		Type:    "application",
 		Line:    3,
-		Message: "unexpected unclosed action in command",
+		Message: "unclosed action",
 	}, {
 		Type:    "environment",
 		Line:    2,
 		Message: "unexpected EOF",
 	}}
 	assert.Equal(t, errs, e.Data)
+}
+
+func TestExecuteTemplateWithEmptyElements(t *testing.T) {
+	tmpl := sdk.WorkflowTemplate{
+		ID: 42,
+		Parameters: []sdk.WorkflowTemplateParameter{
+			{Key: "withEnv", Type: sdk.ParameterTypeBoolean, Required: true},
+		},
+		Workflow: base64.StdEncoding.EncodeToString([]byte(`
+name: [[.name]]
+description: Test simple workflow with error
+version: v1.0`)),
+		Environments: []sdk.EnvironmentTemplate{{
+			Value: base64.StdEncoding.EncodeToString([]byte(`[[if .params.withEnv ]]
+name: Environment-[[.id]]
+[[end]]`)),
+		}},
+	}
+
+	res, err := workflowtemplate.Execute(tmpl, sdk.WorkflowTemplateInstance{
+		ID: 5,
+		Request: sdk.WorkflowTemplateRequest{
+			WorkflowName: "my-workflow",
+			Parameters: map[string]string{
+				"withEnv": "true",
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Len(t, res.Environments, 1)
+
+	res, err = workflowtemplate.Execute(tmpl, sdk.WorkflowTemplateInstance{
+		ID: 5,
+		Request: sdk.WorkflowTemplateRequest{
+			WorkflowName: "my-workflow",
+			Parameters: map[string]string{
+				"withEnv": "false",
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Len(t, res.Environments, 0)
 }

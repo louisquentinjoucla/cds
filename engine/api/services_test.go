@@ -20,7 +20,7 @@ func TestServicesHandlers(t *testing.T) {
 	admin, jwtAdmin := assets.InsertAdminUser(t, db)
 	_, jwtLambda := assets.InsertLambdaUser(t, db)
 
-	s, _ := assets.InitCDNService(t, db)
+	s, _, _ := assets.InitCDNService(t, db)
 	t.Cleanup(func() { _ = services.Delete(db, s) })
 
 	// Admin create a consumer for a new service
@@ -29,9 +29,9 @@ func TestServicesHandlers(t *testing.T) {
 	})
 	require.NotEmpty(t, uri)
 	req := assets.NewJWTAuthentifiedRequest(t, jwtAdmin, http.MethodPost, uri, sdk.AuthConsumer{
-		Name:         sdk.RandomString(10),
-		ScopeDetails: sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService),
-		IssuedAt:     time.Now(),
+		Name:            sdk.RandomString(10),
+		ScopeDetails:    sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeService),
+		ValidityPeriods: sdk.NewAuthConsumerValidityPeriod(time.Now(), 0),
 	})
 	rec := httptest.NewRecorder()
 	api.Router.Mux.ServeHTTP(rec, req)

@@ -7,8 +7,8 @@ import (
 
 	"contrib.go.opencensus.io/exporter/jaeger"
 	"contrib.go.opencensus.io/exporter/prometheus"
-	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
+	"github.com/pkg/errors"
+	"github.com/rockbears/log"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
@@ -50,8 +50,6 @@ func ContextWithTelemetry(from, to context.Context) context.Context {
 
 // Init the opencensus exporter
 func Init(ctx context.Context, cfg Configuration, s Service) (context.Context, error) {
-	log.Info(ctx, "observability> initializing observability for %s/%s", s.Type(), s.Name())
-
 	ctx = ContextWithTag(ctx,
 		TagServiceType, s.Type(),
 		TagServiceName, s.Name(),
@@ -63,62 +61,65 @@ func Init(ctx context.Context, cfg Configuration, s Service) (context.Context, e
 				DefaultSampler: trace.ProbabilitySampler(cfg.Exporters.Jaeger.SamplingProbability),
 			},
 		)
-		log.Info(ctx, "observability> initializing jaeger exporter for %s/%s", s.Type(), s.Name())
+		var svcName = cfg.Exporters.Jaeger.ServiceName
+		if svcName == "" {
+			svcName = serviceName(s)
+		}
+		log.Info(ctx, "observability> initializing jaeger exporter for %q on %q", svcName, cfg.Exporters.Jaeger.CollectorEndpoint)
 		e, err := jaeger.NewExporter(jaeger.Options{
-			Endpoint:          cfg.Exporters.Jaeger.HTTPCollectorEndpoint, //"http://localhost:14268"
 			CollectorEndpoint: cfg.Exporters.Jaeger.CollectorEndpoint,
-			ServiceName:       serviceName(s),
+			ServiceName:       svcName,
 		})
 		if err != nil {
-			return ctx, sdk.WithStack(err)
+			return ctx, errors.WithStack(err)
 		}
 		trace.RegisterExporter(e)
 		ctx = context.WithValue(ctx, contextTraceExporter, e)
 	}
 
-	if cfg.MetricsEnabled {
-		if cfg.Exporters.Prometheus.ReporteringPeriod == 0 {
-			cfg.Exporters.Prometheus.ReporteringPeriod = 10
-		}
-		view.SetReportingPeriod(time.Duration(cfg.Exporters.Prometheus.ReporteringPeriod) * time.Second)
-
-		log.Info(ctx, "observability> initializing prometheus exporter for %s/%s", s.Type(), s.Name())
-
-		e, err := prometheus.NewExporter(prometheus.Options{})
-		if err != nil {
-			return ctx, sdk.WithStack(err)
-		}
-		view.RegisterExporter(e)
-		he := new(HTTPExporter)
-		he.Exporter = e
-		view.RegisterExporter(he)
-		ctx = context.WithValue(ctx, contextStatsExporter, he)
+	if cfg.Exporters.Prometheus.ReporteringPeriod == 0 {
+		cfg.Exporters.Prometheus.ReporteringPeriod = 10
 	}
+	view.SetReportingPeriod(time.Duration(cfg.Exporters.Prometheus.ReporteringPeriod) * time.Second)
+
+	log.Info(ctx, "observability> initializing prometheus exporter for %q", serviceName(s))
+
+	e, err := prometheus.NewExporter(prometheus.Options{})
+	if err != nil {
+		return ctx, errors.WithStack(err)
+	}
+	view.RegisterExporter(e)
+	he := new(HTTPExporter)
+	he.Exporter = e
+	view.RegisterExporter(he)
+	ctx = context.WithValue(ctx, contextStatsExporter, he)
 
 	return ctx, nil
 }
 
 // Tags contants
 const (
+	TagGoroutine          = "goroutine"
 	TagHostname           = "hostname"
-	TagServiceType        = "service_type"
-	TagServiceName        = "service_name"
-	TagWorkflow           = "workflow"
-	TagWorkflowRun        = "workflow_run"
-	TagProjectKey         = "project_key"
-	TagWorkflowNodeRun    = "workflow_node_run"
-	TagWorkflowNodeJobRun = "workflow_node_job_run"
 	TagJob                = "job"
-	TagWorkflowNode       = "workflow_node"
-	TagPipelineID         = "pipeline_id"
+	TagRepository         = "repository"
+	TagPercentil          = "percentil"
+	TagPermission         = "permission"
 	TagPipeline           = "pipeline"
 	TagPipelineDeep       = "pipeline_deep"
-	TagWorker             = "worker"
-	TagPermission         = "permission"
+	TagPipelineID         = "pipeline_id"
+	TagProjectKey         = "project_key"
+	TagServiceName        = "service_name"
+	TagServiceType        = "service_type"
+	TagStatus             = "status"
 	TagStorage            = "storage"
 	TagType               = "type"
-	TagStatus             = "status"
-	TagPercentil          = "percentil"
+	TagWorker             = "worker"
+	TagWorkflow           = "workflow"
+	TagWorkflowNode       = "workflow_node"
+	TagWorkflowNodeJobRun = "workflow_node_job_run"
+	TagWorkflowNodeRun    = "workflow_node_run"
+	TagWorkflowRun        = "workflow_run"
 )
 
 func ContextWithTag(ctx context.Context, s ...interface{}) context.Context {

@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/application"
 	"github.com/ovh/cds/engine/api/ascode"
@@ -24,7 +25,6 @@ import (
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/exportentities"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (api *API) getTemplatesHandler() service.Handler {
@@ -100,8 +100,12 @@ func (api *API) postTemplateHandler() service.Handler {
 
 		data.Version = 1
 
-		if !isGroupAdmin(ctx, grp) && !isAdmin(ctx) {
-			return sdk.WithStack(sdk.ErrForbidden)
+		if !isGroupAdmin(ctx, grp) {
+			if isAdmin(ctx) {
+				trackSudo(ctx, w)
+			} else {
+				return sdk.WithStack(sdk.ErrForbidden)
+			}
 		}
 
 		// execute template with no instance only to check if parsing is ok
@@ -232,8 +236,12 @@ func (api *API) putTemplateHandler() service.Handler {
 			}
 		}
 
-		if !isGroupAdmin(ctx, grp) && !isAdmin(ctx) {
-			return sdk.WithStack(sdk.ErrForbidden)
+		if !isGroupAdmin(ctx, grp) {
+			if isAdmin(ctx) {
+				trackSudo(ctx, w)
+			} else {
+				return sdk.WithStack(sdk.ErrForbidden)
+			}
 		}
 
 		tx, err := api.mustDB().Begin()
@@ -339,23 +347,29 @@ func (api *API) postTemplateApplyHandler() service.Handler {
 
 		// check permission on project
 		if !withImport {
-			var hasRPermission = api.checkProjectPermissions(ctx, req.ProjectKey, sdk.PermissionRead, nil) == nil
-			if !hasRPermission && !isMaintainer(ctx) && !isAdmin(ctx) {
+			var hasRPermission = api.checkProjectPermissions(ctx, w, req.ProjectKey, sdk.PermissionRead, nil) == nil
+			if !hasRPermission && !isMaintainer(ctx) {
 				return sdk.WithStack(sdk.ErrNoProject)
 			}
 		} else {
-			var hasRWPermission = api.checkProjectPermissions(ctx, req.ProjectKey, sdk.PermissionReadWriteExecute, nil) == nil
-			if !hasRWPermission && !isAdmin(ctx) {
-				return sdk.NewErrorFrom(sdk.ErrForbidden, "write permission on project required to import generated workflow.")
+			var hasRWPermission = api.checkProjectPermissions(ctx, w, req.ProjectKey, sdk.PermissionReadWriteExecute, nil) == nil
+			if !hasRWPermission {
+				if !isAdmin(ctx) {
+					return sdk.NewErrorFrom(sdk.ErrForbidden, "write permission on project required to import generated workflow.")
+				} else {
+					trackSudo(ctx, w)
+				}
 			}
 		}
 
 		// non admin user should have read/write to given project
 		consumer := getAPIConsumer(ctx)
 		if !consumer.Admin() {
-			if err := api.checkProjectPermissions(ctx, req.ProjectKey, sdk.PermissionReadWriteExecute, nil); err != nil {
+			if err := api.checkProjectPermissions(ctx, w, req.ProjectKey, sdk.PermissionReadWriteExecute, nil); err != nil {
 				return sdk.NewErrorFrom(sdk.ErrForbidden, "write permission on project required to import generated workflow.")
 			}
+		} else {
+			trackSudo(ctx, w)
 		}
 
 		// load project with key
@@ -441,7 +455,7 @@ func (api *API) postTemplateApplyHandler() service.Handler {
 							OperationUUID: ope.UUID,
 						}
 						ascode.UpdateAsCodeResult(ctx, api.mustDB(), api.Cache, api.GoRoutines, *p, *existingWorkflow, *rootApp, ed, consumer)
-					}, api.PanicDump())
+					})
 
 					return service.WriteJSON(w, sdk.Operation{
 						UUID:   ope.UUID,
@@ -462,7 +476,7 @@ func (api *API) postTemplateApplyHandler() service.Handler {
 			return err
 		}
 
-		log.Debug("postTemplateApplyHandler> template %s applied (withImport=%v)", wt.Slug, withImport)
+		log.Debug(ctx, "postTemplateApplyHandler> template %s applied (withImport=%v)", wt.Slug, withImport)
 
 		if !withImport {
 			buf := new(bytes.Buffer)
@@ -480,9 +494,9 @@ func (api *API) postTemplateApplyHandler() service.Handler {
 			return err
 		}
 
-		msgStrings := translate(r, msgs)
+		msgStrings := translate(msgs)
 
-		log.Debug("postTemplateApplyHandler> importing the workflow %s from template %s", wkf.Name, wt.Slug)
+		log.Debug(ctx, "postTemplateApplyHandler> importing the workflow %s from template %s", wkf.Name, wt.Slug)
 
 		if w != nil {
 			w.Header().Add(sdk.ResponseWorkflowIDHeader, fmt.Sprintf("%d", wkf.ID))
@@ -547,7 +561,7 @@ func (api *API) postTemplateBulkHandler() service.Handler {
 		// non admin user should have read/write access to all given project
 		if !consumer.Admin() {
 			for i := range req.Operations {
-				if err := api.checkProjectPermissions(ctx, req.Operations[i].Request.ProjectKey, sdk.PermissionReadWriteExecute, nil); err != nil {
+				if err := api.checkProjectPermissions(ctx, w, req.Operations[i].Request.ProjectKey, sdk.PermissionReadWriteExecute, nil); err != nil {
 					return sdk.NewErrorFrom(sdk.ErrForbidden, "write permission on project required to import generated workflow.")
 				}
 			}
@@ -580,9 +594,8 @@ func (api *API) postTemplateBulkHandler() service.Handler {
 					errorDefer := func(err error) error {
 						if err != nil {
 							err = sdk.WrapError(err, "error occurred in template bulk with id %d", bulk.ID)
-							log.ErrorWithFields(ctx, log.Fields{
-								"stack_trace": fmt.Sprintf("%+v", err),
-							}, "%s", err)
+							ctx = sdk.ContextWithStacktrace(ctx, err)
+							log.Error(ctx, "%v", err)
 							bulk.Operations[i].Status = sdk.OperationStatusError
 							bulk.Operations[i].Error = fmt.Sprintf("%s", sdk.Cause(err))
 							if err := workflowtemplate.UpdateBulk(api.mustDB(), &bulk); err != nil {
@@ -959,8 +972,12 @@ func (api *API) postTemplatePushHandler() service.Handler {
 		}
 		wt.GroupID = grp.ID
 
-		if !isGroupAdmin(ctx, grp) && !isAdmin(ctx) {
-			return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+		if !isGroupAdmin(ctx, grp) {
+			if isAdmin(ctx) {
+				trackSudo(ctx, w)
+			} else {
+				return sdk.WithStack(sdk.ErrInvalidGroupAdmin)
+			}
 		}
 
 		// check the workflow template extracted
@@ -976,7 +993,7 @@ func (api *API) postTemplatePushHandler() service.Handler {
 		w.Header().Add(sdk.ResponseTemplateGroupNameHeader, wt.Group.Name)
 		w.Header().Add(sdk.ResponseTemplateSlugHeader, wt.Slug)
 
-		return service.WriteJSON(w, translate(r, msgs), http.StatusOK)
+		return service.WriteJSON(w, translate(msgs), http.StatusOK)
 	}
 }
 

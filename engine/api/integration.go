@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/gorilla/mux"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/event"
 	"github.com/ovh/cds/engine/api/integration"
@@ -14,7 +15,6 @@ import (
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/engine/service"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (api *API) getIntegrationModelsHandler() service.Handler {
@@ -32,7 +32,7 @@ func (api *API) getIntegrationModelHandler() service.Handler {
 		vars := mux.Vars(r)
 		name := vars["name"]
 
-		p, err := integration.LoadModelByName(api.mustDB(), name)
+		p, err := integration.LoadModelByName(ctx, api.mustDB(), name)
 		if err != nil {
 			return sdk.WrapError(err, "Cannot get integration model")
 		}
@@ -101,7 +101,7 @@ func (api *API) putIntegrationModelHandler() service.Handler {
 		}
 		defer tx.Rollback() // nolint
 
-		old, err := integration.LoadModelByName(tx, name)
+		old, err := integration.LoadModelByName(ctx, tx, name)
 		if err != nil {
 			return sdk.WrapError(err, "Unable to load model")
 		}
@@ -115,7 +115,7 @@ func (api *API) putIntegrationModelHandler() service.Handler {
 		}
 
 		m.ID = old.ID
-		if err := integration.UpdateModel(tx, m); err != nil {
+		if err := integration.UpdateModel(ctx, tx, m); err != nil {
 			return err
 		}
 
@@ -126,7 +126,7 @@ func (api *API) putIntegrationModelHandler() service.Handler {
 		if m.Public {
 			api.GoRoutines.Exec(ctx, "propagatePublicIntegrationModel", func(ctx context.Context) {
 				propagatePublicIntegrationModel(ctx, api.mustDB(), api.Cache, *m, getAPIConsumer(ctx))
-			}, api.PanicDump())
+			})
 
 			if m.Event {
 				if err := event.ResetPublicIntegrations(ctx, api.mustDB()); err != nil {
@@ -174,7 +174,7 @@ func propagatePublicIntegrationModelOnProject(ctx context.Context, db gorpmapper
 
 	for pfName, immutableCfg := range m.PublicConfigurations {
 		cfg := immutableCfg.Clone()
-		oldPP, _ := integration.LoadProjectIntegrationByNameWithClearPassword(db, p.Key, pfName)
+		oldPP, _ := integration.LoadProjectIntegrationByNameWithClearPassword(ctx, db, p.Key, pfName)
 		if oldPP.ID == 0 {
 			pp := sdk.ProjectIntegration{
 				Model:              m,
@@ -199,7 +199,7 @@ func propagatePublicIntegrationModelOnProject(ctx context.Context, db gorpmapper
 			ProjectID:          p.ID,
 		}
 		oldPP.Config = m.DefaultConfig
-		if err := integration.UpdateIntegration(db, pp); err != nil {
+		if err := integration.UpdateIntegration(ctx, db, pp); err != nil {
 			return err
 		}
 		event.PublishUpdateProjectIntegration(ctx, &p, oldPP, pp, u)
@@ -218,12 +218,12 @@ func (api *API) deleteIntegrationModelHandler() service.Handler {
 		}
 		defer tx.Rollback() // nolint
 
-		old, err := integration.LoadModelByName(tx, name)
+		old, err := integration.LoadModelByName(ctx, tx, name)
 		if err != nil {
 			return err
 		}
 
-		if err := integration.DeleteModel(tx, old.ID); err != nil {
+		if err := integration.DeleteModel(ctx, tx, old.ID); err != nil {
 			return sdk.WithStack(err)
 		}
 

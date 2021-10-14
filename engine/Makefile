@@ -1,6 +1,6 @@
 .PHONY: clean
 
-VERSION := $(if ${CDS_SEMVER},${CDS_SEMVER},snapshot)
+VERSION := $(if ${CDS_VERSION},${CDS_VERSION},snapshot)
 GITHASH := $(if ${GIT_HASH},${GIT_HASH},`git log -1 --format="%H"`)
 BUILDTIME := `date "+%m/%d/%y-%H:%M:%S"`
 
@@ -38,12 +38,12 @@ TEST_CDN_DB_CREATE_SCHEMA = PGPASSWORD=${TEST_DB_PASS} psql -h ${TEST_DB_HOST} -
 TEST_CDN_DB_INIT = ./engine database upgrade --db-host $(TEST_DB_HOST) --db-port $(TEST_DB_PORT) --db-user $(TEST_DB_USER) --db-password $(TEST_DB_PASS) --db-name $(TEST_DB_NAME) --db-schema $(TEST_CDN_DB_SCHEMA) --db-sslmode disable --migrate-dir ./sql/cdn
 
 TEST_DB_STOP_DOCKER = docker rm -f postgres-cds
-TEST_DB_START_DOCKER = docker run -d -p $(TEST_DB_PORT):5432 -e POSTGRES_PASSWORD=$(TEST_DB_PASS) -e POSTGRES_USER=$(TEST_DB_USER) -e POSTGRES_DB=$(TEST_DB_NAME) --name postgres-cds postgres
+TEST_DB_START_DOCKER = docker run -d -p $(TEST_DB_PORT):5432 -e POSTGRES_PASSWORD=$(TEST_DB_PASS) -e POSTGRES_USER=$(TEST_DB_USER) -e POSTGRES_DB=$(TEST_DB_NAME) --name postgres-cds postgres:9.6
 
 TEST_REDIS_PORT = 6379
 TEST_REDIS_HOST = $(if ${CDS_CACHE_REDIS_HOST},${CDS_CACHE_REDIS_HOST},localhost:$(TEST_REDIS_PORT))
 TEST_REDIS_PASS = $(if ${CDS_CACHE_REDIS_PASS},${CDS_CACHE_REDIS_PASS},)
-TEST_REDIS_START_DOCKER = docker run -d -p $(TEST_REDIS_PORT):6379 --name redis-cds redis
+TEST_REDIS_START_DOCKER = docker run -d -p $(TEST_REDIS_PORT):6379 --name redis-cds redis:5
 
 TEST_KAFKA_START_DOCKER = docker run -d -p 2181:2181 -p 9092:9092 --env ADVERTISED_HOST=localhost --env ADVERTISED_PORT=9092 --name kafka-cds spotify/kafka
 
@@ -67,6 +67,8 @@ $(GO_XUTOOLS):
 default: build
 
 clean:
+	$(MAKE) clean -C sql
+	$(MAKE) clean -C worker
 	@rm -rf $(TARGET_DIR)
 	@for TST in `find ./ -name "tests.log"`; do \
 		rm $$TST; \
@@ -103,6 +105,10 @@ $(TARGET_ENGINE_BINARIES): $(TARGET_DIR)
 
 build_all_engine: $(TARGET_ENGINE_BINARIES)
 
+build_test_engine:
+	TEMP=`$(PKGS_COMMA_SEP)`; \
+	CGO_ENABLED=1 go test -race -coverpkg $$TEMP -c . -o $(TARGET_DIR)/$(TARGET_ENGINE).test -tags testbincover;
+
 test-redis-start-docker:
 	$(TEST_REDIS_START_DOCKER)
 
@@ -114,7 +120,7 @@ test-db-stop-docker:
 
 test-db-start-docker:
 	$(TEST_DB_START_DOCKER)
-	@sleep 5
+	@sleep 10
 	$(MAKE) test-api-db-create
 	$(MAKE) test-cdn-db-create
 
@@ -148,17 +154,22 @@ ${HOME}/.cds/cdn.tests.cfg.json:
 		@mkdir -p ${HOME}/.cds
 		@echo "{\"dbDriver\": \"postgres\", \"dbUser\" :\"$(TEST_DB_USER)\", \"dbPassword\" :\"$(TEST_DB_PASS)\" ,\"dbName\": \"$(TEST_DB_NAME)\", \"dbSchema\": \"$(TEST_CDN_DB_SCHEMA)\", \"dbHost\": \"$(TEST_DB_HOST)\", \"dbPort\" : \"$(TEST_DB_PORT)\", \"sslMode\": \"disable\", \"redisHost\" : \"$(TEST_REDIS_HOST)\", \"redisPassword\" : \"$(TEST_REDIS_PASSWORD)\"}" > ${HOME}/.cds/cdn.tests.cfg.json
 
-test: test-config clean
-	@for PKG in $(TEST_PKGS); do \
+# Build a list of the first level of package in the 'engine' package, then remove the '.', 'dist' and 'sql'
+TEST_COMPONENTS = $(addprefix test-component-,$(filter-out sql,$(filter-out dist,$(filter-out .,$(shell find . -maxdepth 1 -type d -exec basename {} \;)))))
+$(TEST_COMPONENTS):
+	@TEST_PKGS=$$(cd $(subst test-component-,,$@) && go list ./...); \
+	for PKG in $$TEST_PKGS; do \
 		echo "Running tests in package $$PKG"; \
 		cd ${GOPATH}/src/$$PKG; \
 		TEMP=`$(PKGS_COMMA_SEP)`; \
 		if [ ! -z "$$TEMP" ]; then \
-			$(TEST_CMD) -coverpkg $$TEMP > ${GOPATH}/src/$$PKG/tests.log; \
+			($(TEST_CMD) -coverpkg $$TEMP > ${GOPATH}/src/$$PKG/tests.log) || true; \
 		else \
-			$(TEST_CMD) > ${GOPATH}/src/$$PKG/tests.log; \
+			($(TEST_CMD) > ${GOPATH}/src/$$PKG/tests.log) || true; \
 		fi; \
 	done;
+
+test: $(TEST_COMPONENTS)
 	$(MAKE) test-coverage
 	$(MAKE) test-xunit-report
 

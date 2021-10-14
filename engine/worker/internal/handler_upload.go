@@ -2,20 +2,24 @@ package internal
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"path/filepath"
 
+	"github.com/rockbears/log"
+
 	"github.com/ovh/cds/engine/worker/internal/action"
 	"github.com/ovh/cds/engine/worker/pkg/workerruntime"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func uploadHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := workerruntime.SetJobID(ctx, wk.currentJob.wJob.ID)
+		ctx = workerruntime.SetStepOrder(ctx, wk.currentJob.currentStepIndex)
+		ctx = workerruntime.SetStepName(ctx, wk.currentJob.currentStepName)
+
 		// Get body
 		data, errRead := ioutil.ReadAll(r.Body)
 		if errRead != nil {
@@ -24,7 +28,7 @@ func uploadHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 		}
 
 		var art workerruntime.UploadArtifact
-		if err := json.Unmarshal(data, &art); err != nil {
+		if err := sdk.JSONUnmarshal(data, &art); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -54,10 +58,8 @@ func uploadHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 			},
 		}
 
-		ctx := workerruntime.SetJobID(ctx, wk.currentJob.wJob.ID)
 		workingDir, err := workerruntime.WorkingDirectory(wk.currentJob.context)
 		if err != nil {
-			wk.SendLog(ctx, workerruntime.LevelError, fmt.Sprintf("Artifact upload failed: %v", err))
 			log.Error(ctx, "Artifact upload failed: No working directory: %v", err)
 			writeError(w, r, err)
 			return
@@ -66,15 +68,13 @@ func uploadHandler(ctx context.Context, wk *CurrentWorker) http.HandlerFunc {
 
 		result, err := action.RunArtifactUpload(ctx, wk, a, wk.currentJob.secrets)
 		if err != nil {
-			wk.SendLog(ctx, workerruntime.LevelError, fmt.Sprintf("Artifact upload failed: %v", err))
 			log.Error(ctx, "unable to upload artifacts: %v", err)
 			writeError(w, r, err)
 			return
 		}
 		if result.Status != sdk.StatusSuccess {
-			wk.SendLog(ctx, workerruntime.LevelError, fmt.Sprintf("Artifact upload failed: %s", result.Reason))
 			log.Error(ctx, "Artifact upload failed: %v", result)
-			writeError(w, r, fmt.Errorf("Artifact upload failed: %s", result.Reason))
+			writeError(w, r, fmt.Errorf("artifact upload failed: %s", result.Reason))
 			return
 		}
 	}

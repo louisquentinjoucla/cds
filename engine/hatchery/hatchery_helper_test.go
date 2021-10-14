@@ -22,16 +22,22 @@ import (
 	"github.com/ovh/cds/engine/api/authentication"
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/jws"
-	"github.com/ovh/cds/sdk/log"
 )
-
-func init() {
-	log.Initialize(context.TODO(), &log.Conf{Level: "debug"})
-}
 
 func InitWebsocketTestServer(t *testing.T) *httptest.Server {
 	upgrader := websocket.Upgrader{}
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("WebsocketTestServer> %s", r.URL.String())
+
+		switch r.URL.String() {
+		case "/download/worker/darwin/amd64?variant=", "/download/worker/linux/amd64?variant=":
+			w.Header().Add("Content-Type", "application/octet-stream")
+			w.Write([]byte("foo"))
+			w.WriteHeader(200)
+			t.Log("done")
+			return
+		}
+
 		c, err := upgrader.Upgrade(w, r, nil)
 		require.NoError(t, err)
 		defer c.Close()
@@ -77,7 +83,7 @@ func InitMock(t *testing.T, url string) {
 		ID:         id,
 		ConsumerID: consumerID,
 		ExpireAt:   time.Now().Add(time.Hour),
-	})
+	}, "")
 
 	var checkRequest gock.ObserverFunc = func(request *http.Request, mock gock.Mock) {
 		if request.Body == nil {
@@ -135,7 +141,7 @@ func InitMock(t *testing.T, url string) {
 			},
 		})
 
-	gock.New(url).Post("/queue/workflows/1/spawn/infos").Times(2).Reply(200)
+	gock.New(url).Post("/queue/workflows/1/spawn/infos").Times(1).Reply(200)
 
 	gock.New(url).Post("/queue/workflows/1/book").
 		Reply(204)

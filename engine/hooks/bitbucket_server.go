@@ -2,19 +2,17 @@ package hooks
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func (s *Service) generatePayloadFromBitbucketServerRequest(ctx context.Context, t *sdk.TaskExecution, event string) ([]map[string]interface{}, error) {
 	payloads := []map[string]interface{}{}
 
 	var request sdk.BitbucketServerWebhookEvent
-	if err := json.Unmarshal(t.WebHook.RequestBody, &request); err != nil {
+	if err := sdk.JSONUnmarshal(t.WebHook.RequestBody, &request); err != nil {
 		return nil, sdk.WrapError(err, "unable ro read bitbucket request: %s", string(t.WebHook.RequestBody))
 	}
 
@@ -43,21 +41,9 @@ func (s *Service) generatePayloadFromBitbucketServerRequest(ctx context.Context,
 		payloads = append(payloads, payload)
 	}
 
-	projectKey := t.Config["project"].Value
-	workflowName := t.Config["workflow"].Value
 	for _, pushChange := range request.Changes {
 		if pushChange.Type == "DELETE" {
-			err := s.enqueueBranchDeletion(projectKey, workflowName, strings.TrimPrefix(pushChange.RefID, "refs/heads/"))
-			if err != nil {
-				log.Error(ctx, "cannot enqueue branch deletion: %v", err)
-			}
 			continue
-		}
-		if !strings.HasPrefix(pushChange.RefID, "refs/tags/") {
-			branch := strings.TrimPrefix(pushChange.RefID, "refs/heads/")
-			if err := s.stopBranchDeletionTask(ctx, branch); err != nil {
-				log.Error(ctx, "cannot stop branch deletion task for branch %s : %v", branch, err)
-			}
 		}
 
 		payloadChanges := make(map[string]interface{})
@@ -83,14 +69,20 @@ func getVariableFromBitbucketServerChange(payload map[string]interface{}, change
 	payload[GIT_HASH_SHORT] = sdk.StringFirstN(change.ToHash, 7)
 }
 
-func getVariableFromBitbucketServerRepository(payload map[string]interface{}, repo *sdk.BitbucketServerRepository) {
+func getVariableFromBitbucketServerDestRepository(payload map[string]interface{}, repo *sdk.BitbucketServerRepository) {
 	if repo == nil {
 		return
 	}
 	payload[GIT_REPOSITORY_DEST] = fmt.Sprintf("%s/%s", repo.Project.Key, repo.Slug)
 }
-
 func getVariableFromBitbucketServerSrcRepository(payload map[string]interface{}, repo *sdk.BitbucketServerRepository) {
+	if repo == nil {
+		return
+	}
+	payload[GIT_REPOSITORY_BEFORE] = fmt.Sprintf("%s/%s", repo.Project.Key, repo.Slug)
+}
+
+func getVariableFromBitbucketServerRepository(payload map[string]interface{}, repo *sdk.BitbucketServerRepository) {
 	if repo == nil {
 		return
 	}
@@ -112,17 +104,28 @@ func getVariableFromBitbucketServerPullRequest(payload map[string]interface{}, p
 	if pr == nil {
 		return
 	}
+
 	payload[PR_ID] = pr.ID
 	payload[PR_STATE] = pr.State
 	payload[PR_TITLE] = pr.Title
-	payload[GIT_BRANCH] = pr.FromRef.DisplayID
-	payload[GIT_HASH] = pr.FromRef.LatestCommit
-	payload[GIT_BRANCH_DEST] = pr.ToRef.DisplayID
-	payload[GIT_HASH_DEST] = pr.ToRef.LatestCommit
-	payload[GIT_HASH_SHORT] = sdk.StringFirstN(pr.FromRef.LatestCommit, 7)
 
-	getVariableFromBitbucketServerRepository(payload, &pr.ToRef.Repository)
-	getVariableFromBitbucketServerSrcRepository(payload, &pr.FromRef.Repository)
+	if payload[GIT_EVENT] == "pr:merged" {
+		payload[GIT_BRANCH] = pr.ToRef.DisplayID
+		payload[GIT_HASH] = pr.Properties.MergeCommit.ID
+		payload[GIT_HASH_SHORT] = sdk.StringFirstN(pr.Properties.MergeCommit.ID, 7)
+		payload[GIT_BRANCH_BEFORE] = pr.FromRef.DisplayID
+		payload[GIT_HASH_BEFORE] = pr.FromRef.LatestCommit
+		getVariableFromBitbucketServerRepository(payload, &pr.ToRef.Repository)
+		getVariableFromBitbucketServerSrcRepository(payload, &pr.FromRef.Repository)
+	} else {
+		payload[GIT_BRANCH] = pr.FromRef.DisplayID
+		payload[GIT_HASH] = pr.FromRef.LatestCommit
+		payload[GIT_HASH_SHORT] = sdk.StringFirstN(pr.FromRef.LatestCommit, 7)
+		payload[GIT_BRANCH_DEST] = pr.ToRef.DisplayID
+		payload[GIT_HASH_DEST] = pr.ToRef.LatestCommit
+		getVariableFromBitbucketServerRepository(payload, &pr.FromRef.Repository)
+		getVariableFromBitbucketServerDestRepository(payload, &pr.ToRef.Repository)
+	}
 }
 
 func getPayloadFromBitbucketServerPRComment(payload map[string]interface{}, comment *sdk.BitbucketServerComment) {

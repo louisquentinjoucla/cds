@@ -19,7 +19,7 @@ func workflowRunInteractive(v cli.Values, w *sdk.WorkflowRun, baseURL string) er
 	projectKey := v.GetString(_ProjectKey)
 	workflowName := v.GetString(_WorkflowName)
 
-	feature, err := client.FeatureEnabled("cdn-job-logs", map[string]string{
+	feature, err := client.FeatureEnabled(sdk.FeatureCDNJobLogs, map[string]string{
 		"project_key": projectKey,
 	})
 	if err != nil {
@@ -70,20 +70,11 @@ func workflowRunInteractive(v cli.Values, w *sdk.WorkflowRun, baseURL string) er
 								}
 							}
 
-							var data string
-							if link != nil {
-								buf, err := client.WorkflowLogDownload(context.Background(), *link)
-								if err != nil {
-									return err
-								}
-								data = string(buf)
-							} else {
-								buildState, err := client.WorkflowNodeRunJobStepLog(context.Background(), projectKey, workflowName, wnr.ID, job.ID, int64(step.StepOrder))
-								if err != nil {
-									return err
-								}
-								data = buildState.StepLogs.Val
+							buf, err := client.WorkflowLogDownload(context.Background(), *link)
+							if err != nil {
+								return err
 							}
+							data := string(buf)
 
 							vSplitted := strings.Split(data, "\n")
 							failedOnStepKnowned := false

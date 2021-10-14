@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -70,7 +69,7 @@ func (e *arsenalDeploymentPlugin) Manifest(ctx context.Context, _ *empty.Empty) 
 }
 
 const deployData = `{
-	"version": "{{.cds.integration.version}}",
+	"version": "{{.cds.integration.deployment.version}}",
 	"metadata": {
 		"CDS_APPLICATION": "{{.cds.application}}",
 		"CDS_RUN": "{{.cds.run}}",
@@ -85,20 +84,23 @@ const deployData = `{
 	}
 }`
 
-func (e *arsenalDeploymentPlugin) Deploy(ctx context.Context, q *integrationplugin.DeployQuery) (*integrationplugin.DeployResult, error) {
+func (e *arsenalDeploymentPlugin) Run(ctx context.Context, q *integrationplugin.RunQuery) (*integrationplugin.RunResult, error) {
 	var application = q.GetOptions()["cds.application"]
-	var arsenalHost = q.GetOptions()["cds.integration.host"]
-	var arsenalDeploymentToken = q.GetOptions()["cds.integration.deployment.token"]
-	var maxRetryStr = q.GetOptions()["cds.integration.retry.max"]
-	var delayRetryStr = q.GetOptions()["cds.integration.retry.delay"]
+	var arsenalHost = q.GetOptions()["cds.integration.deployment.host"]
+	var arsenalDeploymentToken = q.GetOptions()["cds.integration.deployment.deployment.token"]
+	if arsenalDeploymentToken == "" {
+		arsenalDeploymentToken = q.GetOptions()["cds.integration.deployment.token"]
+	}
+	var maxRetryStr = q.GetOptions()["cds.integration.deployment.retry.max"]
+	var delayRetryStr = q.GetOptions()["cds.integration.deployment.retry.delay"]
 	maxRetry, err := strconv.Atoi(maxRetryStr)
 	if err != nil {
-		fmt.Printf("Error parsing cds.integration.retry.max: %v. Default value will be used\n", err)
+		fmt.Printf("Error parsing cds.integration.deployment.retry.max: %v. Default value will be used\n", err)
 		maxRetry = 10
 	}
 	delayRetry, err := strconv.Atoi(delayRetryStr)
 	if err != nil {
-		fmt.Printf("Error parsing cds.integration.retry.max: %v. Default value will be used\n", err)
+		fmt.Printf("Error parsing cds.integration.deployment.retry.max: %v. Default value will be used\n", err)
 		delayRetry = 5
 	}
 
@@ -134,7 +136,7 @@ func (e *arsenalDeploymentPlugin) Deploy(ctx context.Context, q *integrationplug
 
 	//Read the followUp token
 	bodyResult := map[string]string{}
-	if err := json.Unmarshal(body, &bodyResult); err != nil {
+	if err := sdk.JSONUnmarshal(body, &bodyResult); err != nil {
 		return fail("Error: Unable to read body: %v", err)
 	}
 	var followUpToken = bodyResult["followup_token"]
@@ -162,6 +164,11 @@ func (e *arsenalDeploymentPlugin) Deploy(ctx context.Context, q *integrationplug
 		defer res.Body.Close()
 
 		body, _ := ioutil.ReadAll(res.Body)
+		if res.StatusCode == http.StatusServiceUnavailable {
+			retry++
+			fmt.Println("Arsenal service unavailable, waiting for next retry")
+			continue
+		}
 		if res.StatusCode != http.StatusOK {
 			fmt.Println("Body: ", string(body))
 			return fail("deployment failure")
@@ -169,7 +176,7 @@ func (e *arsenalDeploymentPlugin) Deploy(ctx context.Context, q *integrationplug
 
 		//Read the followUp token
 		bodyResult := map[string]interface{}{}
-		if err := json.Unmarshal(body, &bodyResult); err != nil {
+		if err := sdk.JSONUnmarshal(body, &bodyResult); err != nil {
 			return fail("Error: Unable to read body: %v", err)
 		}
 
@@ -188,13 +195,7 @@ func (e *arsenalDeploymentPlugin) Deploy(ctx context.Context, q *integrationplug
 		return fail("deployment failed")
 	}
 
-	return &integrationplugin.DeployResult{
-		Status: sdk.StatusSuccess,
-	}, nil
-}
-
-func (e *arsenalDeploymentPlugin) DeployStatus(ctx context.Context, q *integrationplugin.DeployStatusQuery) (*integrationplugin.DeployResult, error) {
-	return &integrationplugin.DeployResult{
+	return &integrationplugin.RunResult{
 		Status: sdk.StatusSuccess,
 	}, nil
 }
@@ -204,14 +205,12 @@ func main() {
 	if err := integrationplugin.Start(context.Background(), &e); err != nil {
 		panic(err)
 	}
-	return
-
 }
 
-func fail(format string, args ...interface{}) (*integrationplugin.DeployResult, error) {
+func fail(format string, args ...interface{}) (*integrationplugin.RunResult, error) {
 	msg := fmt.Sprintf(format, args...)
 	fmt.Println(msg)
-	return &integrationplugin.DeployResult{
+	return &integrationplugin.RunResult{
 		Details: msg,
 		Status:  sdk.StatusFail,
 	}, nil

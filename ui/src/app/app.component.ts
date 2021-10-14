@@ -1,7 +1,6 @@
 import { registerLocaleData } from '@angular/common';
 import localeEN from '@angular/common/locales/en';
-import localeFR from '@angular/common/locales/fr';
-import { Component, ElementRef, NgZone, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { Title } from '@angular/platform-browser';
 import { ActivatedRoute, NavigationEnd, NavigationStart, ResolveEnd, ResolveStart, Router } from '@angular/router';
 import { TranslateService } from '@ngx-translate/core';
@@ -9,14 +8,13 @@ import { Store } from '@ngxs/store';
 import { EventService } from 'app/event.service';
 import { GetCDSStatus } from 'app/store/cds.action';
 import { CDSState } from 'app/store/cds.state';
-import { Observable } from 'rxjs';
+import { interval, of, zip } from 'rxjs';
 import { WebSocketSubject } from 'rxjs/internal-compatibility';
-import { filter, map, mergeMap } from 'rxjs/operators';
+import { concatMap, filter, map, mergeMap } from 'rxjs/operators';
 import { Subscription } from 'rxjs/Subscription';
 import * as format from 'string-format-obj';
 import { AppService } from './app.service';
-import { AuthentifiedUser } from './model/user.model';
-import { LanguageStore } from './service/language/language.store';
+import { AuthSummary } from './model/user.model';
 import { NotificationService } from './service/notification/notification.service';
 import { HelpService, MonitoringService } from './service/services.module';
 import { ThemeStore } from './service/theme/theme.store';
@@ -24,8 +22,6 @@ import { AutoUnsubscribe } from './shared/decorator/autoUnsubscribe';
 import { ToastService } from './shared/toast/ToastService';
 import { AuthenticationState } from './store/authentication.state';
 import { AddHelp } from './store/help.action';
-
-declare var PACMAN: any;
 
 @Component({
     selector: 'app-root',
@@ -41,7 +37,6 @@ export class AppComponent implements OnInit, OnDestroy {
     heartbeatToken: number;
     zone: NgZone;
     showUIUpdatedBanner: boolean;
-    languageSubscriber: Subscription;
     themeSubscriber: Subscription;
     versionWorkerSubscription: Subscription;
     _routerSubscription: Subscription;
@@ -54,17 +49,13 @@ export class AppComponent implements OnInit, OnDestroy {
     eventsRouteSubscription: Subscription;
     maintenance: boolean;
     cdsstateSub: Subscription;
-    user: AuthentifiedUser;
-    previousURL: string
-
-    @ViewChild('gamification')
-    eltGamification: ElementRef;
-    gameInit: boolean;
+    currentAuthSummary: AuthSummary;
+    previousURL: string;
     websocket: WebSocketSubject<any>;
+    loading = true;
 
     constructor(
         _translate: TranslateService,
-        private _language: LanguageStore,
         private _theme: ThemeStore,
         private _activatedRoute: ActivatedRoute,
         private _titleService: Title,
@@ -78,24 +69,14 @@ export class AppComponent implements OnInit, OnDestroy {
         private _ngZone: NgZone,
         private _monitoringService: MonitoringService
     ) {
-        this.isAPIAvailable = false;
         this.zone = new NgZone({ enableLongStackTrace: false });
         this.toasterConfigDefault = this._toastService.getConfigDefault();
         this.toasterConfigErrorHTTP = this._toastService.getConfigErrorHTTP();
         this.toasterConfigErrorHTTPLocked = this._toastService.getConfigErrorHTTPLocked();
-        _translate.addLangs(['en', 'fr']);
+        _translate.addLangs(['en']);
         _translate.setDefaultLang('en');
-        let browserLang = navigator.language.match(/fr/) ? 'fr' : 'en';
-        _translate.use(browserLang.match(/en|fr/) ? browserLang : 'en');
-        registerLocaleData(browserLang.match(/fr/) ? localeFR : localeEN);
-
-        this.languageSubscriber = this._language.get().subscribe(l => {
-            if (l) {
-                _translate.use(l);
-            } else {
-                _language.set(browserLang.match(/en|fr/) ? browserLang : 'en');
-            }
-        });
+        _translate.use('en');
+        registerLocaleData(localeEN);
 
         this.themeSubscriber = this._theme.get().subscribe(t => {
             if (t) {
@@ -114,17 +95,21 @@ export class AppComponent implements OnInit, OnDestroy {
         });
     }
 
-    ngOnDestroy(): void {} // Should be set to use @AutoUnsubscribe with AOT
+    ngOnDestroy(): void { } // Should be set to use @AutoUnsubscribe with AOT
 
     ngOnInit(): void {
         this._monitoringService.getStatus().subscribe(
             (data) => {
                 this.isAPIAvailable = true;
+                this.loading = false;
                 this.load();
             },
             err => {
                 this.isAPIAvailable = false;
-                setTimeout(() => { window.location.reload() }, 30000);
+                this.loading = false;
+                setTimeout(() => {
+                    window.location.reload()
+                }, 30000);
             }
         );
     }
@@ -132,14 +117,15 @@ export class AppComponent implements OnInit, OnDestroy {
     load(): void {
         this._helpService.getHelp().subscribe(h => this._store.dispatch(new AddHelp(h)));
         this._store.dispatch(new GetCDSStatus());
-        this._store.select(AuthenticationState.user).subscribe(user => {
-            if (!user) {
-                delete this.user;
+        this._store.select(AuthenticationState.summary).subscribe(s => {
+            if (!s) {
+                this.currentAuthSummary = null;
                 this.isConnected = false;
                 this._eventService.stopWebsocket();
             } else {
-                this.user = user;
+                this.currentAuthSummary = s;
                 this.isConnected = true;
+                localStorage.setItem('CDS-USER', this.currentAuthSummary.user.username);
                 this._eventService.startWebsocket();
             }
         });
@@ -174,10 +160,10 @@ export class AppComponent implements OnInit, OnDestroy {
                     Object.assign(params, route.snapshot.params, route.snapshot.queryParams);
                 }
                 this._appService.updateRoute(params);
-                return { route, params: Observable.of(params) };
+                return { route, params: of(params) };
             }))
             .pipe(filter((event) => event.route.outlet === 'primary'))
-            .pipe(mergeMap((event) => Observable.zip(event.route.data, event.params)))
+            .pipe(mergeMap((event) => zip(event.route.data, event.params)))
             .subscribe((routeData) => {
                 if (!Array.isArray(routeData) || routeData.length < 2) {
                     return;
@@ -191,21 +177,14 @@ export class AppComponent implements OnInit, OnDestroy {
             });
 
         this.cdsstateSub = this._store.select(CDSState.getCurrentState()).subscribe(m => {
-            // Switch maintenance ON
-            if (!this.maintenance && m.maintenance && !this.gameInit && this.isConnected && !this.user.isAdmin()) {
-                setTimeout(() => {
-                    this.gameInit = true;
-                    PACMAN.init(this.eltGamification.nativeElement, '/assets/js/');
-                }, 1000);
-            }
             this.maintenance = m.maintenance;
         });
     }
 
     startVersionWorker(): void {
         this._ngZone.runOutsideAngular(() => {
-            this.versionWorkerSubscription = Observable.interval(60000)
-                .mergeMap(_ => this._monitoringService.getVersion())
+            this.versionWorkerSubscription = interval(60000)
+                .pipe(concatMap(_ => this._monitoringService.getVersion()))
                 .subscribe(v => {
                     this._ngZone.run(() => {
                         if ((<any>window).cds_version !== v.version) {
@@ -218,7 +197,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
     refresh(): void {
         this.zone.runOutsideAngular(() => {
-            location.reload(true);
+            location.reload();
         });
     }
 }

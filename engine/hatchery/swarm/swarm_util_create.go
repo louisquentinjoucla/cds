@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,11 +12,10 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/go-connections/nat"
-	context "golang.org/x/net/context"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
 	"github.com/ovh/cds/sdk/hatchery"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -23,7 +23,7 @@ import (
 func (h *HatcherySwarm) createNetwork(ctx context.Context, dockerClient *dockerClient, name string) error {
 	ctx, end := telemetry.Span(ctx, "swarm.createNetwork", telemetry.Tag("network", name))
 	defer end()
-	log.Debug("hatchery> swarm> createNetwork> Create network %s", name)
+	log.Debug(ctx, "hatchery> swarm> createNetwork> Create network %s", name)
 	_, err := dockerClient.NetworkCreate(ctx, name, types.NetworkCreate{
 		Driver:         "bridge",
 		Internal:       false,
@@ -44,6 +44,7 @@ type containerArgs struct {
 	cmd, env                           []string
 	labels                             map[string]string
 	memory                             int64
+	memorySwap                         int64
 	dockerOpts                         dockerOpts
 	entryPoint                         strslice.StrSlice
 }
@@ -61,7 +62,7 @@ func (h *HatcherySwarm) createAndStartContainer(ctx context.Context, dockerClien
 	if cArgs.memory <= 4 {
 		cArgs.memory = 1024
 	}
-	log.Info(ctx, "hatchery> swarm> createAndStartContainer> Create container %s on %s from %s (memory=%dMB)", cArgs.name, dockerClient.name, cArgs.image, cArgs.memory)
+	log.Info(ctx, "create container %s on %s from %s (memory=%dMB)", cArgs.name, dockerClient.name, cArgs.image, cArgs.memory)
 
 	var exposedPorts nat.PortSet
 
@@ -86,7 +87,7 @@ func (h *HatcherySwarm) createAndStartContainer(ctx context.Context, dockerClien
 	}
 	hostConfig.Resources = container.Resources{
 		Memory:     cArgs.memory * 1024 * 1024, //from MB to B
-		MemorySwap: -1,
+		MemorySwap: cArgs.memorySwap,
 	}
 
 	networkingConfig := &network.NetworkingConfig{
@@ -103,7 +104,7 @@ func (h *HatcherySwarm) createAndStartContainer(ctx context.Context, dockerClien
 	// Check the images to know if we had to pull or not
 	images, errl := dockerClient.ImageList(ctx, types.ImageListOptions{All: true})
 	if errl != nil {
-		log.Warning(ctx, "createAndStartContainer> Unable to list images: %s", errl)
+		log.Warn(ctx, "unable to list images: %s", errl)
 	}
 	next()
 
@@ -123,10 +124,7 @@ checkImage:
 	}
 
 	if !imageFound {
-		hatchery.SendSpawnInfo(ctx, h, spawnArgs.JobID, sdk.SpawnMsg{
-			ID:   sdk.MsgSpawnInfoHatcheryStartDockerPull.ID,
-			Args: []interface{}{h.Name(), cArgs.image},
-		})
+		hatchery.SendSpawnInfo(ctx, h, spawnArgs.JobID, sdk.SpawnMsgNew(*sdk.MsgSpawnInfoHatcheryStartDockerPull, h.Name(), cArgs.image))
 
 		_, next := telemetry.Span(ctx, "swarm.dockerClient.pullImage", telemetry.Tag("image", cArgs.image))
 		if err := h.pullImage(dockerClient,
@@ -134,32 +132,28 @@ checkImage:
 			timeoutPullImage,
 			*spawnArgs.Model); err != nil {
 			next()
-			hatchery.SendSpawnInfo(ctx, h, spawnArgs.JobID, sdk.SpawnMsg{
-				ID:   sdk.MsgSpawnInfoHatcheryEndDockerPullErr.ID,
-				Args: []interface{}{h.Name(), cArgs.image, sdk.ExtractHTTPError(err, "").Error()},
-			})
-			return sdk.WrapError(err, "Unable to pull image %s on %s", cArgs.image, dockerClient.name)
+
+			spawnMsg := sdk.SpawnMsgNew(*sdk.MsgSpawnInfoHatcheryEndDockerPullErr, h.Name(), cArgs.image, sdk.Cause(err))
+			hatchery.SendSpawnInfo(ctx, h, spawnArgs.JobID, spawnMsg)
+			return sdk.WrapError(err, "unable to pull image %s on %s", cArgs.image, dockerClient.name)
 		}
 		next()
 
-		hatchery.SendSpawnInfo(ctx, h, spawnArgs.JobID, sdk.SpawnMsg{
-			ID:   sdk.MsgSpawnInfoHatcheryEndDockerPull.ID,
-			Args: []interface{}{h.Name(), cArgs.image},
-		})
+		hatchery.SendSpawnInfo(ctx, h, spawnArgs.JobID, sdk.SpawnMsgNew(*sdk.MsgSpawnInfoHatcheryEndDockerPull, h.Name(), cArgs.image))
 	}
 
 	_, next = telemetry.Span(ctx, "swarm.dockerClient.ContainerCreate", telemetry.Tag(telemetry.TagWorker, cArgs.name), telemetry.Tag("network", fmt.Sprintf("%v", networkingConfig)))
 	c, err := dockerClient.ContainerCreate(ctx, config, hostConfig, networkingConfig, name)
 	if err != nil {
 		next()
-		return sdk.WrapError(err, "Unable to create container %s on %s", name, dockerClient.name)
+		return sdk.WrapError(err, "unable to create container %s on %s", name, dockerClient.name)
 	}
 	next()
 
 	_, next = telemetry.Span(ctx, "swarm.dockerClient.ContainerStart", telemetry.Tag(telemetry.TagWorker, cArgs.name), telemetry.Tag("network", fmt.Sprintf("%v", networkingConfig)))
 	if err := dockerClient.ContainerStart(ctx, c.ID, types.ContainerStartOptions{}); err != nil {
 		next()
-		return sdk.WrapError(err, "Unable to start container on %s: %s", dockerClient.name, sdk.StringFirstN(c.ID, 12))
+		return sdk.WrapError(err, "unable to start container on %s: %s", dockerClient.name, sdk.StringFirstN(c.ID, 12))
 	}
 	next()
 	return nil

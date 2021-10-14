@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 //RedisStore a redis client and a default ttl
@@ -116,7 +116,7 @@ func (s *RedisStore) Get(key string, value interface{}) (bool, error) {
 		return false, sdk.WrapError(errRedis, "redis> get error %s", key)
 	}
 	if val != "" {
-		if err := json.Unmarshal([]byte(val), value); err != nil {
+		if err := sdk.JSONUnmarshal([]byte(val), value); err != nil {
 			return false, sdk.WrapError(err, "redis> cannot get unmarshal %s", key)
 		}
 		return true, nil
@@ -281,7 +281,7 @@ func (s *RedisStore) DequeueWithContext(c context.Context, queueName string, wai
 	}
 	if elem != "" {
 		b := []byte(elem)
-		if err := json.Unmarshal(b, value); err != nil {
+		if err := sdk.JSONUnmarshal(b, value); err != nil {
 			return sdk.WrapError(err, "redis.DequeueWithContext> error on unmarshal value on queue:%s", queueName)
 		}
 	}
@@ -353,7 +353,7 @@ func (s *RedisStore) Publish(ctx context.Context, channel string, value interfac
 		if errP == nil {
 			break
 		}
-		log.Warning(ctx, "redis.Publish> Unable to publish in channel %s: %v", channel, errP)
+		log.Warn(ctx, "redis.Publish> Unable to publish in channel %s: %v", channel, errP)
 		time.Sleep(100 * time.Millisecond)
 	}
 	return nil
@@ -440,7 +440,7 @@ func (s *RedisStore) SetScan(ctx context.Context, key string, members ...interfa
 				return sdk.WithStack(fmt.Errorf("SetScan member %s not found", keys[i]))
 			}
 
-			if err := json.Unmarshal([]byte(res[i].(string)), members[i]); err != nil {
+			if err := sdk.JSONUnmarshal([]byte(res[i].(string)), members[i]); err != nil {
 				return sdk.WrapError(err, "redis> cannot unmarshal %s", keys[i])
 			}
 		}
@@ -484,6 +484,15 @@ func (s *RedisStore) Unlock(key string) error {
 func (s *RedisStore) Size(key string) (int64, error) {
 	oct, err := s.Client.MemoryUsage(key).Result()
 	return oct, sdk.WithStack(err)
+}
+
+func (s *RedisStore) ScoredSetGetScore(key string, member interface{}) (float64, error) {
+	bts, err := json.Marshal(member)
+	if err != nil {
+		return 0, sdk.WithStack(err)
+	}
+	score, err := s.Client.ZScore(key, string(bts)).Result()
+	return score, sdk.WithStack(err)
 }
 
 func (s *RedisStore) ScoredSetAppend(ctx context.Context, key string, value interface{}) error {
@@ -547,11 +556,40 @@ func (s *RedisStore) ScoredSetRange(_ context.Context, key string, from, to int6
 
 	for i := 0; i < v.Len(); i++ {
 		m := v.Index(i).Interface()
-		if err := json.Unmarshal([]byte(values[i]), &m); err != nil {
+		if err := sdk.JSONUnmarshal([]byte(values[i]), &m); err != nil {
 			return sdk.WrapError(err, "redis> cannot unmarshal %s", values[i])
 		}
 		v.Index(i).Set(reflect.ValueOf(m))
 	}
+	return nil
+}
+
+func (s *RedisStore) ScoredSetRevRange(_ context.Context, key string, offset int64, limit int64, dest interface{}) error {
+	values, err := s.Client.ZRevRange(key, offset, limit).Result()
+	if err != nil {
+		return fmt.Errorf("redis zrevrange error: %v", err)
+	}
+
+	v := reflect.ValueOf(dest)
+	if v.Kind() != reflect.Ptr {
+		return fmt.Errorf("non-pointer %v", v.Type())
+	}
+	v = v.Elem()
+	if v.Kind() != reflect.Slice {
+		return errors.New("the interface is not a slice")
+	}
+
+	typ := reflect.TypeOf(v.Interface())
+	v.Set(reflect.MakeSlice(typ, len(values), len(values)))
+
+	for i := 0; i < v.Len(); i++ {
+		m := v.Index(i).Interface()
+		if err := sdk.JSONUnmarshal([]byte(values[i]), &m); err != nil {
+			return sdk.WrapError(err, "redis> cannot unmarshal %s", values[i])
+		}
+		v.Index(i).Set(reflect.ValueOf(m))
+	}
+
 	return nil
 }
 
@@ -587,7 +625,7 @@ func (s *RedisStore) ScoredSetScan(_ context.Context, key string, from, to float
 
 	for i := 0; i < v.Len(); i++ {
 		m := v.Index(i).Interface()
-		if err := json.Unmarshal([]byte(values[i]), &m); err != nil {
+		if err := sdk.JSONUnmarshal([]byte(values[i]), &m); err != nil {
 			return sdk.WrapError(err, "redis> cannot unmarshal %s", values[i])
 		}
 		v.Index(i).Set(reflect.ValueOf(m))

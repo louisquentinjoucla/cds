@@ -2,7 +2,6 @@ package hatchery_test
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
@@ -50,14 +49,15 @@ func TestHatcheryLocal(t *testing.T) {
 	cfg.API.MaxHeartbeatFailures = 0
 	cfg.Provision.RegisterFrequency = 1
 	cfg.Provision.MaxWorker = 1
+	cfg.Provision.InjectEnvVars = []string{"AAA=AAA"}
 	privKey, _ := jws.NewRandomRSAKey()
 	privKeyPEM, _ := jws.ExportPrivateKey(privKey)
 	cfg.RSAPrivateKey = string(privKeyPEM)
 
-	err := h.ApplyConfiguration(cfg)
-	require.NoError(t, err)
+	require.NoError(t, h.ApplyConfiguration(cfg))
 
 	srvCfg, err := h.Init(cfg)
+	require.NoError(t, err)
 	require.NotNil(t, srvCfg)
 	t.Logf("service config: %+v", srvCfg)
 
@@ -68,25 +68,20 @@ func TestHatcheryLocal(t *testing.T) {
 		return nil
 	}
 
-	err = h.Start(context.TODO(), srvCfg)
-	require.NoError(t, err)
+	require.NoError(t, h.Signin(context.TODO(), srvCfg))
+	require.NoError(t, h.Register(context.TODO(), cfg))
+	require.NoError(t, h.Start(context.TODO()))
 
-	var srvConfig sdk.ServiceConfig
-	b, _ := json.Marshal(cfg)
-	json.Unmarshal(b, &srvConfig) // nolint
-
-	err = h.Register(context.Background(), srvConfig)
-	require.NoError(t, err)
-
-	heartbeatCtx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
-	defer cancel()
-	err = h.Heartbeat(heartbeatCtx, h.Status)
-	require.Contains(t, "context deadline exceeded", err.Error())
-
+	// Wait 30 sec to let the queue polling exec run one time
 	serveCtx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
 	defer cancel()
 	err = h.Serve(serveCtx)
-	require.Contains(t, "context deadline exceeded", err.Error())
+	require.Contains(t, err.Error(), "Server closed")
+
+	heartbeatCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
+	defer cancel()
+	err = h.Heartbeat(heartbeatCtx, h.Status)
+	require.Contains(t, err.Error(), "context deadline exceeded")
 
 	// Mock assertions
 
@@ -111,9 +106,11 @@ func TestHatcheryLocal(t *testing.T) {
 	}
 }
 
-func TestHelperProcess(*testing.T) {
+func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
 	}
+
+	t.Log(os.Environ())
 	time.Sleep(30 * time.Second)
 }

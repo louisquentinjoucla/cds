@@ -15,8 +15,7 @@ import (
 func LoadAllByIDs(db gorp.SqlExecutor, ids []int64) ([]sdk.Environment, error) {
 	var envs []sdk.Environment
 
-	query := `
-    SELECT environment.id, environment.name, environment.project_id, environment.created,
+	query := `SELECT environment.id, environment.name, environment.project_id, environment.created,
       environment.last_modified, environment.from_repository, project.projectkey
 		FROM environment
 		JOIN project ON project.id = environment.project_id
@@ -282,4 +281,35 @@ func LoadAllNames(db gorp.SqlExecutor, projID int64) (sdk.IDNames, error) {
 	}
 
 	return res, nil
+}
+
+// LoadAllNamesByFromRepository returns all environment names for a repository
+func LoadAllNamesByFromRepository(db gorp.SqlExecutor, projID int64, fromRepository string) (sdk.IDNames, error) {
+	if fromRepository == "" {
+		return nil, sdk.WithData(sdk.ErrUnknownError, "could not call LoadAllNamesByFromRepository with empty fromRepository")
+	}
+	query := `SELECT environment.id, environment.name
+			  FROM environment
+			  WHERE project_id = $1 AND from_repository = $2
+			  ORDER BY environment.name`
+
+	var res sdk.IDNames
+	if _, err := db.Select(&res, query, projID, fromRepository); err != nil {
+		if err == sql.ErrNoRows {
+			return res, nil
+		}
+		return nil, sdk.WrapError(err, "environment.LoadAllNamesByFromRepository")
+	}
+
+	return res, nil
+}
+
+// ResetFromRepository reset fromRepository for all environments using the same fromRepository in a given project
+func ResetFromRepository(db gorp.SqlExecutor, projID int64, fromRepository string) error {
+	if fromRepository == "" {
+		return sdk.WithData(sdk.ErrUnknownError, "could not call LoadAllNamesByFromRepository with empty fromRepository")
+	}
+	query := `UPDATE environment SET from_repository='' WHERE project_id = $1 AND from_repository = $2`
+	_, err := db.Exec(query, projID, fromRepository)
+	return sdk.WithStack(err)
 }

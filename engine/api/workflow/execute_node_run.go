@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,16 +11,18 @@ import (
 
 	"github.com/fsamin/go-dump"
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/api/action"
+	"github.com/ovh/cds/engine/api/database/gorpmapping"
 	"github.com/ovh/cds/engine/api/group"
 	"github.com/ovh/cds/engine/api/plugin"
 	"github.com/ovh/cds/engine/api/repositoriesmanager"
 	"github.com/ovh/cds/engine/api/services"
 	"github.com/ovh/cds/engine/cache"
+	"github.com/ovh/cds/engine/featureflipping"
 	"github.com/ovh/cds/engine/gorpmapper"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 	"github.com/ovh/cds/sdk/telemetry"
 )
 
@@ -33,6 +36,7 @@ func syncJobInNodeRun(n *sdk.WorkflowNodeRun, j *sdk.WorkflowNodeJobRun, stageIn
 			rj.Done = j.Done
 			rj.Model = j.Model
 			rj.ModelType = j.ModelType
+			rj.Region = j.Region
 			rj.ContainsService = j.ContainsService
 			rj.Job = j.Job
 			rj.Header = j.Header
@@ -69,6 +73,7 @@ func syncTakeJobInNodeRun(ctx context.Context, db gorp.SqlExecutor, n *sdk.Workf
 			rj.Done = j.Done
 			rj.Model = j.Model
 			rj.ModelType = j.ModelType
+			rj.Region = j.Region
 			rj.ContainsService = j.ContainsService
 			rj.WorkerName = j.WorkerName
 			rj.HatcheryName = j.HatcheryName
@@ -95,7 +100,7 @@ func syncTakeJobInNodeRun(ctx context.Context, db gorp.SqlExecutor, n *sdk.Workf
 	}
 
 	// Save the node run in database
-	if err := updateNodeRunStatusAndStage(db, n); err != nil {
+	if err := UpdateNodeRunStatusAndStage(db, n); err != nil {
 		return nil, sdk.WrapError(err, "unable to update node id=%d at status %s", n.ID, n.Status)
 	}
 	return report, nil
@@ -104,13 +109,14 @@ func syncTakeJobInNodeRun(ctx context.Context, db gorp.SqlExecutor, n *sdk.Workf
 func executeNodeRun(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.Store, proj sdk.Project, workflowNodeRun *sdk.WorkflowNodeRun) (*ProcessorReport, error) {
 	var end func()
 	ctx, end = telemetry.Span(ctx, "workflow.executeNodeRun",
+		telemetry.Tag(telemetry.TagProjectKey, proj.Key),
 		telemetry.Tag(telemetry.TagWorkflowRun, workflowNodeRun.Number),
 		telemetry.Tag(telemetry.TagWorkflowNodeRun, workflowNodeRun.ID),
 		telemetry.Tag("workflow_node_run_status", workflowNodeRun.Status),
 	)
 	defer end()
 
-	wr, err := LoadRunByID(db, workflowNodeRun.WorkflowRunID, LoadRunOptions{})
+	wr, err := LoadRunByID(ctx, db, workflowNodeRun.WorkflowRunID, LoadRunOptions{})
 	if err != nil {
 		return nil, sdk.WrapError(err, "unable to load workflow run with id %d", workflowNodeRun.WorkflowRunID)
 	}
@@ -175,13 +181,13 @@ func executeNodeRun(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 			} else {
 				// Add job to Queue
 				// Insert data in workflow_node_run_job
-				log.Debug("workflow.executeNodeRun> stage %s call addJobsToQueue", stage.Name)
+				log.Debug(ctx, "workflow.executeNodeRun> stage %s call addJobsToQueue", stage.Name)
 				r, err := addJobsToQueue(ctx, db, stage, wr, workflowNodeRun, &previousStage)
 				report.Merge(ctx, r)
 				if err != nil {
 					return report, err
 				}
-				log.Debug("workflow.executeNodeRun> stage %s status after call to addJobsToQueue %s", stage.Name, stage.Status)
+				log.Debug(ctx, "workflow.executeNodeRun> stage %s status after call to addJobsToQueue %s", stage.Name, stage.Status)
 			}
 
 			// Check for failure caused by action not usable or requirements problem
@@ -209,7 +215,7 @@ func executeNodeRun(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 
 		//If stage is waiting, nothing to do
 		if stage.Status == sdk.StatusWaiting {
-			log.Debug("workflow.executeNodeRun> stage %s status:%s - nothing to do", stage.Name, stage.Status)
+			log.Debug(ctx, "workflow.executeNodeRun> stage %s status:%s - nothing to do", stage.Name, stage.Status)
 			break
 		}
 
@@ -276,12 +282,12 @@ func executeNodeRun(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 	}
 
 	// Save the node run in database
-	if err := updateNodeRunStatusAndStage(db, workflowNodeRun); err != nil {
+	if err := UpdateNodeRunStatusAndStage(db, workflowNodeRun); err != nil {
 		return nil, sdk.WrapError(err, "unable to update node id=%d at status %s", workflowNodeRun.ID, workflowNodeRun.Status)
 	}
 
 	//Reload the workflow
-	updatedWorkflowRun, err := LoadRunByID(db, workflowNodeRun.WorkflowRunID, LoadRunOptions{})
+	updatedWorkflowRun, err := LoadRunByID(ctx, db, workflowNodeRun.WorkflowRunID, LoadRunOptions{})
 	if err != nil {
 		return nil, sdk.WrapError(err, "unable to reload workflow run id=%d", workflowNodeRun.WorkflowRunID)
 	}
@@ -299,6 +305,26 @@ func executeNodeRun(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 
 		// Delete the line in workflow_node_run_job
 		if err := DeleteNodeJobRuns(db, workflowNodeRun.ID); err != nil {
+			// Checking the error:
+			// pq: update or delete on table "workflow_node_run_job" violates foreign key constraint "fk_worker_workflow_node_run_job" on table "worker")
+			type WorkerInfo struct {
+				WorkerID             string `db:"worker_id"`
+				WorkerName           string `db:"worker_name"`
+				WorkflowNodeRunJobID string `db:"workflow_node_run_job_id"`
+			}
+
+			var workers []WorkerInfo
+			if _, errSelect := db.Select(&workers, `
+        SELECT worker.id as worker_id, worker.name as worker_name, workflow_node_run_job.id as workflow_node_run_job_id FROM worker
+        JOIN workflow_node_run_job ON workflow_node_run_job.worker_id = worker.id
+        WHERE workflow_node_run_job.workflow_node_run_id = $1
+      `, workflowNodeRun.ID); errSelect != nil {
+				log.ErrorWithStackTrace(ctx, sdk.WrapError(errSelect, "unable to get worker list for node run with id %d", workflowNodeRun.ID))
+			} else {
+				buf, _ := json.Marshal(workers)
+				log.Error(ctx, "list of workers for node run %d that block jobs deletion (len:%d): %q", workflowNodeRun.ID, len(workers), string(buf))
+			}
+
 			return nil, sdk.WrapError(err, "unable to delete node %d job runs", workflowNodeRun.ID)
 		}
 
@@ -317,8 +343,8 @@ func executeNodeRun(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store 
 }
 
 func releaseMutex(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cache.Store, proj sdk.Project, workflowID int64, nodeName string) (*ProcessorReport, error) {
-	_, next := telemetry.Span(ctx, "workflow.releaseMutex")
-	defer next()
+	ctx, end := telemetry.Span(ctx, "workflow.releaseMutex")
+	defer end()
 
 	mutexQuery := `
     SELECT workflow_node_run.id
@@ -331,12 +357,11 @@ func releaseMutex(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store ca
     ORDER BY workflow_run.num ASC
     LIMIT 1
   `
-	waitingRunID, err := db.SelectInt(mutexQuery, workflowID, nodeName, string(sdk.StatusWaiting))
+	waitingRunID, err := db.SelectInt(mutexQuery, workflowID, nodeName, sdk.StatusWaiting)
 	if err != nil && err != sql.ErrNoRows {
 		err = sdk.WrapError(err, "unable to load mutex-locked workflow node run id")
-		log.ErrorWithFields(ctx, log.Fields{
-			"stack_trace": fmt.Sprintf("%+v", err),
-		}, "%s", err)
+		ctx = sdk.ContextWithStacktrace(ctx, err)
+		log.Error(ctx, "%v", err)
 		return nil, nil
 	}
 	if waitingRunID == 0 {
@@ -344,12 +369,11 @@ func releaseMutex(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store ca
 	}
 
 	// Load the workflow node run that is waiting for the mutex
-	waitingRun, errRun := LoadNodeRunByID(db, waitingRunID, LoadRunOptions{})
+	waitingRun, errRun := LoadNodeRunByID(ctx, db, waitingRunID, LoadRunOptions{})
 	if errRun != nil && sdk.Cause(errRun) != sql.ErrNoRows {
 		err = sdk.WrapError(err, "unable to load mutex-locked workflow node run")
-		log.ErrorWithFields(ctx, log.Fields{
-			"stack_trace": fmt.Sprintf("%+v", err),
-		}, "%s", err)
+		ctx = sdk.ContextWithStacktrace(ctx, err)
+		log.Error(ctx, err.Error())
 		return nil, nil
 	}
 	if waitingRun == nil {
@@ -357,12 +381,11 @@ func releaseMutex(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store ca
 	}
 
 	// Load the workflow run that is waiting for the mutex
-	workflowRun, err := LoadRunByID(db, waitingRun.WorkflowRunID, LoadRunOptions{})
+	workflowRun, err := LoadRunByID(ctx, db, waitingRun.WorkflowRunID, LoadRunOptions{})
 	if err != nil {
 		err = sdk.WrapError(err, "unable to load mutex-locked workflow run")
-		log.ErrorWithFields(ctx, log.Fields{
-			"stack_trace": fmt.Sprintf("%+v", err),
-		}, "%s", err)
+		ctx = sdk.ContextWithStacktrace(ctx, err)
+		log.Error(ctx, err.Error())
 		return nil, nil
 	}
 
@@ -372,7 +395,7 @@ func releaseMutex(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store ca
 		return nil, sdk.WrapError(err, "unable to update workflow run %d after mutex release", workflowRun.ID)
 	}
 
-	log.Debug("workflow.execute> process the node run %d because mutex has been released", waitingRun.ID)
+	log.Debug(ctx, "workflow.execute> process the node run %d because mutex has been released", waitingRun.ID)
 	r, err := executeNodeRun(ctx, db, store, proj, waitingRun)
 	if err != nil {
 		return r, sdk.WrapError(err, "unable to reprocess workflow")
@@ -427,8 +450,8 @@ func addJobsToQueue(ctx context.Context, db gorp.SqlExecutor, stage *sdk.Stage, 
 		stage.Status = sdk.StatusDisabled
 	}
 
-	_, next = telemetry.Span(ctx, "workflow.getIntegrationPluginBinaries")
-	integrationPluginBinaries, err := getIntegrationPluginBinaries(db, wr, nr)
+	_, next = telemetry.Span(ctx, "workflow.getIntegrationPlugins")
+	integrationConfigs, integrationPlugins, err := getIntegrationPlugins(db, wr, nr)
 	if err != nil {
 		return report, sdk.WrapError(err, "unable to get integration plugins requirement")
 	}
@@ -469,10 +492,16 @@ jobLoop:
 		}
 
 		_, next = telemetry.Span(ctx, "workflow.processNodeJobRunRequirements")
-		jobRequirements, containsService, wm, err := processNodeJobRunRequirements(ctx, db, *job, nr, sdk.Groups(groups).ToIDs(), integrationPluginBinaries)
+		jobRequirements, containsService, wm, err := processNodeJobRunRequirements(ctx, db, *job, nr, sdk.Groups(groups).ToIDs(), integrationPlugins, integrationConfigs)
 		next()
 		if err != nil {
 			spawnErrs.Join(*err)
+		}
+
+		if exist := featureflipping.Exists(ctx, gorpmapping.Mapper, db, sdk.FeatureRegion); exist {
+			if err := checkJobRegion(ctx, db, wr.Workflow.ProjectKey, wr.Workflow.Name, *job); err != nil {
+				spawnErrs.Append(sdk.ErrRegionNotAllowed)
+			}
 		}
 
 		// check that children actions used by job can be used by the project
@@ -487,14 +516,14 @@ jobLoop:
 
 		//Create the job run
 		wjob := sdk.WorkflowNodeJobRun{
-			ProjectID:                 wr.ProjectID,
-			WorkflowNodeRunID:         nr.ID,
-			Start:                     time.Time{},
-			Queued:                    time.Now(),
-			Status:                    sdk.StatusWaiting,
-			Parameters:                jobParams,
-			ExecGroups:                groups,
-			IntegrationPluginBinaries: integrationPluginBinaries,
+			ProjectID:          wr.ProjectID,
+			WorkflowNodeRunID:  nr.ID,
+			Start:              time.Time{},
+			Queued:             time.Now(),
+			Status:             sdk.StatusWaiting,
+			Parameters:         jobParams,
+			ExecGroups:         groups,
+			IntegrationPlugins: integrationPlugins,
 			Job: sdk.ExecutedJob{
 				Job: *job,
 			},
@@ -505,6 +534,14 @@ jobLoop:
 			wjob.ModelType = wm.Type
 		}
 		wjob.Job.Job.Action.Requirements = jobRequirements // Set the interpolated requirements on the job run only
+
+		// Set region from requirement on job run if exists
+		for i := range jobRequirements {
+			if jobRequirements[i].Type == sdk.RegionRequirement {
+				wjob.Region = &jobRequirements[i].Value
+				break
+			}
+		}
 
 		if !stage.Enabled || !wjob.Job.Enabled {
 			wjob.Status = sdk.StatusDisabled
@@ -523,7 +560,7 @@ jobLoop:
 				msg := sdk.SpawnMsg{
 					ID: sdk.MsgSpawnInfoJobError.ID,
 				}
-				msg.Args = []interface{}{sdk.ExtractHTTPError(e, "").Error()}
+				msg.Args = []interface{}{sdk.ExtractHTTPError(e).Error()}
 				wjob.SpawnInfos = append(wjob.SpawnInfos, sdk.SpawnInfo{
 					APITime:     time.Now(),
 					Message:     msg,
@@ -570,26 +607,51 @@ jobLoop:
 	return report, nil
 }
 
-func getIntegrationPluginBinaries(db gorp.SqlExecutor, wr *sdk.WorkflowRun, nr *sdk.WorkflowNodeRun) ([]sdk.GRPCPluginBinary, error) {
-	var projectIntegrationModelID int64
+func getIntegrationPlugins(db gorp.SqlExecutor, wr *sdk.WorkflowRun, nr *sdk.WorkflowNodeRun) ([]sdk.IntegrationConfig, []sdk.GRPCPlugin, error) {
+	plugins := make([]sdk.GRPCPlugin, 0)
+	mapConfig := make([]sdk.IntegrationConfig, 0)
+
+	var projectIntegration *sdk.ProjectIntegration
 	node := wr.Workflow.WorkflowData.NodeByID(nr.WorkflowNodeID)
 	if node != nil && node.Context != nil {
 		if node.Context.ProjectIntegrationID != 0 {
 			pp, has := wr.Workflow.ProjectIntegrations[node.Context.ProjectIntegrationID]
 			if has {
-				projectIntegrationModelID = pp.Model.ID
+				projectIntegration = &pp
 			}
 		}
 	}
 
-	if projectIntegrationModelID > 0 {
-		plugin, err := plugin.LoadByIntegrationModelIDAndType(db, projectIntegrationModelID, sdk.GRPCPluginDeploymentIntegration)
+	if projectIntegration != nil && projectIntegration.Model.ID > 0 {
+		mapConfig = append(mapConfig, projectIntegration.Config)
+		plg, err := plugin.LoadByIntegrationModelIDAndType(db, projectIntegration.Model.ID, sdk.GRPCPluginDeploymentIntegration)
 		if err != nil {
-			return nil, sdk.NewErrorFrom(sdk.ErrNotFound, "Cannot find plugin for integration model id %d, %v", projectIntegrationModelID, err)
+			return nil, nil, sdk.NewErrorFrom(sdk.ErrNotFound, "Cannot find plugin for integration model id %d, %v", projectIntegration.Model.ID, err)
 		}
-		return plugin.Binaries, nil
+		plugins = append(plugins, *plg)
 	}
-	return nil, nil
+
+	var artifactManagerInteg *sdk.WorkflowProjectIntegration
+	for i := range wr.Workflow.Integrations {
+		if wr.Workflow.Integrations[i].ProjectIntegration.Model.ArtifactManager {
+			artifactManagerInteg = &wr.Workflow.Integrations[i]
+		}
+	}
+	if artifactManagerInteg != nil {
+		mapConfig = append(mapConfig, artifactManagerInteg.Config)
+		plgs, err := plugin.LoadAllByIntegrationModelID(db, artifactManagerInteg.ProjectIntegration.Model.ID)
+		if err != nil {
+			return nil, nil, sdk.NewErrorFrom(sdk.ErrNotFound, "Cannot find plugin for integration model id %d, %v", artifactManagerInteg.ProjectIntegration.Model.ID, err)
+		}
+		platform := artifactManagerInteg.ProjectIntegration.Config[sdk.ArtifactoryConfigPlatform]
+		for _, plg := range plgs {
+			if strings.HasPrefix(plg.Name, fmt.Sprintf("%s-", platform.Value)) {
+				plugins = append(plugins, plg)
+			}
+		}
+	}
+
+	return mapConfig, plugins, nil
 }
 
 func getExecutablesGroups(wr *sdk.WorkflowRun, nr *sdk.WorkflowNodeRun) ([]sdk.Group, error) {
@@ -632,7 +694,7 @@ func syncStage(ctx context.Context, db gorp.SqlExecutor, store cache.Store, stag
 			if runJobDB.Status == sdk.StatusBuilding || runJobDB.Status == sdk.StatusWaiting {
 				stageEnd = false
 			}
-			spawnInfos, err := LoadNodeRunJobInfo(ctx, db, runJob.ID)
+			spawnInfos, err := LoadNodeRunJobInfo(ctx, db, runJob.WorkflowNodeRunID, runJob.ID)
 			if err != nil {
 				return false, sdk.WrapError(err, "unable to load spawn infos for runJob: %d", runJob.ID)
 			}
@@ -647,15 +709,15 @@ func syncStage(ctx context.Context, db gorp.SqlExecutor, store cache.Store, stag
 				runJob.Done = runJobDB.Done
 				runJob.Model = runJobDB.Model
 				runJob.ModelType = runJobDB.ModelType
+				runJob.Region = runJobDB.Region
 				runJob.ContainsService = runJobDB.ContainsService
 				runJob.Job = runJobDB.Job
-				runJob.Model = runJobDB.Model
 				runJob.WorkerName = runJobDB.WorkerName
 				runJob.HatcheryName = runJobDB.HatcheryName
 			}
 		}
 	}
-	log.Debug("syncStage> stage %s stageEnd:%t len(stage.RunJobs):%d", stage.Name, stageEnd, len(stage.RunJobs))
+	log.Debug(ctx, "syncStage> stage %s stageEnd:%t len(stage.RunJobs):%d", stage.Name, stageEnd, len(stage.RunJobs))
 
 	if stageEnd || len(stage.RunJobs) == 0 {
 		finalStatus = sdk.StatusSuccess
@@ -686,14 +748,14 @@ func syncStage(ctx context.Context, db gorp.SqlExecutor, store cache.Store, stag
 			}
 		}
 	}
-	log.Debug("syncStage> set stage %s from %s to %s", stage.Name, stage.Status, finalStatus)
+	log.Debug(ctx, "syncStage> set stage %s from %s to %s", stage.Name, stage.Status, finalStatus)
 	stage.Status = finalStatus
 	return stageEnd, nil
 }
 
 // NodeBuildParametersFromRun return build parameters from previous workflow run
 func NodeBuildParametersFromRun(wr sdk.WorkflowRun, id int64) ([]sdk.Parameter, error) {
-	params := []sdk.Parameter{}
+	params := make([]sdk.Parameter, 0)
 
 	nodesRun, ok := wr.WorkflowNodeRuns[id]
 	if !ok || len(nodesRun) == 0 {
@@ -709,8 +771,11 @@ func NodeBuildParametersFromRun(wr sdk.WorkflowRun, id int64) ([]sdk.Parameter, 
 
 //NodeBuildParametersFromWorkflow returns build_parameters for a node given its id
 func NodeBuildParametersFromWorkflow(proj sdk.Project, wf *sdk.Workflow, refNode *sdk.Node, ancestorsIds []int64) ([]sdk.Parameter, error) {
-	runContext := nodeRunContext{}
-	res := []sdk.Parameter{}
+	runContext := nodeRunContext{
+		WorkflowProjectIntegrations: wf.Integrations,
+		ProjectIntegrations:         make([]sdk.ProjectIntegration, 0),
+	}
+	res := make([]sdk.Parameter, 0)
 	if refNode != nil && refNode.Context != nil {
 		if refNode.Context.PipelineID != 0 && wf.Pipelines != nil {
 			pip, has := wf.Pipelines[refNode.Context.PipelineID]
@@ -733,7 +798,7 @@ func NodeBuildParametersFromWorkflow(proj sdk.Project, wf *sdk.Workflow, refNode
 		if refNode.Context.ProjectIntegrationID != 0 && wf.ProjectIntegrations != nil {
 			pp, has := wf.ProjectIntegrations[refNode.Context.ProjectIntegrationID]
 			if has {
-				runContext.ProjectIntegration = pp
+				runContext.ProjectIntegrations = append(runContext.ProjectIntegrations, pp)
 			}
 		}
 		runContext.NodeGroups = refNode.Groups
@@ -924,9 +989,9 @@ func stopWorkflowNodeRunStages(ctx context.Context, db gorp.SqlExecutor, nodeRun
 		stag := &nodeRun.Stages[iS]
 		for iR := range stag.RunJobs {
 			runj := &stag.RunJobs[iR]
-			spawnInfos, err := LoadNodeRunJobInfo(ctx, db, runj.ID)
+			spawnInfos, err := LoadNodeRunJobInfo(ctx, db, nodeRun.ID, runj.ID)
 			if err != nil {
-				log.Warning(ctx, "unable to load spawn infos for runj ID: %d", runj.ID)
+				log.Warn(ctx, "unable to load spawn infos for runj ID: %d", runj.ID)
 			} else {
 				runj.SpawnInfos = spawnInfos
 			}
@@ -1009,7 +1074,7 @@ func SyncNodeRunRunJob(ctx context.Context, db gorp.SqlExecutor, nodeRun *sdk.Wo
 		for j := range s.RunJobs {
 			runJob := &s.RunJobs[j]
 			if runJob.ID == nodeJobRun.ID {
-				spawnInfos, err := LoadNodeRunJobInfo(ctx, db, runJob.ID)
+				spawnInfos, err := LoadNodeRunJobInfo(ctx, db, nodeRun.ID, runJob.ID)
 				if err != nil {
 					return false, sdk.WrapError(err, "unable to load spawn infos for runJobID: %d", runJob.ID)
 				}
@@ -1071,7 +1136,7 @@ func getVCSInfos(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cac
 		log.Error(ctx, "cannot get from cache %s: %v", cacheKey, err)
 	}
 	if find && vcsInfos.Branch != "" && vcsInfos.Hash != "" {
-		log.Debug("completeVCSInfos> load from cache: %s", cacheKey)
+		log.Debug(ctx, "completeVCSInfos> load from cache: %s", cacheKey)
 		return &vcsInfos, nil
 	}
 
@@ -1123,7 +1188,7 @@ func getVCSInfos(ctx context.Context, db gorpmapper.SqlExecutorWithTx, store cac
 		vcsInfos.Hash = defaultB.LatestCommit
 	case vcsInfos.Hash == "" && vcsInfos.Branch != "":
 		// GET COMMIT INFO
-		branch, errB := client.Branch(ctx, vcsInfos.Repository, vcsInfos.Branch)
+		branch, errB := client.Branch(ctx, vcsInfos.Repository, sdk.VCSBranchFilters{BranchName: vcsInfos.Branch})
 		if errB != nil {
 			// Try default branch
 			b, errD := repositoriesmanager.DefaultBranch(ctx, client, vcsInfos.Repository)

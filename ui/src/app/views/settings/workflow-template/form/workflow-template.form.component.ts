@@ -1,5 +1,4 @@
-import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output } from '@angular/core';
-import { FormControl } from '@angular/forms';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, EventEmitter, Input, Output } from '@angular/core';
 import { Group } from 'app/model/group.model';
 import {
     WorkflowTemplate,
@@ -30,8 +29,7 @@ export class WorkflowTemplateFormComponent {
             this._workflowTemplate = <WorkflowTemplate>{ editable: true };
         }
 
-        this.importFromURLControl.setValue(!!this._workflowTemplate.import_url)
-        this.importFromURL = this.importFromURLControl.value;
+        this.importFromURL = !!this._workflowTemplate.import_url;
 
         this.changeMessage = null;
 
@@ -77,7 +75,9 @@ export class WorkflowTemplateFormComponent {
 
         this.descriptionChange();
     }
-    get workflowTemplate() { return this._workflowTemplate; }
+    get workflowTemplate() {
+ return this._workflowTemplate;
+}
 
     @Input() set errors(es: Array<WorkflowTemplateError>) {
         this.workflowError = null;
@@ -125,10 +125,12 @@ export class WorkflowTemplateFormComponent {
     environmentErrors: { [key: number]: WorkflowTemplateError; };
     environmentKeys: Array<number>;
     changeMessage: string;
-    importFromURLControl = new FormControl();
     importFromURL: boolean;
 
-    constructor(private _sharedService: SharedService) {
+    constructor(
+        private _sharedService: SharedService,
+        private _cd: ChangeDetectorRef
+    ) {
         this.templateParameterTypes = ['boolean', 'string', 'repository', 'json', 'ssh-key', 'pgp-key'];
 
         this.resetParameterValue();
@@ -161,18 +163,10 @@ export class WorkflowTemplateFormComponent {
             import_url: null,
             group_id: Number(this.workflowTemplate.group_id),
             value: this.workflowValue ? Base64.b64EncodeUnicode(this.workflowValue) : '',
-            pipelines: Object.keys(this.pipelineValues).map(k => {
-                return { value: this.pipelineValues[k] ? Base64.b64EncodeUnicode(this.pipelineValues[k]) : '' };
-            }),
-            applications: Object.keys(this.applicationValues).map(k => {
-                return { value: this.applicationValues[k] ? Base64.b64EncodeUnicode(this.applicationValues[k]) : '' };
-            }),
-            environments: Object.keys(this.environmentValues).map(k => {
-                return { value: this.environmentValues[k] ? Base64.b64EncodeUnicode(this.environmentValues[k]) : '' };
-            }),
-            parameters: Object.keys(this.parameterValues).map(k => {
-                return this.parameterValues[k];
-            }),
+            pipelines: Object.keys(this.pipelineValues).map(k => ({ value: this.pipelineValues[k] ? Base64.b64EncodeUnicode(this.pipelineValues[k]) : '' })),
+            applications: Object.keys(this.applicationValues).map(k => ({ value: this.applicationValues[k] ? Base64.b64EncodeUnicode(this.applicationValues[k]) : '' })),
+            environments: Object.keys(this.environmentValues).map(k => ({ value: this.environmentValues[k] ? Base64.b64EncodeUnicode(this.environmentValues[k]) : '' })),
+            parameters: Object.keys(this.parameterValues).map(k => this.parameterValues[k]),
             change_message: this.changeMessage
         });
     }
@@ -237,6 +231,7 @@ export class WorkflowTemplateFormComponent {
     }
 
     changeFromURL() {
-        this.importFromURL = this.importFromURLControl.value;
+        this.importFromURL = !this.importFromURL;
+        this._cd.markForCheck();
     }
 }

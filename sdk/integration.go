@@ -2,17 +2,29 @@ package sdk
 
 import (
 	"database/sql/driver"
-	json "encoding/json"
+	"encoding/json"
 	"fmt"
 )
 
 // This is the buitin integration model
 const (
-	KafkaIntegrationModel         = "Kafka"
-	RabbitMQIntegrationModel      = "RabbitMQ"
-	OpenstackIntegrationModel     = "Openstack"
-	AWSIntegrationModel           = "AWS"
-	DefaultStorageIntegrationName = "shared.infra"
+	KafkaIntegrationModel           = "Kafka"
+	RabbitMQIntegrationModel        = "RabbitMQ"
+	OpenstackIntegrationModel       = "Openstack"
+	AWSIntegrationModel             = "AWS"
+	DefaultStorageIntegrationName   = "shared.infra"
+	ArtifactoryIntegrationModelName = "Artifactory"
+
+	ArtifactoryConfigPlatform              = "platform"
+	ArtifactoryConfigURL                   = "url"
+	ArtifactoryConfigTokenName             = "token.name"
+	ArtifactoryConfigToken                 = "token"
+	ArtifactoryConfigReleaseToken          = "release.token"
+	ArtifactoryConfigCdsRepository         = "cds.repository"
+	ArtifactoryConfigProjectKey            = "project.key"
+	ArtifactoryConfigPromotionLowMaturity  = "promotion.maturity.low"
+	ArtifactoryConfigPromotionHighMaturity = "promotion.maturity.high"
+	ArtifactoryConfigBuildInfoPrefix       = "build.info.prefix"
 )
 
 // Here are the default plateform models
@@ -22,6 +34,7 @@ var (
 		&RabbitMQIntegration,
 		&OpenstackIntegration,
 		&AWSIntegration,
+		&ArtifactoryIntegration,
 	}
 	// KafkaIntegration represents a kafka integration
 	KafkaIntegration = IntegrationModel{
@@ -104,6 +117,46 @@ var (
 		Disabled: false,
 		Hook:     false,
 	}
+	// ArtifactoryIntegration represent integration with artifactory
+	ArtifactoryIntegration = IntegrationModel{
+		Name:       ArtifactoryIntegrationModelName,
+		Author:     "CDS",
+		Identifier: "github.com/ovh/cds/integration/builtin/artifactory",
+		Icon:       "",
+		DefaultConfig: IntegrationConfig{
+			ArtifactoryConfigPlatform: IntegrationConfigValue{
+				Type: IntegrationConfigTypeString,
+			},
+			ArtifactoryConfigURL: IntegrationConfigValue{
+				Type: IntegrationConfigTypeString,
+			},
+			ArtifactoryConfigTokenName: IntegrationConfigValue{
+				Type: IntegrationConfigTypeString,
+			},
+			ArtifactoryConfigToken: IntegrationConfigValue{
+				Type: IntegrationConfigTypePassword,
+			},
+			ArtifactoryConfigReleaseToken: IntegrationConfigValue{
+				Type: IntegrationConfigTypePassword,
+			},
+			ArtifactoryConfigProjectKey: IntegrationConfigValue{
+				Type: IntegrationConfigTypeString,
+			},
+			ArtifactoryConfigCdsRepository: IntegrationConfigValue{
+				Type: IntegrationConfigTypeString,
+			},
+			ArtifactoryConfigPromotionLowMaturity: IntegrationConfigValue{
+				Type: IntegrationConfigTypeString,
+			},
+			ArtifactoryConfigPromotionHighMaturity: IntegrationConfigValue{
+				Type: IntegrationConfigTypeString,
+			},
+			ArtifactoryConfigBuildInfoPrefix: IntegrationConfigValue{
+				Type: IntegrationConfigTypeString,
+			},
+		},
+		ArtifactManager: true,
+	}
 	// AWSIntegration represents an aws integration
 	AWSIntegration = IntegrationModel{
 		Name:       AWSIntegrationModel,
@@ -185,6 +238,15 @@ func (config IntegrationConfig) Clone() IntegrationConfig {
 	return new
 }
 
+// Set value
+func (config IntegrationConfig) SetValue(name string, value string) {
+	val, ok := config[name]
+	if ok {
+		val.Value = value
+		config[name] = val
+	}
+}
+
 // Value returns driver.Value from IntegrationConfig.
 func (config IntegrationConfig) Value() (driver.Value, error) {
 	j, err := json.Marshal(config)
@@ -200,7 +262,7 @@ func (config *IntegrationConfig) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, config), "cannot unmarshal IntegrationConfig")
+	return WrapError(JSONUnmarshal(source, config), "cannot unmarshal IntegrationConfig")
 }
 
 // EncryptSecrets encrypt secrets given a cypher func
@@ -242,6 +304,11 @@ const (
 	IntegrationConfigTypePassword = "password"
 	// IntegrationConfigTypeBoolean represents a password configuration value
 	IntegrationConfigTypeBoolean = "boolean"
+	// IntegrationConfigTypeRegion represents a region requirement
+	IntegrationConfigTypeRegion = "region"
+
+	IntegrationVariablePrefixDeployment      = "deployment"
+	IntegrationVariablePrefixArtifactManager = "artifact_manager"
 )
 
 // IntegrationConfigValue represent a configuration value for a integration
@@ -249,6 +316,7 @@ type IntegrationConfigValue struct {
 	Value       string `json:"value" yaml:"value"`
 	Type        string `json:"type" yaml:"type"`
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	Static      bool   `json:"static,omitempty" yaml:"static,omitempty"`
 }
 
 type IntegrationConfigMap map[string]IntegrationConfig
@@ -259,6 +327,20 @@ func (config IntegrationConfigMap) Clone() IntegrationConfigMap {
 		new[k] = v.Clone()
 	}
 	return new
+}
+
+func GetIntegrationVariablePrefix(model IntegrationModel) string {
+	if model.Deployment {
+		return IntegrationVariablePrefixDeployment
+	}
+	if model.ArtifactManager {
+		return IntegrationVariablePrefixArtifactManager
+	}
+	return ""
+}
+
+func AllowIntegrationInVariable(model IntegrationModel) bool {
+	return model.ArtifactManager || model.Deployment
 }
 
 func (config IntegrationConfigMap) Blur() {
@@ -282,7 +364,7 @@ func (config *IntegrationConfigMap) Scan(src interface{}) error {
 	if !ok {
 		return WithStack(fmt.Errorf("type assertion .([]byte) failed (%T)", src))
 	}
-	return WrapError(json.Unmarshal(source, config), "cannot unmarshal IntegrationConfigMap")
+	return WrapError(JSONUnmarshal(source, config), "cannot unmarshal IntegrationConfigMap")
 }
 
 // IntegrationModel represent a integration model with its default configuration
@@ -293,7 +375,7 @@ type IntegrationModel struct {
 	Identifier              string               `json:"identifier" db:"identifier" yaml:"identifier,omitempty"`
 	Icon                    string               `json:"icon" db:"icon" yaml:"icon"`
 	DefaultConfig           IntegrationConfig    `json:"default_config" db:"default_config" yaml:"default_config"`
-	DeploymentDefaultConfig IntegrationConfig    `json:"deployment_default_config" db:"deployment_default_config" yaml:"deployment_default_config"`
+	AdditionalDefaultConfig IntegrationConfig    `json:"additional_default_config" db:"additional_default_config" yaml:"additional_default_config"`
 	PublicConfigurations    IntegrationConfigMap `json:"public_configurations,omitempty" db:"cipher_public_configurations" yaml:"public_configurations"`
 	Disabled                bool                 `json:"disabled" db:"disabled" yaml:"disabled"`
 	Hook                    bool                 `json:"hook" db:"hook" yaml:"hook" cli:"hooks_supported"`
@@ -301,6 +383,7 @@ type IntegrationModel struct {
 	Deployment              bool                 `json:"deployment" db:"deployment" yaml:"deployment" cli:"deployment_supported"`
 	Compute                 bool                 `json:"compute" db:"compute" yaml:"compute" cli:"compute_supported"`
 	Event                   bool                 `json:"event" db:"event" yaml:"event" cli:"event_supported"`
+	ArtifactManager         bool                 `json:"artifact_manager" db:"artifact_manager" yaml:"artifact_manager" cli:"artifact_manager_supported"`
 	Public                  bool                 `json:"public,omitempty" db:"public" yaml:"public,omitempty"`
 }
 
@@ -336,7 +419,7 @@ func (pf *ProjectIntegration) Blur() {
 	pf.Config.Blur()
 	pf.Model.DefaultConfig.Blur()
 	pf.Model.PublicConfigurations.Blur()
-	pf.Model.DeploymentDefaultConfig.Blur()
+	pf.Model.AdditionalDefaultConfig.Blur()
 }
 
 // MergeWith set new values from new config and update existing values if not default.
@@ -361,4 +444,10 @@ func (config *IntegrationConfig) HideSecrets() {
 			(*config)[k] = v
 		}
 	}
+}
+
+type FileInfo struct {
+	Size int64
+	Md5  string
+	Type string
 }

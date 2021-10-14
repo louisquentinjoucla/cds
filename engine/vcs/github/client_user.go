@@ -2,12 +2,12 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
+
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/engine/cache"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 // User Get a single user
@@ -16,7 +16,7 @@ func (g *githubClient) User(ctx context.Context, username string) (User, error) 
 	url := "/users/" + username
 	status, body, _, err := g.get(ctx, url)
 	if err != nil {
-		log.Warning(ctx, "githubClient.User> Error %s", err)
+		log.Warn(ctx, "githubClient.User> Error %s", err)
 		return User{}, err
 	}
 	if status >= 400 {
@@ -32,7 +32,7 @@ func (g *githubClient) User(ctx context.Context, username string) (User, error) 
 			log.Error(ctx, "cannot get from cache %s: %v", k, err)
 		}
 	} else {
-		if err := json.Unmarshal(body, &user); err != nil {
+		if err := sdk.JSONUnmarshal(body, &user); err != nil {
 			return User{}, err
 		}
 		//Put the body on cache for one hour and one minute

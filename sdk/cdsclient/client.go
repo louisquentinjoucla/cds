@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pkg/errors"
 
 	"github.com/ovh/cds/sdk"
 )
@@ -21,7 +23,7 @@ var _ Interface = new(client)
 
 type client struct {
 	httpClient          *http.Client
-	httpSSEClient       *http.Client
+	httpNoTimeoutClient *http.Client
 	httpWebsocketClient *websocket.Dialer
 	config              *Config
 	name                string
@@ -69,7 +71,7 @@ func New(c Config) Interface {
 	cli.config = &c
 	cli.config.Mutex = new(sync.Mutex)
 	cli.httpClient = NewHTTPClient(time.Second*60, c.InsecureSkipVerifyTLS)
-	cli.httpSSEClient = NewHTTPClient(0, c.InsecureSkipVerifyTLS)
+	cli.httpNoTimeoutClient = NewHTTPClient(0, c.InsecureSkipVerifyTLS)
 	cli.httpWebsocketClient = NewWebsocketDialer(c.InsecureSkipVerifyTLS)
 	cli.init()
 	return cli
@@ -90,7 +92,7 @@ func NewWorker(endpoint string, name string, c *http.Client) WorkerInterface {
 	} else {
 		cli.httpClient = c
 	}
-	cli.httpSSEClient = NewHTTPClient(0, false)
+	cli.httpNoTimeoutClient = NewHTTPClient(0, false)
 	cli.httpWebsocketClient = NewWebsocketDialer(false)
 
 	cli.name = name
@@ -115,14 +117,14 @@ func NewProviderClient(cfg ProviderConfig) ProviderClient {
 	cli.config = &conf
 	cli.config.Mutex = new(sync.Mutex)
 	cli.httpClient = NewHTTPClient(time.Duration(cfg.RequestSecondsTimeout)*time.Second, conf.InsecureSkipVerifyTLS)
-	cli.httpSSEClient = NewHTTPClient(0, conf.InsecureSkipVerifyTLS)
+	cli.httpNoTimeoutClient = NewHTTPClient(0, conf.InsecureSkipVerifyTLS)
 	cli.httpWebsocketClient = NewWebsocketDialer(conf.InsecureSkipVerifyTLS)
 	cli.init()
 	return cli
 }
 
 // NewServiceClient returns client for a service
-func NewServiceClient(cfg ServiceConfig) (Interface, []byte, error) {
+func NewServiceClient(ctx context.Context, cfg ServiceConfig) (Interface, []byte, error) {
 	conf := Config{
 		Host:                              cfg.Host,
 		Retry:                             2,
@@ -138,21 +140,21 @@ func NewServiceClient(cfg ServiceConfig) (Interface, []byte, error) {
 	cli.config = &conf
 	cli.config.Mutex = new(sync.Mutex)
 	cli.httpClient = NewHTTPClient(time.Duration(cfg.RequestSecondsTimeout)*time.Second, conf.InsecureSkipVerifyTLS)
-	cli.httpSSEClient = NewHTTPClient(0, conf.InsecureSkipVerifyTLS)
+	cli.httpNoTimeoutClient = NewHTTPClient(0, conf.InsecureSkipVerifyTLS)
 	cli.httpWebsocketClient = NewWebsocketDialer(conf.InsecureSkipVerifyTLS)
 	cli.config.Verbose = cfg.Verbose
 	cli.init()
 
 	if cfg.Hook != nil {
 		if err := cfg.Hook(cli); err != nil {
-			return nil, nil, sdk.WithStack(err)
+			return nil, nil, newError(err)
 		}
 	}
 
 	var nbError int
 retry:
 	var res sdk.AuthConsumerSigninResponse
-	_, headers, code, err := cli.RequestJSON(context.Background(), "POST", "/auth/consumer/"+string(sdk.ConsumerBuiltin)+"/signin", sdk.AuthConsumerSigninRequest{"token": cfg.Token}, &res)
+	_, headers, code, err := cli.RequestJSON(ctx, "POST", "/auth/consumer/"+string(sdk.ConsumerBuiltin)+"/signin", sdk.AuthConsumerSigninRequest{"token": cfg.Token}, &res)
 	if err != nil {
 		if code == 401 {
 			nbError++
@@ -161,14 +163,14 @@ retry:
 				goto retry
 			}
 		}
-		return nil, nil, sdk.WithStack(err)
+		return nil, nil, err
 	}
 	cli.config.SessionToken = res.Token
 
 	base64EncodedPubKey := headers.Get("X-Api-Pub-Signing-Key")
 	pubKey, err := base64.StdEncoding.DecodeString(base64EncodedPubKey)
 
-	return cli, pubKey, sdk.WithStack(err)
+	return cli, pubKey, newError(err)
 }
 
 func (c *client) init() {
@@ -184,9 +186,78 @@ func (c *client) APIURL() string {
 func (c *client) HTTPClient() *http.Client {
 	return c.httpClient
 }
-func (c *client) HTTPSSEClient() *http.Client {
-	return c.httpSSEClient
+func (c *client) HTTPNoTimeoutClient() *http.Client {
+	return c.httpNoTimeoutClient
 }
 func (c *client) HTTPWebsocketClient() *websocket.Dialer {
 	return c.httpWebsocketClient
+}
+
+var _ error = new(Error)
+
+type Error struct {
+	sdkError       error
+	transportError error
+	apiError       error
+}
+
+func (e *Error) Cause() error {
+	if e == nil {
+		return nil
+	}
+	if e.apiError != nil {
+		return e.apiError
+	}
+	if e.transportError != nil {
+		return e.transportError
+	}
+	if e.sdkError != nil {
+		return e.sdkError
+	}
+	return nil
+}
+
+func (e *Error) Error() string {
+	if e.apiError != nil {
+		return "API Error: " + e.apiError.Error()
+	}
+	if e.transportError != nil {
+		return "Transport Error: " + e.transportError.Error()
+	}
+	if e.sdkError != nil {
+		return e.sdkError.Error()
+	}
+	panic("unknown error")
+}
+
+type stackTracer interface {
+	StackTrace() errors.StackTrace
+}
+
+func (e *Error) StackTrace() string {
+	if err, ok := e.Cause().(stackTracer); ok {
+		return fmt.Sprintf("%+v", err)
+	}
+	return ""
+}
+
+func newAPIError(e error) error {
+	if e == nil {
+		return nil
+	}
+	return &Error{apiError: errors.WithStack(e)}
+}
+
+func newTransportError(e error) error {
+	if e == nil {
+		return nil
+	}
+	return &Error{transportError: errors.WithStack(e)}
+}
+
+func newError(e error) error {
+	if e == nil {
+		return nil
+	}
+	return &Error{sdkError: errors.WithStack(e)}
 }

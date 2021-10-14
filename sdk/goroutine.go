@@ -15,51 +15,113 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"sync"
+	"time"
 
-	panicparsestack "github.com/maruel/panicparse/stack"
-	"github.com/ovh/cds/sdk/log"
-
+	"github.com/maruel/panicparse/v2/stack"
 	"github.com/pkg/errors"
+	"github.com/rockbears/log"
+
+	cdslog "github.com/ovh/cds/sdk/log"
+	"github.com/ovh/cds/sdk/telemetry"
 )
+
+type GoRoutine struct {
+	ctx     context.Context
+	Name    string
+	Func    func(ctx context.Context)
+	Restart bool
+	Active  bool
+}
 
 // GoRoutines contains list of routines that have to stay up
 type GoRoutines struct {
 	mutex  sync.Mutex
-	status map[string]bool
+	status []*GoRoutine
+}
+
+func (m *GoRoutines) GoRoutine(name string) *GoRoutine {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	for _, g := range m.status {
+		if g.Name == name {
+			return g
+		}
+	}
+	return nil
 }
 
 // NewGoRoutines instanciates a new GoRoutineManager
-func NewGoRoutines() *GoRoutines {
-	return &GoRoutines{
-		mutex:  sync.Mutex{},
-		status: make(map[string]bool),
+func NewGoRoutines(ctx context.Context) *GoRoutines {
+	m := &GoRoutines{}
+	m.Exec(ctx, "GoRoutines-restart", func(ctx context.Context) {
+		m.restartGoRoutines(ctx)
+	})
+	return m
+}
+
+func (m *GoRoutines) restartGoRoutines(ctx context.Context) {
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for _, g := range m.status {
+				if !g.Active && g.Restart {
+					log.Info(ctx, "restarting goroutine %q", g.Name)
+					m.exec(g)
+				}
+			}
+		}
 	}
 }
 
 // Run runs the function within a goroutine with a panic recovery, and keep GoRoutine status.
-func (m *GoRoutines) Run(c context.Context, name string, fn func(ctx context.Context), writerFactories ...func(s string) (io.WriteCloser, error)) {
+func (m *GoRoutines) Run(c context.Context, name string, fn func(ctx context.Context)) {
 	m.mutex.Lock()
-	m.status[name] = true
-	m.mutex.Unlock()
-	m.Exec(c, name, fn, writerFactories...)
+	defer m.mutex.Unlock()
+	g := &GoRoutine{
+		ctx:     c,
+		Name:    name,
+		Func:    fn,
+		Active:  true,
+		Restart: false,
+	}
+	m.status = append(m.status, g)
+	m.exec(g)
+}
+
+// RunWithRestart runs the function within a goroutine with a panic recovery, and keep GoRoutine status.
+// if the goroutine is stopped, it will ne restarted
+func (m *GoRoutines) RunWithRestart(c context.Context, name string, fn func(ctx context.Context)) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	g := &GoRoutine{
+		ctx:     c,
+		Name:    name,
+		Func:    fn,
+		Active:  true,
+		Restart: true,
+	}
+	m.status = append(m.status, g)
+	m.exec(g)
 }
 
 // GetStatus returns the monitoring status of goroutines that should be running
 func (m *GoRoutines) GetStatus() []MonitoringStatusLine {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
 	lines := make([]MonitoringStatusLine, len(m.status))
 	i := 0
-	for name, isActive := range m.status {
+	for _, g := range m.status {
 		status := MonitoringStatusAlert
 		value := "NOT running"
-		if isActive {
+		if g.Active {
 			status = MonitoringStatusOK
 			value = "Running"
 		}
 		lines[i] = MonitoringStatusLine{
 			Status:    status,
-			Component: "goroutine/" + name,
+			Component: "goroutine/" + g.Name,
 			Value:     value,
 		}
 		i++
@@ -67,11 +129,19 @@ func (m *GoRoutines) GetStatus() []MonitoringStatusLine {
 	return lines
 }
 
-// Exec runs the function within a goroutine with a panic recovery
-func (m *GoRoutines) Exec(c context.Context, name string, fn func(ctx context.Context), writerFactories ...func(s string) (io.WriteCloser, error)) {
+func (m *GoRoutines) exec(g *GoRoutine) {
 	hostname, _ := os.Hostname()
 	go func(ctx context.Context) {
-		labels := pprof.Labels("goroutine-name", name, "goroutine-hostname", hostname, "goroutine-id", fmt.Sprintf("%d", GoroutineID()))
+		ctx, end := telemetry.Span(ctx, "goroutine.exec", telemetry.Tag(telemetry.TagGoroutine, g.Name))
+		defer end()
+
+		ctx = context.WithValue(ctx, cdslog.Goroutine, g.Name)
+
+		labels := pprof.Labels(
+			"goroutine-name", g.Name,
+			"goroutine-hostname", hostname,
+			"goroutine-id", fmt.Sprintf("%d", GoroutineID()),
+		)
 		goroutineCtx := pprof.WithLabels(ctx, labels)
 		pprof.SetGoroutineLabels(goroutineCtx)
 
@@ -79,33 +149,27 @@ func (m *GoRoutines) Exec(c context.Context, name string, fn func(ctx context.Co
 			if r := recover(); r != nil {
 				buf := make([]byte, 1<<16)
 				runtime.Stack(buf, false)
-				uuid := UUID()
-				log.ErrorWithFields(ctx, log.Fields{"stack_trace": string(buf)}, "[PANIC][%s] %s failed (%s)", hostname, name, uuid)
-
-				for _, f := range writerFactories {
-					w, err := f(uuid)
-					if err != nil {
-						log.Error(ctx, "unable open writer %s ¯\\_(ツ)_/¯ (%v)", uuid, err)
-						continue
-					}
-					if _, err := io.Copy(w, bytes.NewReader(buf)); err != nil {
-						log.Error(ctx, "unable to write %s ¯\\_(ツ)_/¯ (%v)", uuid, err)
-						continue
-					}
-					if err := w.Close(); err != nil {
-						log.Error(ctx, "unable to close %s ¯\\_(ツ)_/¯ (%v)", uuid, err)
-					}
-				}
+				ctx = context.WithValue(ctx, cdslog.Stacktrace, string(buf))
+				log.Error(ctx, "[PANIC][%s] %s failed", hostname, g.Name)
 			}
-			m.mutex.Lock()
-			if _, ok := m.status[name]; ok {
-				m.status[name] = false
-			}
-			m.mutex.Unlock()
+			g.Active = false
 		}()
 
-		fn(goroutineCtx)
-	}(c)
+		g.Active = true
+		g.Func(goroutineCtx)
+	}(g.ctx)
+}
+
+// Exec runs the function within a goroutine with a panic recovery
+func (m *GoRoutines) Exec(c context.Context, name string, fn func(ctx context.Context)) {
+	g := &GoRoutine{
+		ctx:     c,
+		Name:    name,
+		Func:    fn,
+		Active:  true,
+		Restart: false,
+	}
+	m.exec(g)
 }
 
 // code from https://github.com/golang/net/blob/master/http2/gotrack.go
@@ -138,7 +202,7 @@ func GoroutineID() uint64 {
 	return n
 }
 
-func ListGoroutines() ([]*panicparsestack.Goroutine, error) {
+func ListGoroutines() ([]*stack.Goroutine, error) {
 	var w = new(bytes.Buffer)
 	if err := writeGoroutineStacks(w); err != nil {
 		return nil, err
@@ -262,13 +326,13 @@ func writeGoroutineStacks(w io.Writer) error {
 	return WithStack(err)
 }
 
-func parseGoRoutineStacks(r io.Reader, w io.Writer) ([]*panicparsestack.Goroutine, error) {
+func parseGoRoutineStacks(r io.Reader, w io.Writer) ([]*stack.Goroutine, error) {
 	if w == nil {
 		w = ioutil.Discard
 	}
-	goroutines, err := panicparsestack.ParseDump(r, w, true)
-	if err != nil {
+	s, _, err := stack.ScanSnapshot(r, w, stack.DefaultOpts())
+	if err != nil && err != io.EOF {
 		return nil, WithStack(err)
 	}
-	return goroutines.Goroutines, nil
+	return s.Goroutines, nil
 }

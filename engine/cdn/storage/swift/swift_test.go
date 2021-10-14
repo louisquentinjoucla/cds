@@ -3,19 +3,20 @@ package swift
 import (
 	"context"
 	"io/ioutil"
+	"strings"
 	"testing"
 
 	"github.com/ovh/symmecrypt/ciphers/aesgcm"
 	"github.com/ovh/symmecrypt/convergent"
+	"github.com/rockbears/log"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ovh/cds/engine/cdn/storage"
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 func TestSwift(t *testing.T) {
-	log.SetLogger(t)
+	log.Factory = log.NewTestingWrapper(t)
 	var driver = new(Swift)
 	err := driver.Init(context.TODO(), &storage.SwiftStorageConfiguration{
 		Encryption: []convergent.ConvergentEncryptionConfig{
@@ -26,7 +27,11 @@ func TestSwift(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, err, "unable to initialiaze webdav driver")
+	if err != nil && strings.Contains(err.Error(), "Can't find AuthVersion in AuthUrl") {
+		t.Logf("skipping this test: %v", err)
+		t.SkipNow()
+	}
+	require.NoError(t, err, "unable to initialiaze swift driver")
 
 	err = driver.client.ApplyEnvironment()
 	if err != nil {

@@ -86,9 +86,9 @@ docker run --name cds-db -e POSTGRES_PASSWORD=cds -e POSTGRES_USER=cds -e POSTGR
 ```bash
 cd $HOME/cds
 ./cds-engine download sql --config conf.toml
-./cds-engine database upgrade --db-host localhost --db-user cds --db-password cds --db-name cds --dh-schema public --db-sslmode disable --db-port 5432 --migrate-dir sql/api
+./cds-engine database upgrade --db-host localhost --db-user cds --db-password cds --db-name cds --db-schema public --db-sslmode disable --db-port 5432 --migrate-dir sql/api
 PGPASSWORD=cds psql -h localhost -U cds -d cds -c "CREATE SCHEMA IF NOT EXISTS cdn AUTHORIZATION cds;"
-./cds-engine database upgrade --db-host localhost --db-user cds --db-password cds --db-name cds --dh-schema cdn --db-sslmode disable --db-port 5432 --migrate-dir sql/cdn
+./cds-engine database upgrade --db-host localhost --db-user cds --db-password cds --db-name cds --db-schema cdn --db-sslmode disable --db-port 5432 --migrate-dir sql/cdn
 ```
 
 ## Launch CDS API
@@ -132,14 +132,23 @@ Then, open a browser on http://localhost:8080/ .
 
 ## Launch CDS cdn
 
-<b style="color: red">⚠ Do not activate CDN log processing in production yet. It's in active development.
-Be sure that config flag 'enableLogProcessing' is set to false</b>
+CDN is a service dedicated to receive and retrieve logs. Doc: https://ovh.github.io/cds/docs/components/cdn/
+
+Start the cdn service:
 
 ```bash
+cd $HOME/cds
+mkdir -p storage/cdn-buffer storage/cdn
+./cds-engine config edit conf.toml --output conf.toml \
+  cdn.storageUnits.storages.local.local.path=$HOME/cds/storage/cdn \
+  cdn.storageUnits.buffers.local-buffer.local.path=$HOME/cds/storage/cdn-buffer
+
 ./cds-engine start cdn --config $HOME/cds/conf.toml
 ```
 
 ## Launch CDS Local Hatchery
+
+A Hatchery is a service dedicated to spawn and kill worker in accordance with build queue needs.
 
 Start the local hatchery:
 
@@ -152,21 +161,17 @@ Start the local hatchery:
 
 ## Note about CDS Engine
 
-It is possible to start all services as a single process `$ ./cds-engine start api ui hooks hatchery:local --config config.toml`.
+It is possible to start all services as a single process `$ ./cds-engine start api ui cdn hooks hatchery:local --config config.toml`.
 
 ```bash
 $ ./cds-engine start api hooks hatchery:local --config config.toml
 Reading configuration file config.toml
 Starting service api
-...
 Starting service ui
-...
+Starting service cdn
 Starting service hooks
-...
 Starting service vcs
-...
 Starting service hatchery:local
-...
 ```
 
 For serious deployment, we strongly suggest to run each service as a dedicated process.
@@ -174,11 +179,9 @@ For serious deployment, we strongly suggest to run each service as a dedicated p
 ```bash
 
 $ ./cds-engine start api --config config.toml
-
+$ ./cds-engine start cdn --config config.toml
 $ ./cds-engine start ui --config config.toml
-
 $ ./cds-engine start hooks --config config.toml
-
 $ ./cds-engine start vcs --config config.toml
 
 $ ./cds-engine start hatchery:local --config config.toml

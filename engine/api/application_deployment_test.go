@@ -63,7 +63,7 @@ func Test_postApplicationDeploymentStrategyConfigHandler(t *testing.T) {
 		Deployment: true,
 	}
 	require.NoError(t, integration.InsertModel(db, &pf))
-	defer func() { _ = integration.DeleteModel(db, pf.ID) }()
+	defer func() { _ = integration.DeleteModel(context.TODO(), db, pf.ID) }()
 
 	pp := sdk.ProjectIntegration{
 		Model:              pf,
@@ -186,7 +186,7 @@ func Test_postApplicationDeploymentStrategyConfigHandler_InsertTwoDifferentInteg
 		Deployment: true,
 	}
 	require.NoError(t, integration.InsertModel(db, &pf))
-	defer func() { _ = integration.DeleteModel(db, pf.ID) }()
+	defer func() { _ = integration.DeleteModel(context.TODO(), db, pf.ID) }()
 
 	pp := sdk.ProjectIntegration{
 		Model:              pf,
@@ -295,7 +295,7 @@ func Test_postApplicationDeploymentStrategyConfigHandlerAsProvider(t *testing.T)
 	localConsumer, err := authentication.LoadConsumerByTypeAndUserID(context.TODO(), api.mustDB(), sdk.ConsumerLocal, u.ID, authentication.LoadConsumerOptions.WithAuthentifiedUser)
 	require.NoError(t, err)
 
-	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), localConsumer, u.GetGroupIDs(),
+	_, jws, err := builtin.NewConsumer(context.TODO(), db, sdk.RandomString(10), sdk.RandomString(10), 0, localConsumer, u.GetGroupIDs(),
 		sdk.NewAuthConsumerScopeDetails(sdk.AuthConsumerScopeProject))
 
 	pkey := sdk.RandomString(10)
@@ -308,7 +308,7 @@ func Test_postApplicationDeploymentStrategyConfigHandlerAsProvider(t *testing.T)
 	pf := sdk.IntegrationModel{
 		Name:       "test-deploy-3" + pkey,
 		Deployment: true,
-		DeploymentDefaultConfig: sdk.IntegrationConfig{
+		AdditionalDefaultConfig: sdk.IntegrationConfig{
 			"token": sdk.IntegrationConfigValue{
 				Type:  sdk.IntegrationConfigTypePassword,
 				Value: "my-secret-token",
@@ -320,7 +320,7 @@ func Test_postApplicationDeploymentStrategyConfigHandlerAsProvider(t *testing.T)
 		},
 	}
 	require.NoError(t, integration.InsertModel(db, &pf))
-	defer func() { _ = integration.DeleteModel(api.mustDB(), pf.ID) }()
+	defer func() { _ = integration.DeleteModel(context.TODO(), api.mustDB(), pf.ID) }()
 
 	pp := sdk.ProjectIntegration{
 		Model:              pf,

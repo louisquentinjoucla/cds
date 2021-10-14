@@ -1,13 +1,14 @@
 package workflow
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 
 	"github.com/go-gorp/gorp"
+	"github.com/rockbears/log"
 
 	"github.com/ovh/cds/sdk"
-	"github.com/ovh/cds/sdk/log"
 )
 
 //PostInsert is a db hook
@@ -38,7 +39,7 @@ func (r *hookModel) PostGet(db gorp.SqlExecutor) error {
 		return err
 	}
 	conf := sdk.WorkflowNodeHookConfig{}
-	if err := json.Unmarshal([]byte(confStr), &conf); err != nil {
+	if err := sdk.JSONUnmarshal([]byte(confStr), &conf); err != nil {
 		return err
 	}
 	r.DefaultConfig = conf
@@ -64,12 +65,12 @@ func CreateBuiltinWorkflowHookModels(db *gorp.DbMap) error {
 		}
 
 		if !ok {
-			log.Debug("CreateBuiltinWorkflowHookModels> inserting hooks config: %s", h.Name)
+			log.Debug(context.TODO(), "CreateBuiltinWorkflowHookModels> inserting hooks config: %s", h.Name)
 			if err := InsertHookModel(tx, h); err != nil {
 				return sdk.WrapError(err, "CreateBuiltinWorkflowHookModels error on insert")
 			}
 		} else {
-			log.Debug("CreateBuiltinWorkflowHookModels> updating hooks config: %s", h.Name)
+			log.Debug(context.TODO(), "CreateBuiltinWorkflowHookModels> updating hooks config: %s", h.Name)
 			// update default values
 			if err := UpdateHookModel(tx, h); err != nil {
 				return sdk.WrapError(err, "CreateBuiltinWorkflowHookModels  error on update")
