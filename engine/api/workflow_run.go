@@ -805,7 +805,6 @@ func (api *API) getWorkflowNodeRunHandler() service.Handler {
 		nodeRun, err := workflow.LoadNodeRun(api.mustDB(), key, name, id, workflow.LoadRunOptions{
 			WithTests:           true,
 			WithArtifacts:       true,
-			WithStaticFiles:     true,
 			WithCoverage:        true,
 			WithVulnerabilities: true,
 		})
